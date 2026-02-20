@@ -64,7 +64,7 @@ class WorktreeCreateCommand extends Command
                 return self::FAILURE;
             }
             $branch = $resolved;
-            $name ??= $this->slugifyBranch($resolved);
+            $name ??= "pr-{$pr}";
         }
 
         // Derive name from --branch when no positional name
@@ -244,7 +244,7 @@ class WorktreeCreateCommand extends Command
         );
 
         $branch = $prData[$prNumber];
-        $defaultName = $this->slugifyBranch($branch);
+        $defaultName = "pr-{$prNumber}";
 
         return [$defaultName, $branch];
     }
@@ -295,6 +295,8 @@ class WorktreeCreateCommand extends Command
 
     private function promptName(string $default): string
     {
+        $projectName = basename(base_path());
+
         return text(
             label: 'Worktree name',
             placeholder: 'e.g. 123-add-auth',
@@ -307,7 +309,7 @@ class WorktreeCreateCommand extends Command
 
                 return null;
             },
-            hint: 'Alphanumeric and hyphens only.',
+            hint: $default !== '' ? "Folder: {$projectName}-{$default}" : "Folder: {$projectName}-{name}",
         );
     }
 
@@ -324,7 +326,10 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        $branches = array_filter(array_map(trim(...), explode("\n", trim($result->output()))));
+        $branches = array_filter(array_map(function (string $line): string {
+            // gh issue develop --list outputs "branch\tURL" — take only the branch name
+            return trim(explode("\t", trim($line))[0]);
+        }, explode("\n", trim($result->output()))));
 
         if ($branches !== []) {
             $branch = $branches[0];
