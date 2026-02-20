@@ -1,0 +1,72 @@
+{
+    "name": "woda/laravel-worktrees",
+    "description": "Git worktree management with database cloning for Laravel",
+    "keywords": ["laravel", "git", "worktree", "database", "cloning"],
+    "homepage": "https://github.com/wwwoda/laravel-worktrees",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "David Mondok",
+            "email": "david@woda.at",
+            "homepage": "https://www.woda.at"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/console": "^11.0 || ^12.0",
+        "illuminate/process": "^11.0 || ^12.0",
+        "illuminate/support": "^11.0 || ^12.0"
+    },
+    "require-dev": {
+        "driftingly/rector-laravel": "^2.1",
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^9.0 || ^10.0",
+        "pestphp/pest": "^3.0 || ^4.0",
+        "pestphp/pest-plugin-laravel": "^3.0 || ^4.0",
+        "phpstan/phpstan": "^2.0",
+        "rector/rector": "^2.0",
+        "systemsdk/phpcpd": "^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Woda\\Worktrees\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Woda\\Worktrees\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/pest",
+        "phpstan": "vendor/bin/phpstan analyse",
+        "cs-fix": "vendor/bin/pint",
+        "cs-check": "vendor/bin/pint --test",
+        "rector-fix": "vendor/bin/rector process",
+        "rector-check": "vendor/bin/rector process --dry-run",
+        "phpcpd": "vendor/bin/phpcpd src/ --min-tokens=70 --min-lines=5",
+        "check": [
+            "@cs-check",
+            "@phpstan",
+            "@rector-check",
+            "@phpcpd"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Woda\\Worktrees\\WorktreesServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
