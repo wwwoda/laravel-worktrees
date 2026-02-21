@@ -355,8 +355,9 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        // gh issue develop outputs the branch name
-        $branch = trim($result->output());
+        // gh issue develop outputs a URL like https://github.com/owner/repo/tree/branch-name
+        $output = trim($result->output());
+        $branch = preg_match('#/tree/(.+)$#', $output, $m) ? $m[1] : $output;
 
         if ($branch === '') {
             $this->components->error("gh issue develop returned empty branch name for #{$issueNumber}.");

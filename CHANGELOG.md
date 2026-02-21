@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.2
+
+### Fixed
+- `gh issue develop` (create mode) outputs a full URL; only the branch slug is now extracted
+
 ## v0.1.1
 
 ### Fixed
