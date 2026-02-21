@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.3
+
+### Fixed
+- Worktree deletion fails when copied gitignored files (`.env`, `.claude`) are present
+
 ## v0.1.2
 
 ### Fixed
