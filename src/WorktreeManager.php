@@ -134,7 +134,9 @@ class WorktreeManager
             File::deleteDirectory($path);
             $this->git('worktree prune');
         } else {
-            $result = $this->git(sprintf('worktree remove %s', escapeshellarg($path)));
+            // --force is needed because copied gitignored files (e.g. .env, .claude)
+            // leave untracked files that prevent clean removal.
+            $result = $this->git(sprintf('worktree remove --force %s', escapeshellarg($path)));
 
             if (! $result->successful()) {
                 throw new RuntimeException("Failed to remove worktree: {$result->errorOutput()}");
