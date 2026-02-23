@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.4
+
+### Fixed
+- Simplified worktree removal: always delete directory + prune instead of unreliable `git worktree remove`
+
 ## v0.1.3
 
 ### Fixed
