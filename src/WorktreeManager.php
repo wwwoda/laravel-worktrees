@@ -122,7 +122,7 @@ class WorktreeManager
         return $path;
     }
 
-    public function remove(string $name, bool $force = false): void
+    public function remove(string $name): void
     {
         $path = $this->pathFor($name);
 
@@ -130,18 +130,10 @@ class WorktreeManager
             throw new RuntimeException("Worktree '{$name}' does not exist.");
         }
 
-        if ($force) {
-            File::deleteDirectory($path);
-            $this->git('worktree prune');
-        } else {
-            // --force is needed because copied gitignored files (e.g. .env, .claude)
-            // leave untracked files that prevent clean removal.
-            $result = $this->git(sprintf('worktree remove --force %s', escapeshellarg($path)));
-
-            if (! $result->successful()) {
-                throw new RuntimeException("Failed to remove worktree: {$result->errorOutput()}");
-            }
-        }
+        // Always delete directory manually + prune. git worktree remove fails
+        // when untracked/gitignored files exist (e.g. .env, .claude, node_modules).
+        File::deleteDirectory($path);
+        $this->git('worktree prune');
     }
 
     public function exists(string $name): bool

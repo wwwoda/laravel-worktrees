@@ -90,7 +90,7 @@ class WorktreeDeleteCommand extends Command
 
         // Remove worktree
         $this->components->info("Removing worktree '{$name}'...");
-        $worktreeManager->remove($name, (bool) $this->option('force'));
+        $worktreeManager->remove($name);
 
         // Drop database
         if (! $this->option('keep-db')) {

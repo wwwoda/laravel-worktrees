@@ -85,7 +85,7 @@ class WorktreeCleanupCommand extends Command
                 $processManager->terminate($name);
             }
 
-            $worktreeManager->remove($name, true);
+            $worktreeManager->remove($name);
 
             $suffix = str_replace('-', '_', $name);
             $databaseCloner->drop($suffix);
