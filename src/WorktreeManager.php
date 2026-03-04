@@ -303,6 +303,29 @@ class WorktreeManager
             );
         }
 
+        // Update ports for Sail isolation
+        $portOffset = $this->portOffset($name);
+
+        if (preg_match('/^APP_PORT=/m', $content)) {
+            /** @var int $appBase */
+            $appBase = config('worktrees.ports.app_base', 8100);
+            $content = (string) preg_replace(
+                '/^APP_PORT=.*/m',
+                'APP_PORT='.($appBase + $portOffset),
+                $content,
+            );
+        }
+
+        if (preg_match('/^VITE_PORT=/m', $content)) {
+            /** @var int $viteBase */
+            $viteBase = config('worktrees.ports.vite_base', 5200);
+            $content = (string) preg_replace(
+                '/^VITE_PORT=.*/m',
+                'VITE_PORT='.($viteBase + $portOffset),
+                $content,
+            );
+        }
+
         File::put($envPath, $content);
     }
 
@@ -346,6 +369,11 @@ class WorktreeManager
         if (! $result->successful()) {
             throw new RuntimeException("Migration failed: {$result->errorOutput()}");
         }
+    }
+
+    public function portOffset(string $name): int
+    {
+        return abs(crc32($name)) % 900;
     }
 
     private function sanitizeSuffix(string $name): string

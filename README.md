@@ -34,6 +34,11 @@ return [
         'docker_host' => env('WORKTREE_DB_DOCKER_HOST', '127.0.0.1'),
     ],
 
+    'ports' => [
+        'app_base' => (int) env('WORKTREE_APP_PORT_BASE', 8100),
+        'vite_base' => (int) env('WORKTREE_VITE_PORT_BASE', 5200),
+    ],
+
     'bootstrap' => [
         'node_package_manager' => env('WORKTREE_NODE_PM', 'pnpm'),
         'build_frontend' => true,
@@ -107,6 +112,19 @@ The `database.strategy` config determines how databases are cloned:
 | `none` | Skip database cloning |
 
 Docker containers are supported for MySQL and PostgreSQL — set the container name in config and the commands will be wrapped with `docker exec`.
+
+## Port Isolation (Sail)
+
+When running multiple worktrees with Laravel Sail, each worktree needs unique host ports to avoid conflicts. If your `.env` contains `APP_PORT` or `VITE_PORT`, the package will automatically derive unique ports per worktree.
+
+Ports are computed as `base + (crc32(name) % 900)`, giving ranges of 8100–8999 for `APP_PORT` and 5200–6099 for `VITE_PORT` by default. Configure the base ports in `config/worktrees.php` or via environment variables:
+
+```env
+WORKTREE_APP_PORT_BASE=8100
+WORKTREE_VITE_PORT_BASE=5200
+```
+
+Port replacement only applies when the key already exists in your `.env` file — it won't inject ports you haven't defined.
 
 ## ProcessManager Contract
 
