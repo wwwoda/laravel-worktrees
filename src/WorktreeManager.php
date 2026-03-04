@@ -373,7 +373,7 @@ class WorktreeManager
 
     public function portOffset(string $name): int
     {
-        return abs(crc32($name)) % 900;
+        return ((int) sprintf('%u', crc32($name))) % 900;
     }
 
     private function sanitizeSuffix(string $name): string
