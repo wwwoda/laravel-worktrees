@@ -3,6 +3,7 @@
 namespace Woda\Worktrees;
 
 use Closure;
+use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
@@ -17,9 +18,42 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
  *   macOS via VirtioFS; running pnpm/npm against a Sail-served app is the
  *   recommended pattern (Aaron Saray, Patrick Riemer 2025-26).
  * - tearDown: `docker compose down -v` to wipe per-stack volumes.
+ *
+ * Inherited-env trap: when bootstrap is invoked from a Laravel command, the
+ * PHP process has already loaded the *parent* worktree's `.env` via
+ * phpdotenv. That includes `COMPOSE_PROJECT_NAME`, `WORKTREE_HOST`,
+ * `DB_DATABASE`, etc. When we exec `docker compose ...` as a subprocess,
+ * compose reads its env BEFORE its YAML interpolation, so the inherited
+ * vars override the new worktree's `.env` — the new stack ends up named
+ * after the parent (and shares its volumes). We unset the offenders before
+ * every compose invocation; compose then falls back to the new worktree's
+ * own `.env` for project name + everything else.
  */
 class SailBootstrapStrategy implements BootstrapStrategy
 {
+    /**
+     * Vars that are typically set per-worktree in `.env` and would otherwise
+     * leak from the parent process and override the new worktree's values.
+     */
+    private const INHERITED_VARS_TO_CLEAR = [
+        'COMPOSE_PROJECT_NAME',
+        'COMPOSE_FILE',
+        'COMPOSE_PROFILES',
+        'WORKTREE_HOST',
+        'APP_NAME',
+        'APP_URL',
+        'APP_KEY',
+        'DB_DATABASE',
+        'DB_HOST',
+        'DB_PORT',
+        'DB_USERNAME',
+        'DB_PASSWORD',
+        'REDIS_HOST',
+        'REDIS_PORT',
+        'MAIL_HOST',
+        'MAIL_PORT',
+    ];
+
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
@@ -29,7 +63,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        $result = Process::path($worktreePath)->timeout($this->bringUpTimeout)->run(
+        $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
             'docker compose up -d',
             $output,
         );
@@ -45,7 +79,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
     {
-        $result = Process::path($worktreePath)->timeout(600)->run(
+        $result = $this->compose($worktreePath, 600)->run(
             $this->execCommand('composer install --no-interaction --prefer-dist'),
             $output,
         );
@@ -80,7 +114,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function runMigrations(string $worktreePath, ?Closure $output = null): void
     {
-        $result = Process::path($worktreePath)->timeout(300)->run(
+        $result = $this->compose($worktreePath, 300)->run(
             $this->execCommand('php artisan migrate --force'),
             $output,
         );
@@ -92,7 +126,19 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function tearDown(string $worktreePath, ?Closure $output = null): void
     {
-        Process::path($worktreePath)->timeout(120)->run('docker compose down -v', $output);
+        $this->compose($worktreePath, 120)->run('docker compose down -v', $output);
+    }
+
+    /**
+     * A PendingProcess scoped to the worktree dir with parent-shell vars
+     * that would interfere with compose's project-name / .env resolution
+     * cleared. See class docblock.
+     */
+    private function compose(string $worktreePath, int $timeout): PendingProcess
+    {
+        $clearedEnv = array_fill_keys(self::INHERITED_VARS_TO_CLEAR, false);
+
+        return Process::path($worktreePath)->timeout($timeout)->env($clearedEnv);
     }
 
     private function execCommand(string $cmd): string
@@ -116,7 +162,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
         $deadline = time() + 60;
 
         while (time() < $deadline) {
-            $check = Process::path($worktreePath)->timeout(10)->run(
+            $check = $this->compose($worktreePath, 10)->run(
                 $this->execCommand('php -r "echo \"ready\";"'),
             );
 
