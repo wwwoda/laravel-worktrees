@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
 
 class WorktreeManager
 {
@@ -16,9 +17,11 @@ class WorktreeManager
         /** @var list<string> */
         private readonly array $copyFiles,
         private readonly DatabaseCloner $databaseCloner,
-        private readonly string $nodePackageManager,
+        private readonly BootstrapStrategy $bootstrapStrategy,
         private readonly bool $buildFrontend,
         private readonly bool $runMigrations,
+        /** @var array<string, string|Closure(string $name, string $worktreePath): string> */
+        private readonly array $envOverrides = [],
     ) {}
 
     /**
@@ -194,9 +197,15 @@ class WorktreeManager
         $this->copyConfigFiles($path);
         $this->applyEnvReplacements($path, $name);
 
+        $step('Bringing environment up...');
+        $this->bootstrapStrategy->bringUp($path, $processOutput);
+
         if (empty($options['skip_deps'])) {
             $step('Installing Composer dependencies...');
-            $this->installDependencies($path, $processOutput);
+            $this->bootstrapStrategy->installComposerDependencies($path, $processOutput);
+
+            $step('Installing node dependencies...');
+            $this->bootstrapStrategy->installNodeDependencies($path, $processOutput);
         }
 
         if (empty($options['skip_db'])) {
@@ -206,13 +215,30 @@ class WorktreeManager
 
         if (empty($options['skip_build']) && $this->buildFrontend) {
             $step('Building frontend assets...');
-            $this->buildFrontendAssets($path, $processOutput);
+            $this->bootstrapStrategy->buildFrontend($path, $processOutput);
         }
 
         if (empty($options['skip_deps']) && $this->runMigrations) {
             $step('Running migrations...');
-            $this->runDatabaseMigrations($path, $processOutput);
+            $this->bootstrapStrategy->runMigrations($path, $processOutput);
         }
+    }
+
+    /**
+     * Tear down per-worktree environment (e.g. `docker compose down -v`).
+     * Called from WorktreeDeleteCommand before `git worktree remove`.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function tearDown(string $name, ?Closure $output = null): void
+    {
+        $path = $this->pathFor($name);
+
+        if (! $this->exists($name)) {
+            return;
+        }
+
+        $this->bootstrapStrategy->tearDown($path, $output);
     }
 
     /**
@@ -326,49 +352,21 @@ class WorktreeManager
             );
         }
 
+        // User-defined env overrides — last so they win.
+        // Each override key is upserted: existing line replaced, otherwise appended.
+        foreach ($this->envOverrides as $key => $value) {
+            $resolved = $value instanceof Closure ? $value($name, $path) : (string) $value;
+            $line = $key.'='.$resolved;
+            $pattern = '/^'.preg_quote($key, '/').'=.*/m';
+
+            if (preg_match($pattern, $content)) {
+                $content = (string) preg_replace($pattern, $line, $content);
+            } else {
+                $content = rtrim($content, "\n")."\n".$line."\n";
+            }
+        }
+
         File::put($envPath, $content);
-    }
-
-    /**
-     * @param  (Closure(string, string): void)|null  $output
-     */
-    private function installDependencies(string $path, ?Closure $output = null): void
-    {
-        $result = Process::path($path)->timeout(300)->run('composer install --no-interaction', $output);
-
-        if (! $result->successful()) {
-            throw new RuntimeException("Composer install failed: {$result->errorOutput()}");
-        }
-
-        $result = Process::path($path)->timeout(300)->run("{$this->nodePackageManager} install", $output);
-
-        if (! $result->successful()) {
-            throw new RuntimeException("Node dependency install failed: {$result->errorOutput()}");
-        }
-    }
-
-    /**
-     * @param  (Closure(string, string): void)|null  $output
-     */
-    private function buildFrontendAssets(string $path, ?Closure $output = null): void
-    {
-        $result = Process::path($path)->timeout(300)->run("{$this->nodePackageManager} run build", $output);
-
-        if (! $result->successful()) {
-            throw new RuntimeException("Frontend build failed: {$result->errorOutput()}");
-        }
-    }
-
-    /**
-     * @param  (Closure(string, string): void)|null  $output
-     */
-    private function runDatabaseMigrations(string $path, ?Closure $output = null): void
-    {
-        $result = Process::path($path)->timeout(120)->run('php artisan migrate --force', $output);
-
-        if (! $result->successful()) {
-            throw new RuntimeException("Migration failed: {$result->errorOutput()}");
-        }
     }
 
     public function portOffset(string $name): int

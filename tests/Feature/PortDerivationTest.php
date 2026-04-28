@@ -2,9 +2,13 @@
 
 use Illuminate\Support\Facades\File;
 use Woda\Worktrees\DatabaseCloner;
+use Woda\Worktrees\NativeBootstrapStrategy;
 use Woda\Worktrees\WorktreeManager;
 
-function makeManager(): WorktreeManager
+/**
+ * @param  array<string, string|Closure(string $name, string $worktreePath): string>  $envOverrides
+ */
+function makeManager(array $envOverrides = []): WorktreeManager
 {
     $cloner = new DatabaseCloner(
         strategy: 'none',
@@ -20,9 +24,10 @@ function makeManager(): WorktreeManager
         baseBranch: 'master',
         copyFiles: ['.env'],
         databaseCloner: $cloner,
-        nodePackageManager: 'pnpm',
+        bootstrapStrategy: new NativeBootstrapStrategy(nodePackageManager: 'pnpm'),
         buildFrontend: false,
         runMigrations: false,
+        envOverrides: $envOverrides,
     );
 }
 
@@ -82,6 +87,49 @@ test('env replacement includes APP_PORT when key exists', function () {
     expect($content)->toContain('VITE_PORT='.(5200 + $offset));
 
     // Cleanup
+    File::deleteDirectory($dir);
+});
+
+test('env_overrides upserts existing key', function () {
+    $dir = sys_get_temp_dir().'/worktree-env-override-test-'.uniqid();
+    mkdir($dir, 0755, true);
+    file_put_contents($dir.'/.env', "APP_NAME=TestApp\nWORKTREE_HOST=app.hp.test\n");
+
+    config()->set('app.name', 'TestApp');
+    config()->set('app.url', '');
+
+    $manager = makeManager([
+        'WORKTREE_HOST' => fn (string $name) => "app-{$name}.hp.test",
+    ]);
+    $method = new ReflectionMethod($manager, 'applyEnvReplacements');
+    $method->invoke($manager, $dir, '357');
+
+    $content = file_get_contents($dir.'/.env');
+
+    expect($content)->toContain('WORKTREE_HOST=app-357.hp.test')
+        ->and($content)->not->toContain('WORKTREE_HOST=app.hp.test');
+
+    File::deleteDirectory($dir);
+});
+
+test('env_overrides appends missing key', function () {
+    $dir = sys_get_temp_dir().'/worktree-env-override-append-test-'.uniqid();
+    mkdir($dir, 0755, true);
+    file_put_contents($dir.'/.env', "APP_NAME=TestApp\n");
+
+    config()->set('app.name', 'TestApp');
+    config()->set('app.url', '');
+
+    $manager = makeManager([
+        'COMPOSE_PROJECT_NAME' => fn (string $name) => "hp-{$name}",
+    ]);
+    $method = new ReflectionMethod($manager, 'applyEnvReplacements');
+    $method->invoke($manager, $dir, '357');
+
+    $content = file_get_contents($dir.'/.env');
+
+    expect($content)->toContain('COMPOSE_PROJECT_NAME=hp-357');
+
     File::deleteDirectory($dir);
 });
 

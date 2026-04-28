@@ -88,6 +88,11 @@ class WorktreeDeleteCommand extends Command
             $processManager->terminate($name);
         }
 
+        // Tear down per-worktree environment (e.g. docker compose down -v).
+        // No-op for the native bootstrap strategy.
+        $this->components->info('Tearing down worktree environment...');
+        $worktreeManager->tearDown($name);
+
         // Remove worktree
         $this->components->info("Removing worktree '{$name}'...");
         $worktreeManager->remove($name);

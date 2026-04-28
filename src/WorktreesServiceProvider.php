@@ -4,11 +4,13 @@ namespace Woda\Worktrees;
 
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use InvalidArgumentException;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
 
 class WorktreesServiceProvider extends ServiceProvider
@@ -18,6 +20,30 @@ class WorktreesServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/worktrees.php', 'worktrees');
 
         $this->app->bindIf(ProcessManager::class, NullProcessManager::class);
+
+        $this->app->singleton(BootstrapStrategy::class, function (): BootstrapStrategy {
+            /** @var string $strategy */
+            $strategy = config('worktrees.bootstrap.strategy', 'native');
+            /** @var string $nodePackageManager */
+            $nodePackageManager = config('worktrees.bootstrap.node_package_manager');
+            /** @var bool $buildFrontend */
+            $buildFrontend = config('worktrees.bootstrap.build_frontend');
+
+            /** @var string $appService */
+            $appService = config('worktrees.bootstrap.sail.app_service', 'laravel.test');
+
+            return match ($strategy) {
+                'native' => new NativeBootstrapStrategy(nodePackageManager: $nodePackageManager),
+                'sail' => new SailBootstrapStrategy(
+                    appService: $appService,
+                    nodePackageManager: $nodePackageManager,
+                    buildFrontend: $buildFrontend,
+                ),
+                default => throw new InvalidArgumentException(
+                    "Unknown worktrees bootstrap strategy '{$strategy}'. Expected 'native' or 'sail'."
+                ),
+            };
+        });
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -49,12 +75,12 @@ class WorktreesServiceProvider extends ServiceProvider
             $baseBranch = config('worktrees.base_branch');
             /** @var list<string> $copyFiles */
             $copyFiles = config('worktrees.copy_files');
-            /** @var string $nodePackageManager */
-            $nodePackageManager = config('worktrees.bootstrap.node_package_manager');
             /** @var bool $buildFrontend */
             $buildFrontend = config('worktrees.bootstrap.build_frontend');
             /** @var bool $runMigrations */
             $runMigrations = config('worktrees.bootstrap.run_migrations');
+            /** @var array<string, string|\Closure(string $name, string $worktreePath): string> $envOverrides */
+            $envOverrides = config('worktrees.env_overrides', []);
 
             return new WorktreeManager(
                 basePath: $basePath ?? dirname(base_path()),
@@ -62,9 +88,10 @@ class WorktreesServiceProvider extends ServiceProvider
                 baseBranch: $baseBranch,
                 copyFiles: $copyFiles,
                 databaseCloner: $app->make(DatabaseCloner::class),
-                nodePackageManager: $nodePackageManager,
+                bootstrapStrategy: $app->make(BootstrapStrategy::class),
                 buildFrontend: $buildFrontend,
                 runMigrations: $runMigrations,
+                envOverrides: $envOverrides,
             );
         });
     }
