@@ -354,8 +354,16 @@ class WorktreeManager
 
         // User-defined env overrides — last so they win.
         // Each override key is upserted: existing line replaced, otherwise appended.
+        // Values can be Closures (called with $name, $path) or strings with
+        // {name} / {path} placeholders. Prefer strings — Closures cannot
+        // survive `php artisan config:cache` (var_export bombs on Closure).
         foreach ($this->envOverrides as $key => $value) {
-            $resolved = $value instanceof Closure ? $value($name, $path) : (string) $value;
+            if ($value instanceof Closure) {
+                $resolved = $value($name, $path);
+            } else {
+                $resolved = strtr((string) $value, ['{name}' => $name, '{path}' => $path]);
+            }
+
             $line = $key.'='.$resolved;
             $pattern = '/^'.preg_quote($key, '/').'=.*/m';
 
