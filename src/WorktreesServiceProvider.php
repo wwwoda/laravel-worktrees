@@ -5,6 +5,7 @@ namespace Woda\Worktrees;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
@@ -105,7 +106,7 @@ class WorktreesServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 WorktreeCreateCommand::class,
-                \Woda\Worktrees\Commands\WorktreeBootstrapCommand::class,
+                WorktreeBootstrapCommand::class,
                 WorktreeListCommand::class,
                 WorktreeDeleteCommand::class,
                 WorktreeCleanupCommand::class,

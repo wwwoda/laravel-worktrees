@@ -3,6 +3,7 @@
 namespace Woda\Worktrees;
 
 use Closure;
+use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
@@ -70,7 +71,7 @@ class WorktreeManager
 
         return array_values(array_filter(array_map(
             function (array $wt): ?array {
-                $name = $this->nameFromPath($wt['path'] ?? '');
+                $name = $this->nameFromPath(is_string($wt['path'] ?? null) ? $wt['path'] : '');
                 if ($name === null) {
                     return null;
                 }
@@ -329,7 +330,10 @@ class WorktreeManager
         $prefix = basename(base_path()).'-';
         $basename = basename($path);
 
-        if (! str_starts_with($basename, $prefix)) {
+        // Only checkouts under the configured base path are ours; a sibling
+        // repository that happens to share the prefix (CI checkout dirs) is not.
+        $parent = realpath(dirname($path)) ?: dirname($path);
+        if (! str_starts_with($basename, $prefix) || $parent !== (realpath($this->basePath) ?: $this->basePath)) {
             return null;
         }
 
@@ -458,7 +462,7 @@ class WorktreeManager
         return str_replace('-', '_', $name);
     }
 
-    private function git(string $command): \Illuminate\Contracts\Process\ProcessResult
+    private function git(string $command): ProcessResult
     {
         return Process::path(base_path())->timeout(30)->run("git {$command}");
     }
