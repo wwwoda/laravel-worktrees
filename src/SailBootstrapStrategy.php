@@ -4,6 +4,7 @@ namespace Woda\Worktrees;
 
 use Closure;
 use Illuminate\Process\PendingProcess;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
@@ -126,7 +127,22 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function tearDown(string $worktreePath, ?Closure $output = null): void
     {
-        $this->compose($worktreePath, 120)->run('docker compose down -v', $output);
+        $this->down($worktreePath, false, $output);
+    }
+
+    public function tearDownKeepingVolumes(string $worktreePath, ?Closure $output = null): void
+    {
+        $this->down($worktreePath, true, $output);
+    }
+
+    private function down(string $worktreePath, bool $keepVolumes, ?Closure $output): void
+    {
+        $result = $this->compose($worktreePath, 120)->run(
+            'docker compose --profile "*" down'.($keepVolumes ? '' : ' -v'), $output,
+        );
+        if (! $result->successful()) {
+            throw new RuntimeException('Worktree environment teardown failed; checkout retained.');
+        }
     }
 
     /**
@@ -136,7 +152,12 @@ class SailBootstrapStrategy implements BootstrapStrategy
      */
     private function compose(string $worktreePath, int $timeout): PendingProcess
     {
-        $clearedEnv = array_fill_keys(self::INHERITED_VARS_TO_CLEAR, false);
+        $keys = self::INHERITED_VARS_TO_CLEAR;
+        if (File::exists($worktreePath.'/.env')) {
+            preg_match_all('/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/m', File::get($worktreePath.'/.env'), $matches);
+            $keys = [...$keys, ...$matches[1]];
+        }
+        $clearedEnv = array_fill_keys($keys, false);
 
         return Process::path($worktreePath)->timeout($timeout)->env($clearedEnv);
     }
@@ -172,5 +193,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
             usleep(1_000_000);
         }
+
+        throw new RuntimeException('Worktree app service did not become ready.');
     }
 }

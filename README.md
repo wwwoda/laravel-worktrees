@@ -67,6 +67,21 @@ php artisan worktree:create                   # Interactive mode
 
 Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db`
 
+`--branch` attaches an existing local branch, or a remote `origin/<branch>`, before creating a new
+branch from `--base`. `--issue` fails when the issue has several linked branches; pass `--branch`.
+A failed bootstrap keeps the checkout so it can be resumed.
+
+### `worktree:bootstrap`
+
+Inspect or resume the environment setup of an existing worktree. Resume skips completed stages,
+keeps the copied configuration and never touches uncommitted edits. Stage progress is recorded in
+`storage/worktree-bootstrap.json` inside the worktree.
+
+```bash
+php artisan worktree:bootstrap my-feature --status   # JSON: path, branch, head, bootstrap record
+php artisan worktree:bootstrap my-feature --resume
+```
+
 ### `worktree:list`
 
 ```bash
@@ -79,12 +94,15 @@ php artisan worktree:list --json
 ```bash
 php artisan worktree:delete my-feature
 php artisan worktree:delete my-feature --force     # Skip safety checks
-php artisan worktree:delete my-feature --keep-db    # Keep cloned database
+php artisan worktree:delete my-feature --keep-db    # Keep cloned database and compose volumes
 ```
+
+Delete and cleanup only remove directories that git registers as worktrees of this repository.
+Teardown brings down every compose profile of the worktree; a failed teardown keeps the checkout.
 
 ### `worktree:cleanup`
 
-Remove stale worktrees.
+Remove worktrees whose PR or issue is closed. Dirty worktrees and worktrees with unpushed commits are skipped.
 
 ```bash
 php artisan worktree:cleanup --dry-run

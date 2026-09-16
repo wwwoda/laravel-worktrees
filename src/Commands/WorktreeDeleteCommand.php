@@ -82,6 +82,8 @@ class WorktreeDeleteCommand extends Command
             }
         }
 
+        $worktreeManager->describe($name);
+
         // Kill running process if any
         if ($processManager->isRunning($name)) {
             $this->components->info("Terminating running process for '{$name}'...");
@@ -91,7 +93,7 @@ class WorktreeDeleteCommand extends Command
         // Tear down per-worktree environment (e.g. docker compose down -v).
         // No-op for the native bootstrap strategy.
         $this->components->info('Tearing down worktree environment...');
-        $worktreeManager->tearDown($name);
+        $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
 
         // Remove worktree
         $this->components->info("Removing worktree '{$name}'...");

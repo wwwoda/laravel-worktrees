@@ -95,31 +95,17 @@ class WorktreeManager
             throw new RuntimeException("Worktree '{$name}' already exists at {$path}");
         }
 
-        // Create the worktree with a new branch
-        $result = $this->git(sprintf(
-            'worktree add -b %s %s %s',
-            escapeshellarg($branch),
-            escapeshellarg($path),
-            escapeshellarg($baseBranch),
-        ));
+        $local = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch));
+        $remote = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/remotes/origin/'.$branch));
+
+        $command = $local->successful()
+            ? sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch))
+            : sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path),
+                escapeshellarg($remote->successful() ? 'origin/'.$branch : $baseBranch));
+        $result = $this->git($command);
 
         if (! $result->successful()) {
-            // Branch may already exist, try without -b
-            $result = $this->git(sprintf(
-                'worktree add %s %s',
-                escapeshellarg($path),
-                escapeshellarg($branch),
-            ));
-
-            if (! $result->successful()) {
-                $error = $result->errorOutput();
-
-                if (str_contains($error, 'is already used by worktree') || str_contains($error, 'is already checked out')) {
-                    throw new RuntimeException("Branch '{$branch}' is already checked out in another worktree.");
-                }
-
-                throw new RuntimeException("Failed to create worktree: {$error}");
-            }
+            throw new RuntimeException("Failed to create worktree: {$result->errorOutput()}");
         }
 
         return $path;
@@ -132,10 +118,14 @@ class WorktreeManager
         if (! $this->exists($name)) {
             throw new RuntimeException("Worktree '{$name}' does not exist.");
         }
+        // Only registered worktrees are deleted; a look-alike directory is not ours to remove.
+        $this->describe($name);
 
         // Always delete directory manually + prune. git worktree remove fails
         // when untracked/gitignored files exist (e.g. .env, .claude, node_modules).
-        File::deleteDirectory($path);
+        if (! File::deleteDirectory($path)) {
+            throw new RuntimeException('Failed to remove worktree directory.');
+        }
         $this->git('worktree prune');
     }
 
@@ -148,9 +138,15 @@ class WorktreeManager
 
     public function pathFor(string $name): string
     {
+        if (! preg_match('/^[a-zA-Z0-9-]+$/', $name)) {
+            throw new RuntimeException('Invalid worktree name.');
+        }
+
         $projectName = basename(base_path());
 
-        return $this->basePath.'/'.$projectName.'-'.$name;
+        $basePath = realpath($this->basePath) ?: $this->basePath;
+
+        return $basePath.'/'.$projectName.'-'.$name;
     }
 
     /**
@@ -162,15 +158,24 @@ class WorktreeManager
 
         // Check for uncommitted changes
         $statusResult = Process::path($path)->timeout(10)->run('git status --porcelain');
+        if (! $statusResult->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
         $clean = trim($statusResult->output()) === '';
 
         // Check for unpushed commits
         $branchResult = Process::path($path)->timeout(10)->run('git rev-parse --abbrev-ref HEAD');
+        if (! $branchResult->successful()) {
+            throw new RuntimeException('Cannot verify worktree HEAD.');
+        }
         $branch = trim($branchResult->output());
 
         $logResult = Process::path($path)->timeout(10)->run(
             sprintf('git log %s --not --remotes --oneline', escapeshellarg($branch)),
         );
+        if (! $logResult->successful()) {
+            throw new RuntimeException('Cannot verify unpushed work.');
+        }
         $unpushed = trim($logResult->output()) !== '';
 
         return [
@@ -180,7 +185,7 @@ class WorktreeManager
     }
 
     /**
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
      */
@@ -193,35 +198,92 @@ class WorktreeManager
         $step = $onStep ?? static fn () => null;
         $path = $this->pathFor($name);
 
-        $step('Copying config files...');
-        $this->copyConfigFiles($path);
-        $this->applyEnvReplacements($path, $name);
-
-        $step('Bringing environment up...');
-        $this->bootstrapStrategy->bringUp($path, $processOutput);
-
-        if (empty($options['skip_deps'])) {
-            $step('Installing Composer dependencies...');
-            $this->bootstrapStrategy->installComposerDependencies($path, $processOutput);
-
-            $step('Installing node dependencies...');
-            $this->bootstrapStrategy->installNodeDependencies($path, $processOutput);
+        $identity = $this->describe($name);
+        File::ensureDirectoryExists($path.'/storage');
+        $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
+        if ($handle === false || ! flock($handle, LOCK_EX | LOCK_NB)) {
+            throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
-        if (empty($options['skip_db'])) {
-            $step('Cloning database...');
-            $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput);
+        try {
+            $statePath = $path.'/storage/worktree-bootstrap.json';
+            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
+            $state = File::exists($statePath)
+                ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
+                : ['completed' => []];
+            if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
+                throw new RuntimeException('Worktree branch changed since bootstrap.');
+            }
+            $state['branch'] = $identity['branch'];
+            $state['initial_head'] ??= $identity['head'];
+            $resume = ! empty($options['resume']);
+            if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
+                throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
+            }
+            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume): void {
+                if ($resume && ! $always && in_array($id, $state['completed'], true)) {
+                    return;
+                }
+                $state['stage'] = $id;
+                $state['status'] = 'running';
+                File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
+                $step($id);
+                $action();
+                $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
+                File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
+            };
+            $run('config', function () use ($path, $name): void {
+                $this->copyConfigFiles($path);
+                $this->applyEnvReplacements($path, $name);
+            });
+            $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
+            if (empty($options['skip_deps'])) {
+                $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
+                $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
+            }
+            if (empty($options['skip_db'])) {
+                $run('database', fn () => $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput));
+            }
+            if (empty($options['skip_build']) && $this->buildFrontend) {
+                $run('build', fn () => $this->bootstrapStrategy->buildFrontend($path, $processOutput), ! is_file($path.'/public/build/manifest.json'));
+            }
+            if (empty($options['skip_deps']) && $this->runMigrations) {
+                $run('migrations', fn () => $this->bootstrapStrategy->runMigrations($path, $processOutput), true);
+            }
+            $state['status'] = 'ready';
+            File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
+        } catch (\Throwable $error) {
+            if (isset($state)) {
+                $state['status'] = 'failed';
+                File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
+            }
+            throw $error;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /** @return array{path: string, branch: string|null, head: string, bootstrap: mixed} */
+    public function describe(string $name): array
+    {
+        $path = $this->pathFor($name);
+        foreach ($this->list() as $worktree) {
+            $registeredPath = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
+            if ((realpath($registeredPath) ?: $registeredPath) === (realpath($path) ?: $path)) {
+                $statePath = $path.'/storage/worktree-bootstrap.json';
+
+                return [
+                    'path' => $path,
+                    'branch' => is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null,
+                    'head' => is_string($worktree['head'] ?? null) ? $worktree['head'] : '',
+                    'bootstrap' => File::exists($statePath)
+                        ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR) : null,
+                ];
+            }
         }
 
-        if (empty($options['skip_build']) && $this->buildFrontend) {
-            $step('Building frontend assets...');
-            $this->bootstrapStrategy->buildFrontend($path, $processOutput);
-        }
-
-        if (empty($options['skip_deps']) && $this->runMigrations) {
-            $step('Running migrations...');
-            $this->bootstrapStrategy->runMigrations($path, $processOutput);
-        }
+        throw new RuntimeException('Path is not a registered worktree of this repository.');
     }
 
     /**
@@ -230,7 +292,7 @@ class WorktreeManager
      *
      * @param  (Closure(string, string): void)|null  $output
      */
-    public function tearDown(string $name, ?Closure $output = null): void
+    public function tearDown(string $name, ?Closure $output = null, bool $keepDatabase = false): void
     {
         $path = $this->pathFor($name);
 
@@ -238,6 +300,11 @@ class WorktreeManager
             return;
         }
 
+        if ($keepDatabase && $this->bootstrapStrategy instanceof SailBootstrapStrategy) {
+            $this->bootstrapStrategy->tearDownKeepingVolumes($path, $output);
+
+            return;
+        }
         $this->bootstrapStrategy->tearDown($path, $output);
     }
 
@@ -249,6 +316,10 @@ class WorktreeManager
         $path = $this->pathFor($name);
 
         $result = Process::path($path)->timeout(10)->run('git status --porcelain');
+
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
 
         return trim($result->output()) !== '';
     }

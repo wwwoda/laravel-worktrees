@@ -112,11 +112,18 @@ class WorktreeCreateCommand extends Command
             ? fn (string $type, string $buffer) => $this->output->write($buffer)
             : null;
 
-        $worktreeManager->bootstrap($name, [
-            'skip_deps' => (bool) $this->option('skip-deps'),
-            'skip_build' => (bool) $this->option('skip-build'),
-            'skip_db' => (bool) $this->option('skip-db'),
-        ], $onStep, $processOutput);
+        try {
+            $worktreeManager->bootstrap($name, [
+                'skip_deps' => (bool) $this->option('skip-deps'),
+                'skip_build' => (bool) $this->option('skip-build'),
+                'skip_db' => (bool) $this->option('skip-db'),
+            ], $onStep, $processOutput);
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+            $this->components->warn("The checkout is kept. Continue with: php artisan worktree:bootstrap {$name} --resume");
+
+            return self::FAILURE;
+        }
 
         $this->components->info("Worktree '{$name}' is ready.");
 
@@ -164,7 +171,7 @@ class WorktreeCreateCommand extends Command
      */
     private function promptIssue(): array
     {
-        $result = Process::run('gh issue list --state open --limit 100 --json number,title');
+        $result = Process::path(base_path())->run('gh issue list --state open --limit 100 --json number,title');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch issues: '.$result->errorOutput());
@@ -208,7 +215,7 @@ class WorktreeCreateCommand extends Command
      */
     private function promptPullRequest(): array
     {
-        $result = Process::run('gh pr list --state open --limit 100 --json number,title,headRefName');
+        $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title,headRefName');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch PRs: '.$result->errorOutput());
@@ -316,7 +323,7 @@ class WorktreeCreateCommand extends Command
     private function resolveIssueBranch(int $issueNumber): ?string
     {
         // Check for existing linked branches
-        $result = Process::run(
+        $result = Process::path(base_path())->run(
             sprintf('gh issue develop --list %d', $issueNumber),
         );
 
@@ -326,10 +333,15 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        $branches = array_filter(array_map(function (string $line): string {
-            // gh issue develop --list outputs "branch\tURL" — take only the branch name
-            return trim(explode("\t", trim($line))[0]);
-        }, explode("\n", trim($result->output()))));
+        $branches = array_values(array_filter(array_map(
+            fn (string $line): string => trim(explode("\t", trim($line))[0]),
+            explode("\n", trim($result->output())),
+        )));
+        if (count($branches) > 1) {
+            $this->components->error('Issue has multiple linked branches. Select an explicit --branch.');
+
+            return null;
+        }
 
         if ($branches !== []) {
             $branch = $branches[0];
@@ -345,7 +357,7 @@ class WorktreeCreateCommand extends Command
         /** @var string $baseBranch */
         $baseBranch = $this->option('base') ?? config('worktrees.base_branch');
 
-        $result = Process::run(
+        $result = Process::path(base_path())->run(
             sprintf('gh issue develop %d --base %s', $issueNumber, escapeshellarg($baseBranch)),
         );
 
@@ -375,7 +387,7 @@ class WorktreeCreateCommand extends Command
 
     private function resolvePrBranch(int $prNumber): ?string
     {
-        $result = Process::run(
+        $result = Process::path(base_path())->run(
             sprintf('gh pr view %d --json headRefName', $prNumber),
         );
 

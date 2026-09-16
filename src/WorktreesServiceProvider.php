@@ -105,6 +105,7 @@ class WorktreesServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 WorktreeCreateCommand::class,
+                \Woda\Worktrees\Commands\WorktreeBootstrapCommand::class,
                 WorktreeListCommand::class,
                 WorktreeDeleteCommand::class,
                 WorktreeCleanupCommand::class,
