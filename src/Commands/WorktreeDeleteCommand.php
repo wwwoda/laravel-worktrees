@@ -84,11 +84,11 @@ class WorktreeDeleteCommand extends Command
 
         $worktreeManager->describe($name);
 
-        // Kill running process if any
         if ($processManager->isRunning($name)) {
             $this->components->info("Terminating running process for '{$name}'...");
-            $processManager->terminate($name);
         }
+        // Always: finished sessions may still be tracked and must not outlive the worktree.
+        $processManager->terminate($name);
 
         // Tear down per-worktree environment (e.g. docker compose down -v).
         // No-op for the native bootstrap strategy.

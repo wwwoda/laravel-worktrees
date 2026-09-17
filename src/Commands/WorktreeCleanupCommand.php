@@ -87,9 +87,7 @@ class WorktreeCleanupCommand extends Command
         }
 
         foreach (array_keys($toRemove) as $name) {
-            if ($processManager->isRunning($name)) {
-                $processManager->terminate($name);
-            }
+            $processManager->terminate($name);
 
             try {
                 $worktreeManager->tearDown($name);
