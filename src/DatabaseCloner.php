@@ -3,6 +3,7 @@
 namespace Woda\Worktrees;
 
 use Closure;
+use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
@@ -345,7 +346,7 @@ class DatabaseCloner
     /**
      * Run a psql/createdb/dropdb command with credentials.
      *
-     * @return \Illuminate\Contracts\Process\ProcessResult
+     * @return ProcessResult
      */
     private function pgsqlAdminExec(string $cmd, int $timeout = 30)
     {

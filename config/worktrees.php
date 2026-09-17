@@ -43,10 +43,43 @@ return [
     */
 
     'bootstrap' => [
+        /*
+        | strategy: how bootstrap steps run.
+        |   'native' (default) → composer/npm/migrate executed directly on the host.
+        |   'sail'             → `docker compose up -d` first, PHP/composer/artisan
+        |                        commands run via `docker compose exec laravel.test ...`
+        |                        Vite + node-pm stay on host.
+        */
+        'strategy' => env('WORKTREE_BOOTSTRAP_STRATEGY', 'native'),
+
         'node_package_manager' => env('WORKTREE_NODE_PM', 'pnpm'),
         'build_frontend' => true,
         'run_migrations' => true,
+
+        'sail' => [
+            'app_service' => env('WORKTREE_SAIL_APP_SERVICE', 'laravel.test'),
+        ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Env overrides
+    |--------------------------------------------------------------------------
+    |
+    | Per-worktree .env upserts applied AFTER copy + standard rewrites
+    | (APP_NAME / APP_URL / DB_DATABASE / APP_PORT / VITE_PORT).
+    |
+    | Map of `KEY => string|Closure(string $name, string $worktreePath): string`.
+    | Existing lines are replaced; missing lines are appended. Use closures for
+    | name-derived values:
+    |
+    |   'env_overrides' => [
+    |       'WORKTREE_HOST' => fn(string $name) => "app-{$name}.hp.test",
+    |       'COMPOSE_PROJECT_NAME' => fn(string $name) => "hp-{$name}",
+    |   ],
+    */
+
+    'env_overrides' => [],
 
     /*
     |--------------------------------------------------------------------------

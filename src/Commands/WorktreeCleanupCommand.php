@@ -50,6 +50,12 @@ class WorktreeCleanupCommand extends Command
                 continue;
             }
 
+            if ($worktreeManager->safetyCheck($name)['unpushed']) {
+                $this->components->warn("Skipping '{$name}' — has unpushed commits.");
+
+                continue;
+            }
+
             $reason = $this->closedReason($branch);
 
             if ($reason !== null) {
@@ -81,11 +87,16 @@ class WorktreeCleanupCommand extends Command
         }
 
         foreach (array_keys($toRemove) as $name) {
-            if ($processManager->isRunning($name)) {
-                $processManager->terminate($name);
-            }
+            $processManager->terminate($name);
 
-            $worktreeManager->remove($name);
+            try {
+                $worktreeManager->tearDown($name);
+                $worktreeManager->remove($name);
+            } catch (\RuntimeException $e) {
+                $this->components->error("Skipping '{$name}': {$e->getMessage()}");
+
+                continue;
+            }
 
             $suffix = str_replace('-', '_', $name);
             $databaseCloner->drop($suffix);
