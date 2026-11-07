@@ -25,6 +25,9 @@
 - **`WorktreeManager::tearDown(string $name, ?Closure $output)`** —
   delegates to the bootstrap strategy. `WorktreeDeleteCommand` calls it
   before `git worktree remove`.
+- **`worktree:bootstrap <name> --status|--resume`**: reports the checkout and its bootstrap record as JSON, or resumes a failed setup. Stages are recorded in `storage/worktree-bootstrap.json`; resume skips completed stages, keeps copied config and edits, refuses a branch change and holds a lock.
+- **Explicit branch resolution**: `worktree:create --branch X` uses a local `X`, else `origin/X`, else creates `X` from `--base`. `--issue` with several linked branches asks for `--branch`.
+- **Laravel 13** support (illuminate 13, Testbench 11). CI tests Laravel 12 and 13 on PHP 8.3 and 8.4, also for pull requests to other branches than `master`.
 
 ### Changed
 
@@ -38,6 +41,13 @@
   (`installDependencies`, `buildFrontendAssets`, `runDatabaseMigrations`)
   are removed from `WorktreeManager` — their logic moved into
   `NativeBootstrapStrategy`.
+
+### Fixed
+
+- `worktree:delete` and `worktree:bootstrap --resume` print the error and exit non-zero instead of a stack trace when the folder is not a registered worktree or a step fails.
+- `worktree:delete` and `worktree:cleanup` refuse a folder that git does not register; a failed teardown keeps the checkout.
+- Cleanup runs its `gh` calls from the project directory.
+- `APP_NAME` and `env_overrides` values with `$1` or `\0` are written literally.
 
 ## v0.1.4
 
