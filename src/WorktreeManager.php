@@ -248,6 +248,11 @@ class WorktreeManager
         $path = rtrim(realpath($path) ?: $path, '/');
 
         $identity = $this->describePath($path);
+        $registered = $this->registered();
+        $mainPath = is_string($registered[0]['path'] ?? null) ? $registered[0]['path'] : '';
+        if ((realpath($mainPath) ?: $mainPath) === $path) {
+            throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
+        }
         File::ensureDirectoryExists($path.'/storage');
         $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
         if ($handle === false) {
@@ -312,7 +317,14 @@ class WorktreeManager
                 $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
             }
             if (! $provisions && empty($options['skip_db'])) {
-                $run('database', fn () => $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput));
+                $run('database', function () use ($path, $name, $processOutput, $step): void {
+                    if ($this->databaseCloner->targetExists($path, $this->sanitizeSuffix($name))) {
+                        $step('The worktree database exists; kept as it is.');
+
+                        return;
+                    }
+                    $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput);
+                });
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
                 $run('build', fn () => $this->bootstrapStrategy->buildFrontend($path, $processOutput), ! is_file($path.'/public/build/manifest.json'));

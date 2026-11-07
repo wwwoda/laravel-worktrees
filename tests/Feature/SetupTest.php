@@ -3,12 +3,15 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\DatabaseCloner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
 use Woda\Worktrees\Tests\Support\FakeTemplateRecipe;
+use Woda\Worktrees\WorktreeManager;
 
 /*
  * worktree:setup for a folder that another tool made, repeated runs of setup
@@ -200,4 +203,35 @@ test('every step is logged to a file in the worktree', function () {
         ->toContain("Setup of 't906'")
         ->toContain('database done in')
         ->toContain('Ready.');
+});
+
+test('setup refuses the main checkout', function () {
+    $this->worktrees = [];
+    $env = File::get(base_path('.env'));
+
+    $this->artisan('worktree:setup', ['path' => base_path()])
+        ->expectsOutputToContain('This is the main checkout')
+        ->assertFailed();
+
+    expect(File::get(base_path('.env')))->toBe($env);
+});
+
+test('setup with the native strategy keeps an existing SQLite database', function () {
+    config()->set('worktrees.bootstrap.strategy', 'native');
+    config()->set('worktrees.database.strategy', 'sqlite');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(DatabaseCloner::class);
+    app()->forgetInstance(WorktreeManager::class);
+    File::ensureDirectoryExists(base_path('database'));
+    File::put(base_path('database/database.sqlite'), 'main data');
+    $path = frontierWorktree($this, 'native-lane', 'lane');
+    File::ensureDirectoryExists($path.'/database');
+    File::put($path.'/database/database.sqlite', 'lane data');
+
+    try {
+        $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+        expect(File::get($path.'/database/database.sqlite'))->toBe('lane data');
+    } finally {
+        File::delete(base_path('database/database.sqlite'));
+    }
 });

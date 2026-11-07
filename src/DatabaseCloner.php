@@ -42,6 +42,18 @@ class DatabaseCloner
         };
     }
 
+    /**
+     * True when the worktree's database exists already; a setup must keep it.
+     */
+    public function targetExists(string $worktreePath, string $suffix): bool
+    {
+        return match ($this->resolveStrategy()) {
+            'sqlite' => File::exists($worktreePath.'/database/database.sqlite'),
+            'mysql', 'pgsql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listCloned(), true),
+            default => false,
+        };
+    }
+
     public function drop(string $suffix): void
     {
         $this->ensureDockerRunning();
