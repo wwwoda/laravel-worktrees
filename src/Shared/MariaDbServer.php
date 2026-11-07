@@ -11,17 +11,17 @@ use RuntimeException;
  * server's Docker container (`docker exec`) or directly against host and port.
  * Passwords travel in MYSQL_PWD and SQL on stdin, never on the command line.
  */
-final class MariaDbServer implements DatabaseServer
+final readonly class MariaDbServer implements DatabaseServer
 {
     public function __construct(
-        private readonly string $driver,
-        private readonly ?string $container,
-        private readonly string $host,
-        private readonly int $port,
-        private readonly string $adminUser,
-        private readonly string $adminPassword,
-        private readonly string $client = 'mariadb',
-        private readonly string $dumpClient = 'mariadb-dump',
+        private string $driver,
+        private ?string $container,
+        private string $host,
+        private int $port,
+        private string $adminUser,
+        private string $adminPassword,
+        private string $client = 'mariadb',
+        private string $dumpClient = 'mariadb-dump',
     ) {}
 
     public function driver(): string

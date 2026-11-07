@@ -11,7 +11,7 @@ use RuntimeException;
  * rebuilt. The guard works on these exact names only, never on patterns: a
  * pattern for `t9` would also cover `t9-1`.
  */
-final class WorktreeNames
+final readonly class WorktreeNames
 {
     /**
      * Name endings that would make one worktree's database equal another
@@ -23,12 +23,12 @@ final class WorktreeNames
      * @param  list<string>  $parallel
      */
     private function __construct(
-        public readonly string $worktree,
-        public readonly string $app,
-        public readonly string $test,
-        public readonly string $e2e,
-        public readonly array $parallel,
-        public readonly string $user,
+        public string $worktree,
+        public string $app,
+        public string $test,
+        public string $e2e,
+        public array $parallel,
+        public string $user,
     ) {}
 
     public static function for(string $worktree, string $prefix, int $parallelWorkers): self

@@ -2,11 +2,11 @@
 
 namespace Woda\Worktrees\Shared;
 
-final class ServerResult
+final readonly class ServerResult
 {
     public function __construct(
-        public readonly bool $successful,
-        public readonly string $output,
-        public readonly string $error,
+        public bool $successful,
+        public string $output,
+        public string $error,
     ) {}
 }
