@@ -3,7 +3,6 @@
 namespace Woda\Worktrees;
 
 use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Support\Facades\ParallelTesting;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
@@ -200,6 +199,23 @@ class WorktreesServiceProvider extends ServiceProvider
         });
     }
 
+    /**
+     * `php artisan test --parallel --recreate-databases` passes the option to
+     * its workers in the environment; the app boots in each worker before
+     * Laravel's database setup runs.
+     */
+    public static function guardRecreateDatabases(): void
+    {
+        $key = 'LARAVEL_PARALLEL_TESTING_RECREATE_DATABASES';
+        $value = $_SERVER[$key] ?? $_ENV[$key] ?? getenv($key);
+        if (! filter_var($value, FILTER_VALIDATE_BOOLEAN)) {
+            return;
+        }
+        $connection = config('database.default');
+        $driver = config('database.connections.'.(is_string($connection) ? $connection : '').'.driver');
+        RecreateDatabasesGuard::check(true, is_string($driver) ? $driver : '', base_path());
+    }
+
     private static function mainDatabaseFromMainCheckout(): string
     {
         $database = EnvFile::get(MainCheckout::file('.env'), 'DB_DATABASE');
@@ -212,16 +228,9 @@ class WorktreesServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        if (class_exists(ParallelTesting::class) && $this->app->bound(\Illuminate\Testing\ParallelTesting::class)) {
-            ParallelTesting::setUpProcess(static function (): void {
-                $connection = config('database.default');
-                RecreateDatabasesGuard::check(
-                    (bool) ParallelTesting::option('recreate_databases'),
-                    is_string($driver = config('database.connections.'.(is_string($connection) ? $connection : '').'.driver')) ? $driver : '',
-                    base_path(),
-                );
-            });
-        }
+        // Before any test runs: Laravel's own setup callback would drop the first
+        // parallel database before a later callback could object.
+        self::guardRecreateDatabases();
 
         $this->publishes([
             __DIR__.'/../config/worktrees.php' => config_path('worktrees.php'),

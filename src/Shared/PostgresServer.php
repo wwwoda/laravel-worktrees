@@ -154,29 +154,43 @@ final readonly class PostgresServer implements DatabaseServer
     }
 
     /**
-     * Give every object in the database that a non-superuser role owns (the
-     * template builder, or the source's owner) to `$owner`.
+     * Make `$owner` the owner of every object inside the copied database:
+     * schemas, tables, views, sequences, routines and types, whoever owned them
+     * (the template builder, the main database's role, a superuser). Each object
+     * is changed on its own; REASSIGN OWNED is not used, because it also moves
+     * shared objects such as other databases.
      */
     private function takeOwnership(string $database, string $owner): void
     {
         $owner = Identifier::check($owner);
-        $roles = $this->run($this->adminUser, $this->adminPassword,
-            "SELECT DISTINCT r.rolname FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND NOT r.rolsuper",
-            $database);
-        if (! $roles->successful) {
-            throw new RuntimeException("Cannot read object owners of '{$database}': {$roles->error}");
-        }
-        $sql = '';
-        foreach (array_filter(array_map(trim(...), explode("\n", $roles->output))) as $role) {
-            if ($role !== $owner && preg_match('/^[A-Za-z0-9_]{1,63}$/', $role)) {
-                $sql .= "REASSIGN OWNED BY \"{$role}\" TO \"{$owner}\";\n";
-            }
-        }
-        if ($sql !== '') {
-            $result = $this->run($this->adminUser, $this->adminPassword, $sql, $database);
-            if (! $result->successful) {
-                throw new RuntimeException("Handing the objects of '{$database}' to '{$owner}' failed: {$result->error}");
-            }
+        $sql = <<<SQL
+            DO \$\$
+            DECLARE r record;
+            BEGIN
+              FOR r IN SELECT n.nspname FROM pg_namespace n
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+              LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{$owner}'); END LOOP;
+              FOR r IN SELECT n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+                  AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+                  AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i')))
+              LOOP EXECUTE format(CASE r.relkind WHEN 'v' THEN 'ALTER VIEW %I.%I OWNER TO %I' WHEN 'm' THEN 'ALTER MATERIALIZED VIEW %I.%I OWNER TO %I'
+                WHEN 'f' THEN 'ALTER FOREIGN TABLE %I.%I OWNER TO %I' WHEN 'S' THEN 'ALTER SEQUENCE %I.%I OWNER TO %I' ELSE 'ALTER TABLE %I.%I OWNER TO %I' END,
+                r.nspname, r.relname, '{$owner}'); END LOOP;
+              FOR r IN SELECT p.oid::regprocedure AS signature FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+                  AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
+              LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.signature, '{$owner}'); END LOOP;
+              FOR r IN SELECT n.nspname, t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+                  AND t.typtype IN ('e', 'd') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e')
+              LOOP EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{$owner}'); END LOOP;
+            END
+            \$\$;
+            SQL;
+        $result = $this->run($this->adminUser, $this->adminPassword, $sql, $database);
+        if (! $result->successful) {
+            throw new RuntimeException("Handing the objects of '{$database}' to '{$owner}' failed: {$result->error}");
         }
     }
 

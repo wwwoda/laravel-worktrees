@@ -127,3 +127,18 @@ test('--from-main copies a main database that has open connections', function ()
 
     expect(($this->as)($state, 'SELECT id FROM items', "{$this->prefix}_t9")->output)->toContain('1');
 });
+
+test('--from-main of an idle main database hands over its objects but never the main database itself', function () {
+    config()->set('worktrees.shared.database.allow_from_main', true);
+    $p = $this->prefix;
+    // A table owned by the superuser next to the main role's table.
+    $this->server->runAs('postgres', $this->rootPassword, 'CREATE TABLE admin_owned (id INT); INSERT INTO admin_owned VALUES (7);', "{$p}_main");
+
+    $state = ($this->provision)('t9', true);
+    $mainOwner = $this->server->runAs('postgres', $this->rootPassword, "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{$p}_main'");
+
+    expect(trim($mainOwner->output))->toBe("{$p}_mainrole")
+        ->and(($this->as)($state, 'SELECT id FROM items', "{$p}_t9")->output)->toContain('1')
+        ->and(($this->as)($state, 'SELECT id FROM admin_owned', "{$p}_t9")->output)->toContain('7')
+        ->and(($this->as)($state, "DROP DATABASE {$p}_main")->successful)->toBeFalse();
+});
