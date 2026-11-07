@@ -29,6 +29,18 @@ class FakeDatabaseServer implements DatabaseServer
         return 'mariadb';
     }
 
+    public bool $inAdvance = false;
+
+    public function requiresDatabasesInAdvance(): bool
+    {
+        return $this->inAdvance;
+    }
+
+    public function finishTemplateBuild(string $builder, string $template): void
+    {
+        $this->dropUser($builder);
+    }
+
     public function ping(): bool
     {
         return $this->up;

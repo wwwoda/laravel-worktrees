@@ -29,6 +29,16 @@ final readonly class MariaDbServer implements DatabaseServer
         return $this->driver;
     }
 
+    public function requiresDatabasesInAdvance(): bool
+    {
+        return false;
+    }
+
+    public function finishTemplateBuild(string $builder, string $template): void
+    {
+        $this->dropUser($builder);
+    }
+
     public function ping(): bool
     {
         return $this->run($this->adminUser, $this->adminPassword, 'SELECT 1', timeout: 10)->successful;

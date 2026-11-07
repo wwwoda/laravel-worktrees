@@ -136,17 +136,18 @@ class TemplateManager
         }
         $builder = $this->prefix().'builder';
         $password = bin2hex(random_bytes(16));
-        $this->server->createDatabase($name, $builder);
+        // The user first: PostgreSQL makes it the owner of the new database.
         $this->server->grantUser($builder, $password, [$name]);
+        $this->server->createDatabase($name, $builder);
         try {
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
         } catch (\Throwable $error) {
             $this->server->dropDatabase($name);
+            $this->server->dropUser($builder);
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
-        } finally {
-            $this->server->dropUser($builder);
         }
+        $this->server->finishTemplateBuild($builder, $name);
         File::ensureDirectoryExists(dirname($this->markerPath($name)));
         File::put($this->markerPath($name), date(DATE_ATOM)."\n");
     }
