@@ -108,7 +108,7 @@ test('migrations newer than the template run in the app, test and e2e databases'
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 
     foreach (['hp_t9', 'hp_t9_test', 'hp_t9_e2e'] as $database) {
-        Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "-e 'DB_DATABASE={$database}'")
+        Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "-e 'DB_DATABASE={$database}' -e 'APP_CONFIG_CACHE=/tmp/worktree-migrate-")
             && str_contains((string) $p->command, 'php artisan migrate --force'));
     }
 });
