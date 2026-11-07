@@ -228,9 +228,36 @@ test('setup with the native strategy keeps an existing SQLite database', functio
     File::ensureDirectoryExists($path.'/database');
     File::put($path.'/database/database.sqlite', 'lane data');
 
+    File::put(base_path('.env'), File::get(base_path('.env'))."DB_CONNECTION=sqlite\nDB_DATABASE=".base_path('database/database.sqlite')."\n");
+
     try {
         $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
-        expect(File::get($path.'/database/database.sqlite'))->toBe('lane data');
+        expect(File::get($path.'/database/database.sqlite'))->toBe('lane data')
+            ->and(File::get($path.'/.env'))->toContain('DB_DATABASE='.realpath($path.'/database/database.sqlite'))
+            ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE='.base_path('database/database.sqlite'));
+    } finally {
+        File::delete(base_path('database/database.sqlite'));
+    }
+});
+
+test('a legacy clone that this setup started and did not finish is cloned again', function () {
+    config()->set('worktrees.bootstrap.strategy', 'native');
+    config()->set('worktrees.database.strategy', 'sqlite');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(DatabaseCloner::class);
+    app()->forgetInstance(WorktreeManager::class);
+    File::ensureDirectoryExists(base_path('database'));
+    File::put(base_path('database/database.sqlite'), 'main data');
+    $path = frontierWorktree($this, 'native-lane', 'lane');
+    File::ensureDirectoryExists($path.'/database');
+    File::put($path.'/database/database.sqlite', 'half');
+    File::ensureDirectoryExists($path.'/storage');
+    File::put($path.'/storage/worktree-bootstrap.json', json_encode(['completed' => ['config', 'environment', 'composer', 'node'], 'stage' => 'database', 'status' => 'failed', 'branch' => 'lane']));
+    File::put($path.'/.env', "APP_NAME=Lane\n");
+
+    try {
+        $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+        expect(File::get($path.'/database/database.sqlite'))->toBe('main data');
     } finally {
         File::delete(base_path('database/database.sqlite'));
     }

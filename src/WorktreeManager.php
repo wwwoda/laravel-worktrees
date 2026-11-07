@@ -273,6 +273,10 @@ class WorktreeManager
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
+            // A database stage that a bootstrap started and did not finish left a
+            // partial clone: it is ours, so it is cloned again. A database that
+            // existed before any bootstrap of this worktree is kept.
+            $interrupted = ($state['stage'] ?? null) === 'database' && ! in_array('database', $state['completed'], true);
             $state['branch'] = $identity['branch'];
             $state['initial_head'] ??= $identity['head'];
             $resume = ! empty($options['resume']);
@@ -318,13 +322,17 @@ class WorktreeManager
                 $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
             }
             if (! $provisions && empty($options['skip_db'])) {
-                $run('database', function () use ($path, $name, $processOutput, $step): void {
-                    if ($this->databaseCloner->targetExists($path, $this->sanitizeSuffix($name))) {
+                $run('database', function () use ($path, $name, $processOutput, $step, $interrupted): void {
+                    $suffix = $this->sanitizeSuffix($name);
+                    if ($interrupted) {
+                        $this->databaseCloner->drop($suffix);
+                    } elseif ($this->databaseCloner->targetExists($path, $suffix)) {
                         $step('The worktree database exists; kept as it is.');
+                        $this->databaseCloner->pointEnvAtWorktreeDatabase($path);
 
                         return;
                     }
-                    $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput);
+                    $this->databaseCloner->clone($path, $suffix, $processOutput);
                 });
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
