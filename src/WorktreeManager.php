@@ -40,6 +40,35 @@ class WorktreeManager
      */
     public function list(): array
     {
+        $worktrees = $this->registered();
+
+        // Filter out the main worktree and add derived name
+        $mainPath = base_path();
+
+        return array_values(array_filter(array_map(
+            function (array $wt): ?array {
+                $name = $this->nameFromPath(is_string($wt['path'] ?? null) ? $wt['path'] : '');
+                if ($name === null) {
+                    return null;
+                }
+                $wt['name'] = $name;
+
+                return $wt;
+            },
+            array_filter(
+                $worktrees,
+                fn (array $wt): bool => ($wt['path'] ?? '') !== $mainPath,
+            ),
+        )));
+    }
+
+    /**
+     * Every worktree git knows, wherever its folder is.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function registered(): array
+    {
         $result = $this->git('worktree list --porcelain');
 
         if (! $result->successful()) {
@@ -76,24 +105,7 @@ class WorktreeManager
             $worktrees[] = $current;
         }
 
-        // Filter out the main worktree and add derived name
-        $mainPath = base_path();
-
-        return array_values(array_filter(array_map(
-            function (array $wt): ?array {
-                $name = $this->nameFromPath(is_string($wt['path'] ?? null) ? $wt['path'] : '');
-                if ($name === null) {
-                    return null;
-                }
-                $wt['name'] = $name;
-
-                return $wt;
-            },
-            array_filter(
-                $worktrees,
-                fn (array $wt): bool => ($wt['path'] ?? '') !== $mainPath,
-            ),
-        )));
+        return $worktrees;
     }
 
     public function create(string $name, ?string $branch = null, ?string $baseBranch = null): string
@@ -208,10 +220,34 @@ class WorktreeManager
         ?Closure $processOutput = null,
         ?Closure $onStageDone = null,
     ): void {
-        $step = $onStep ?? static fn () => null;
-        $path = $this->pathFor($name);
+        $this->bootstrapPath($name, $this->pathFor($name), $options, $onStep, $processOutput, $onStageDone);
+    }
 
-        $identity = $this->describe($name);
+    /**
+     * Bootstrap a registered worktree at any path (frontier makes its own
+     * folders). With `setup`, existing config files are kept and a `.env`
+     * without a bootstrap record is completed instead of refused.
+     *
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool}  $options
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
+     */
+    public function bootstrapPath(
+        string $name,
+        string $path,
+        array $options = [],
+        ?Closure $onStep = null,
+        ?Closure $processOutput = null,
+        ?Closure $onStageDone = null,
+    ): void {
+        if (! preg_match('/^[a-zA-Z0-9-]+$/', $name)) {
+            throw new RuntimeException('Invalid worktree name.');
+        }
+        $step = $onStep ?? static fn () => null;
+        $path = rtrim(realpath($path) ?: $path, '/');
+
+        $identity = $this->describePath($path);
         File::ensureDirectoryExists($path.'/storage');
         $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
         if ($handle === false) {
@@ -235,7 +271,8 @@ class WorktreeManager
             $state['branch'] = $identity['branch'];
             $state['initial_head'] ??= $identity['head'];
             $resume = ! empty($options['resume']);
-            if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
+            $setup = ! empty($options['setup']);
+            if ($resume && ! $setup && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
                 throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
             }
             $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
@@ -252,8 +289,8 @@ class WorktreeManager
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             };
-            $run('config', function () use ($path, $name, $options): void {
-                $this->copyConfigFiles($path);
+            $run('config', function () use ($path, $name, $options, $setup): void {
+                $this->copyConfigFiles($path, keepExisting: $setup);
                 $this->applyEnvReplacements($path, $name);
                 if ($this->bootstrapStrategy instanceof ConfiguresWorktreeEnvironment) {
                     $this->bootstrapStrategy->configureEnvironment($path, ['horizon' => ! empty($options['horizon'])]);
@@ -300,8 +337,17 @@ class WorktreeManager
     /** @return array{path: string, branch: string|null, head: string, bootstrap: mixed} */
     public function describe(string $name): array
     {
-        $path = $this->pathFor($name);
-        foreach ($this->list() as $worktree) {
+        return $this->describePath($this->pathFor($name));
+    }
+
+    /**
+     * A registered worktree at any path, also outside the base path.
+     *
+     * @return array{path: string, branch: string|null, head: string, bootstrap: mixed}
+     */
+    public function describePath(string $path): array
+    {
+        foreach ($this->registered() as $worktree) {
             $registeredPath = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
             if ((realpath($registeredPath) ?: $registeredPath) === (realpath($path) ?: $path)) {
                 $statePath = $path.'/storage/worktree-bootstrap.json';
@@ -372,7 +418,7 @@ class WorktreeManager
         return substr($basename, strlen($prefix));
     }
 
-    private function copyConfigFiles(string $targetPath): void
+    private function copyConfigFiles(string $targetPath, bool $keepExisting = false): void
     {
         $sourcePath = base_path();
 
@@ -380,7 +426,7 @@ class WorktreeManager
             $source = $sourcePath.'/'.$file;
             $target = $targetPath.'/'.$file;
 
-            if (! File::exists($source)) {
+            if (! File::exists($source) || ($keepExisting && File::exists($target))) {
                 continue;
             }
 
