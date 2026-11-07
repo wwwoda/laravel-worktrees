@@ -11,6 +11,7 @@ use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
 use Woda\Worktrees\Tests\Support\FakeTemplateRecipe;
+use Woda\Worktrees\WorktreeManager;
 
 /*
  * worktree:convert and worktree:volumes with a fake old Sail layout: old
@@ -339,4 +340,38 @@ test('delete is offered only for a worktree whose name leads to its own folder',
         ->expectsChoice('old1 (merged-branch, 2026-11-01): merged, delete suggested', 'skip', ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'])
         ->expectsChoice('old1 (merged-branch-2, 2026-11-01)', 'skip', ['convert' => 'Convert', 'skip' => 'Skip'])
         ->assertSuccessful();
+});
+
+test('convert refuses to change anything without the shared strategy', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    config()->set('worktrees.bootstrap.strategy', 'sail');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('needs the shared bootstrap strategy')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([]);
+});
+
+test('an old database name with a dash is converted', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', str_replace('DB_DATABASE=hungryport', 'DB_DATABASE=my-app', File::get($path.'/.env')));
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});
+
+test('an old volume without a usable database name stops before anything is removed', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', "COMPOSE_PROJECT_NAME=hungryport-old1\nDB_DATABASE=bad'name\n");
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('unsupported database name')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([])
+        ->and($this->server->databaseExists('hp_old1'))->toBeFalse();
 });

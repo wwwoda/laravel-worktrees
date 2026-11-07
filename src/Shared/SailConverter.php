@@ -9,6 +9,7 @@ use RuntimeException;
 use Woda\Worktrees\ComposeProcess;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
+use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\WorktreeManager;
 
 /**
@@ -78,6 +79,15 @@ class SailConverter
         return (realpath($managed) ?: $managed) === (realpath($path) ?: $path);
     }
 
+    /**
+     * Old database names need not follow the rules for new shared names
+     * (`my-app` is fine); they are quoted in every command that uses them.
+     */
+    private static function validOldDatabase(string $database): bool
+    {
+        return (bool) preg_match('/^[A-Za-z0-9_$-]{1,64}$/', $database);
+    }
+
     public static function isConverted(string $path): bool
     {
         $state = WorktreeState::load($path);
@@ -94,8 +104,16 @@ class SailConverter
     {
         $step = $onStep ?? static fn (string $message) => null;
         $path = $candidate['path'];
+        if (! $this->strategy instanceof ProvisionsDatabases) {
+            throw new RuntimeException('worktree:convert needs the shared bootstrap strategy (worktrees.bootstrap.strategy = shared); nothing was changed.');
+        }
         // The first run records the old names: a later run finds `.env` rewritten.
         [$project, $oldDatabase] = $this->markConverting($path);
+        $volumeExists = Process::timeout(30)->run(['docker', 'volume', 'inspect', $this->volumeName($project)])->successful();
+        if ($volumeExists && ($oldDatabase === null || ! self::validOldDatabase($oldDatabase))) {
+            throw new RuntimeException(sprintf("The old volume '%s' exists, but the old .env names %s. Fix DB_DATABASE (or old_database in %s) and run the conversion again; nothing was changed.",
+                $this->volumeName($project), $oldDatabase === null ? 'no database' : "an unsupported database name '{$oldDatabase}'", WorktreeState::RELATIVE_PATH));
+        }
         $step("Removing the old containers of compose project '{$project}'...");
         $this->removeOldContainers($project, $output);
 
@@ -245,10 +263,8 @@ class SailConverter
 
             return null;
         }
-        if ($database === null || ! preg_match('/^[A-Za-z0-9_]{1,63}$/', $database)) {
-            $step('The old .env names no database: the worktree starts from the template.');
-
-            return null;
+        if ($database === null || ! self::validOldDatabase($database)) {
+            throw new RuntimeException('The old .env names no usable database.');
         }
         $container = 'worktree-convert-'.substr(md5($volume), 0, 10);
         $step("Starting a temporary database from volume '{$volume}'...");
