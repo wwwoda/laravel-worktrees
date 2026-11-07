@@ -142,3 +142,20 @@ test('--from-main of an idle main database hands over its objects but never the 
         ->and(($this->as)($state, 'SELECT id FROM admin_owned', "{$p}_t9")->output)->toContain('7')
         ->and(($this->as)($state, "DROP DATABASE {$p}_main")->successful)->toBeFalse();
 });
+
+test('a failed later template build keeps its error and retires the builder', function () {
+    ($this->provision)('t9');
+    $first = app(TemplateManager::class)->name();
+    config()->set('worktrees.shared.database.template.seed_command', 'seed again '.$this->prefix);
+    app()->instance(TemplateRecipe::class, new class implements TemplateRecipe
+    {
+        public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
+        {
+            throw new RuntimeException('migration failed');
+        }
+    });
+
+    expect(fn () => app(TemplateManager::class)->ensure())->toThrow(RuntimeException::class, 'migration failed')
+        ->and($this->server->databaseExists($first))->toBeTrue()
+        ->and($this->server->runAs($this->prefix.'_tpl_builder', 'x', 'SELECT 1')->successful)->toBeFalse();
+});

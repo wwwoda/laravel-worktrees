@@ -142,8 +142,14 @@ class TemplateManager
         try {
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
         } catch (\Throwable $error) {
-            $this->server->dropDatabase($name);
-            $this->server->dropUser($builder);
+            // Clean up without hiding the build error. On PostgreSQL the builder
+            // may still own older templates: retire it the driver's way.
+            try {
+                $this->server->dropDatabase($name);
+                $this->server->finishTemplateBuild($builder, $name);
+            } catch (\Throwable) {
+                // The build error below is what the person needs to see.
+            }
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
         }
