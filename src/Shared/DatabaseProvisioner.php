@@ -160,7 +160,13 @@ class DatabaseProvisioner
         if ($state === null) {
             throw new RuntimeException("Worktree '{$name}' has no state file: its shared databases are not dropped, because nothing is guessed. Drop them by hand if needed.");
         }
-        $names = $this->names($state->string('name') ?? $name);
+        // The allowed names come from the worktree being deleted, never from the
+        // state file: a copied or stale state of another worktree must not count.
+        $names = $this->names($name);
+        $stateName = $state->string('name');
+        if ($stateName !== null && strtolower($stateName) !== strtolower($name)) {
+            throw new RuntimeException("The state file of '{$name}' belongs to worktree '{$stateName}'. Nothing was dropped.");
+        }
         $databases = $state->databases();
         foreach ($databases as $database) {
             if (! $names->owns($database) || strtolower($database) === strtolower($this->mainDatabase)
@@ -171,6 +177,11 @@ class DatabaseProvisioner
         $user = $state->string('user');
         if ($user !== null && $user !== $names->user) {
             throw new RuntimeException("Refusing to drop user '{$user}': it is not the worktree's own user. Nothing was dropped.");
+        }
+
+        $numbers = $state->redis();
+        if ($numbers !== [] && $this->redis->taken($path, $numbers)) {
+            throw new RuntimeException('Another worktree or the main checkout also uses Redis databases '.implode(', ', $numbers).' of this state. Nothing was dropped.');
         }
 
         $removed = [];
@@ -185,8 +196,8 @@ class DatabaseProvisioner
             $this->server->dropUser($user);
             $removed[] = "user {$user}";
         }
-        foreach ($state->redis() as $number) {
-            if ($this->redisServer === null || in_array($number, $this->redis->reserved(), true)) {
+        foreach ($numbers as $number) {
+            if ($this->redisServer === null) {
                 continue;
             }
             $this->redisServer->flush($number);

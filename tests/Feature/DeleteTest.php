@@ -203,3 +203,31 @@ test('the Sail strategy still tears down with its own compose stack', function (
     expect($this->atDown['folder'])->toBeTrue()
         ->and(is_dir(($this->path)('s1')))->toBeFalse();
 });
+
+test('a state file of another worktree drops nothing', function () {
+    $this->artisan('worktree:create', ['name' => 't8'])->assertSuccessful();
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::copy(WorktreeState::path(($this->path)('t8')), WorktreeState::path(($this->path)('t9')));
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain("belongs to worktree 't8'")
+        ->assertFailed();
+
+    expect($this->server->databases)->toHaveKeys(['hp_t8', 'hp_t9'])
+        ->and($this->flushed)->toBe([]);
+});
+
+test('Redis numbers that another worktree also claims are not flushed', function () {
+    $this->artisan('worktree:create', ['name' => 't8'])->assertSuccessful();
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $state = WorktreeState::load(($this->path)('t9'));
+    $state->data['redis'] = WorktreeState::load(($this->path)('t8'))?->redis();
+    $state->save(($this->path)('t9'));
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain('also uses Redis databases')
+        ->assertFailed();
+
+    expect($this->flushed)->toBe([])
+        ->and($this->server->databases)->toHaveKey('hp_t9');
+});
