@@ -133,10 +133,59 @@ class WorktreeManager
 
         // Always delete directory manually + prune. git worktree remove fails
         // when untracked/gitignored files exist (e.g. .env, .claude, node_modules).
-        if (! File::deleteDirectory($path)) {
-            throw new RuntimeException('Failed to remove worktree directory.');
+        File::deleteDirectory($path);
+        clearstatcache();
+        if (is_dir($path)) {
+            throw new RuntimeException("The folder {$path} could not be removed completely (files owned by another user, such as the container's?). Remove it by hand, then run: git worktree prune");
         }
         $this->git('worktree prune');
+        foreach ($this->list() as $worktree) {
+            $registered = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
+            if ((realpath($registered) ?: $registered) === $path) {
+                throw new RuntimeException("The folder is gone, but git still lists the worktree {$path}. Run: git worktree prune");
+            }
+        }
+    }
+
+    /**
+     * Drop the worktree's own databases on shared services (no-op for other
+     * strategies, whose databases the DatabaseCloner drops).
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string>
+     */
+    public function removeSharedDatabases(string $name, ?Closure $onStep = null): array
+    {
+        if (! $this->bootstrapStrategy instanceof ProvisionsDatabases) {
+            return [];
+        }
+
+        return $this->bootstrapStrategy->removeDatabases($name, $this->pathFor($name), $onStep);
+    }
+
+    public function usesSharedDatabases(): bool
+    {
+        return $this->bootstrapStrategy instanceof ProvisionsDatabases;
+    }
+
+    /**
+     * After a delete: is the local branch still there, and is it merged into the base branch?
+     *
+     * @return array{exists: bool, merged: bool}
+     */
+    public function branchStatus(string $branch): array
+    {
+        $exists = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful();
+
+        return [
+            'exists' => $exists,
+            'merged' => $exists && $this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful(),
+        ];
+    }
+
+    public function deleteMergedBranch(string $branch): bool
+    {
+        return $this->git('branch -d '.escapeshellarg($branch))->successful();
     }
 
     public function exists(string $name): bool

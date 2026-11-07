@@ -32,6 +32,7 @@ class DatabaseProvisioner
         private readonly string $appHost,
         private readonly int $appPort,
         private readonly array $envMap,
+        private readonly ?RedisServer $redisServer = null,
     ) {}
 
     public function names(string $name): WorktreeNames
@@ -141,6 +142,58 @@ class DatabaseProvisioner
 
             return $state;
         });
+    }
+
+    /**
+     * Drop a deleted worktree's own databases and user and empty its Redis
+     * numbers. Only names that its state file lists, that its name derives
+     * and that are neither the main database nor a template are touched; any
+     * other name stops the whole step before anything is dropped.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string> what was removed
+     */
+    public function deprovision(string $name, string $path, ?Closure $onStep = null): array
+    {
+        $step = $onStep ?? static fn (string $message) => null;
+        $state = WorktreeState::load($path);
+        if ($state === null) {
+            throw new RuntimeException("Worktree '{$name}' has no state file: its shared databases are not dropped, because nothing is guessed. Drop them by hand if needed.");
+        }
+        $names = $this->names($state->string('name') ?? $name);
+        $databases = $state->databases();
+        foreach ($databases as $database) {
+            if (! $names->owns($database) || strtolower($database) === strtolower($this->mainDatabase)
+                || str_starts_with($database, $this->templates->prefix())) {
+                throw new RuntimeException("Refusing to drop '{$database}': it is not one of the worktree's own database names. Nothing was dropped.");
+            }
+        }
+        $user = $state->string('user');
+        if ($user !== null && $user !== $names->user) {
+            throw new RuntimeException("Refusing to drop user '{$user}': it is not the worktree's own user. Nothing was dropped.");
+        }
+
+        $removed = [];
+        foreach ($databases as $database) {
+            if ($this->server->databaseExists($database)) {
+                $step("Dropping database {$database}...");
+                $this->server->dropDatabase($database);
+                $removed[] = "database {$database}";
+            }
+        }
+        if ($user !== null && $this->server->userExists($user)) {
+            $this->server->dropUser($user);
+            $removed[] = "user {$user}";
+        }
+        foreach ($state->redis() as $number) {
+            if ($this->redisServer === null || in_array($number, $this->redis->reserved(), true)) {
+                continue;
+            }
+            $this->redisServer->flush($number);
+            $removed[] = "Redis database {$number}";
+        }
+
+        return $removed;
     }
 
     /**

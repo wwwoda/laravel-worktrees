@@ -95,10 +95,13 @@ php artisan worktree:list --json
 php artisan worktree:delete my-feature
 php artisan worktree:delete my-feature --force     # Skip safety checks
 php artisan worktree:delete my-feature --keep-db    # Keep cloned database and compose volumes
+php artisan worktree:delete my-feature --delete-branch  # Also delete the branch when it is merged
 ```
 
 Delete and cleanup only remove directories that git registers as worktrees of this repository.
 Teardown brings down every compose profile of the worktree; a failed teardown keeps the checkout.
+
+Order: stop the worktree's containers first, then (shared services) drop the worktree's own databases and user and empty its Redis numbers, then remove the folder and prune. Before any drop, every name in the worktree's state file is checked: it must be one of the names derived from the worktree name, and neither the main database nor a template; otherwise nothing is dropped. Without a state file nothing is guessed: the delete stops. After the removal the command fails when the folder still exists or `git worktree list` still names it. A remaining branch is reported; a merged one can be deleted (asked, or `--delete-branch`).
 
 ### `worktree:cleanup`
 

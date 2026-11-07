@@ -22,6 +22,7 @@ use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\RedisAllocator;
+use Woda\Worktrees\Shared\RedisServer;
 use Woda\Worktrees\Shared\SharedConfig;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeRegistry;
@@ -152,6 +153,16 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorktreeRegistry::class);
 
+        $this->app->bindIf(RedisServer::class, function (): RedisServer {
+            $config = new SharedConfig;
+
+            return new RedisServer(
+                container: $config->nullableString('redis.container'),
+                host: $config->string('redis.host', '127.0.0.1'),
+                port: $config->int('redis.port', 6379),
+            );
+        });
+
         $this->app->bindIf(TemplateManager::class, function (Application $app): TemplateManager {
             $config = new SharedConfig;
 
@@ -184,6 +195,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 appHost: $config->string('database.app_host', 'mariadb'),
                 appPort: $config->int('database.app_port', 3306),
                 envMap: $config->stringMap('env'),
+                redisServer: $app->make(RedisServer::class),
             );
         });
     }

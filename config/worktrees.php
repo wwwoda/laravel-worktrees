@@ -127,6 +127,11 @@ return [
         ],
 
         'redis' => [
+            // How worktree:delete reaches the shared Redis to empty a deleted
+            // worktree's numbers: inside its container, or host and port.
+            'container' => env('WORKTREE_SHARED_REDIS_CONTAINER'),
+            'host' => env('WORKTREE_SHARED_REDIS_ADMIN_HOST', '127.0.0.1'),
+            'port' => (int) env('WORKTREE_SHARED_REDIS_ADMIN_PORT', 6379),
             // Must not exceed the shared Redis `databases` setting.
             'databases' => (int) env('WORKTREE_SHARED_REDIS_DATABASES', 256),
             // Numbers no worktree gets (the main checkout's).

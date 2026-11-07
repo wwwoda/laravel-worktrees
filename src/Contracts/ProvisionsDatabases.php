@@ -16,4 +16,12 @@ interface ProvisionsDatabases
      * @param  (Closure(string): void)|null  $onStep
      */
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void;
+
+    /**
+     * Drop the worktree's own databases and user and empty its Redis numbers.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string> what was removed
+     */
+    public function removeDatabases(string $name, string $worktreePath, ?Closure $onStep = null): array;
 }

@@ -41,6 +41,11 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements P
         );
     }
 
+    public function removeDatabases(string $name, string $worktreePath, ?Closure $onStep = null): array
+    {
+        return $this->provisioner->deprovision($name, $worktreePath, $onStep);
+    }
+
     /**
      * Migrations newer than the template run in each database that started
      * as a copy: the app, test and e2e databases.
