@@ -48,6 +48,8 @@ beforeEach(function () {
     $this->stuck = [];
     $this->atDown = null;
     $this->flushed = [];
+    $this->redisCalls = [];
+    $this->redisDown = false;
     $this->branchExists = false;
     $this->branchMerged = false;
     $this->branchDeleted = false;
@@ -77,8 +79,12 @@ beforeEach(function () {
 
                 return Process::result();
             },
-            "'docker' 'exec' 'shared-redis' 'redis-cli' *" => function (PendingProcess $p) {
-                $this->flushed[] = (int) $p->command[5];
+            "'docker' 'exec' *'shared-redis' 'redis-cli' *" => function (PendingProcess $p) {
+                $this->redisCalls[] = ['command' => $p->command, 'env' => $p->environment];
+                if (end($p->command) === 'PING') {
+                    return $this->redisDown ? Process::result(errorOutput: 'Connection refused', exitCode: 1) : Process::result('PONG');
+                }
+                $this->flushed[] = (int) $p->command[array_search('-n', $p->command, true) + 1];
 
                 return Process::result('OK');
             },
@@ -230,4 +236,29 @@ test('Redis numbers that another worktree also claims are not flushed', function
 
     expect($this->flushed)->toBe([])
         ->and($this->server->databases)->toHaveKey('hp_t9');
+});
+
+test('a Redis that does not answer stops the delete before any drop', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $this->redisDown = true;
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain('The shared Redis does not answer')
+        ->assertFailed();
+
+    expect($this->server->databases)->toHaveKey('hp_t9')
+        ->and(is_dir(($this->path)('t9')))->toBeTrue();
+});
+
+test('a Redis password travels in REDISCLI_AUTH, not on the command line', function () {
+    config()->set('worktrees.shared.redis.password', 'redis-secret');
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])->assertSuccessful();
+
+    expect($this->redisCalls)->not->toBeEmpty();
+    foreach ($this->redisCalls as $call) {
+        expect($call['command'])->toContain('REDISCLI_AUTH')->not->toContain('redis-secret')
+            ->and($call['env']['REDISCLI_AUTH'] ?? null)->toBe('redis-secret');
+    }
 });

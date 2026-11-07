@@ -184,6 +184,12 @@ class DatabaseProvisioner
             throw new RuntimeException('Another worktree or the main checkout also uses Redis databases '.implode(', ', $numbers).' of this state. Nothing was dropped.');
         }
 
+        // Reach Redis before anything is dropped, so a Redis problem leaves the
+        // worktree whole instead of half deleted.
+        if ($numbers !== [] && $this->redisServer !== null) {
+            $this->redisServer->ping();
+        }
+
         $removed = [];
         foreach ($databases as $database) {
             if ($this->server->databaseExists($database)) {

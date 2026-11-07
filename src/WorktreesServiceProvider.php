@@ -160,6 +160,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 container: $config->nullableString('redis.container'),
                 host: $config->string('redis.host', '127.0.0.1'),
                 port: $config->int('redis.port', 6379),
+                password: $config->nullableString('redis.password'),
             );
         });
 
