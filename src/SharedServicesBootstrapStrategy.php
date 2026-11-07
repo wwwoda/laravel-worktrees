@@ -65,6 +65,35 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         EnvFile::upsert($worktreePath.'/.env', $values);
     }
 
+    /**
+     * Switch the queue worker of an existing worktree and recreate its app
+     * container, so the worker starts in the new mode.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function switchQueueWorker(string $worktreePath, string $mode, ?Closure $output = null): void
+    {
+        if (! in_array($mode, ['listen', 'horizon'], true)) {
+            throw new RuntimeException("Unknown queue worker mode '{$mode}'. Use 'listen' or 'horizon'.");
+        }
+        EnvFile::upsert($worktreePath.'/.env', [
+            $this->queueEnvKeys['mode'] => $mode,
+            $this->queueEnvKeys['queues'] => implode(',', QueueList::for($worktreePath)),
+        ]);
+        $result = $this->compose($worktreePath, 300)->run(
+            'docker compose up -d --force-recreate --no-deps '.escapeshellarg($this->appService()),
+            $output,
+        );
+        if (! $result->successful()) {
+            throw new RuntimeException("Restarting the app container failed: {$result->errorOutput()}");
+        }
+    }
+
+    public function queueWorkerMode(string $worktreePath): ?string
+    {
+        return EnvFile::get($worktreePath.'/.env', $this->queueEnvKeys['mode']);
+    }
+
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void
     {
         $this->provisioner->provision(

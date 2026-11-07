@@ -11,7 +11,9 @@ use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
+use Woda\Worktrees\Commands\WorktreeSetupCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
+use Woda\Worktrees\Commands\WorktreeWorkerCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\Contracts\TemplateRecipe;
@@ -220,6 +222,8 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeCleanupCommand::class,
                 WorktreeOpenCommand::class,
                 WorktreeTemplateCommand::class,
+                WorktreeSetupCommand::class,
+                WorktreeWorkerCommand::class,
             ]);
         }
     }

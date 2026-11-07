@@ -82,6 +82,29 @@ php artisan worktree:bootstrap my-feature --status   # JSON: path, branch, head,
 php artisan worktree:bootstrap my-feature --resume
 ```
 
+### `worktree:setup`
+
+Set up a git worktree that another tool created (for example frontier), at any path, with the same steps as `worktree:create` except creating the git worktree. The folder must be a registered worktree of this repository.
+
+```bash
+php artisan worktree:setup ../lanes/t901             # name from the folder: t901
+php artisan worktree:setup /tmp/lane --name=t902
+```
+
+Options: `--name`, `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main`, `--horizon`.
+
+`worktree:setup` and `worktree:create` can run again on the same worktree: each step checks what is already done and does only what is missing. A database that exists is never dropped, recreated or migrated fresh; existing config files are kept. Every step is also written to `storage/logs/worktree-setup.log` in the worktree, so a run in the background can be followed.
+
+### `worktree:worker`
+
+Show or switch the queue worker of a shared-services worktree, and restart its app container.
+
+```bash
+php artisan worktree:worker t9             # prints listen or horizon
+php artisan worktree:worker t9 horizon
+php artisan worktree:worker ../lanes/t901 listen
+```
+
 ### `worktree:list`
 
 ```bash
