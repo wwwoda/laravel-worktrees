@@ -2,4 +2,4 @@
 
 use Woda\Worktrees\Tests\TestCase;
 
-uses(TestCase::class)->in('Feature');
+uses(TestCase::class)->in('Feature', 'Integration');
