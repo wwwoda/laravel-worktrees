@@ -19,7 +19,9 @@ class WorktreeManager
      * they are untracked in most projects and would make every bootstrapped
      * worktree look dirty to delete and cleanup.
      */
-    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/app/worktree'";
+    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/worktree-bootstrap.clone' ':(exclude)storage/app/worktree'";
+
+    private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
 
     public function __construct(
         private readonly string $basePath,
@@ -273,10 +275,6 @@ class WorktreeManager
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
-            // A database stage that a bootstrap started and did not finish left a
-            // partial clone: it is ours, so it is cloned again. A database that
-            // existed before any bootstrap of this worktree is kept.
-            $interrupted = ($state['stage'] ?? null) === 'database' && ! in_array('database', $state['completed'], true);
             $state['branch'] = $identity['branch'];
             $state['initial_head'] ??= $identity['head'];
             $resume = ! empty($options['resume']);
@@ -321,9 +319,13 @@ class WorktreeManager
                 $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
             }
             if (! $provisions && empty($options['skip_db'])) {
-                $run('database', function () use ($path, $name, $processOutput, $step, $interrupted): void {
+                $run('database', function () use ($path, $name, $processOutput, $step): void {
                     $suffix = $this->sanitizeSuffix($name);
-                    if ($interrupted) {
+                    // The marker is written only after the target was found absent, right
+                    // before the clone: a target with the marker is a clone of ours that
+                    // stopped half way; a target without it existed before and is kept.
+                    $marker = $path.'/'.self::CLONE_MARKER;
+                    if (File::exists($marker)) {
                         $this->databaseCloner->drop($suffix);
                     } elseif ($this->databaseCloner->targetExists($path, $suffix)) {
                         $step('The worktree database exists; kept as it is.');
@@ -331,7 +333,9 @@ class WorktreeManager
 
                         return;
                     }
+                    File::put($marker, date(DATE_ATOM)."\n");
                     $this->databaseCloner->clone($path, $suffix, $processOutput);
+                    File::delete($marker);
                 });
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {

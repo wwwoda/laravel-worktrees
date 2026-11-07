@@ -253,11 +253,36 @@ test('a legacy clone that this setup started and did not finish is cloned again'
     File::put($path.'/database/database.sqlite', 'half');
     File::ensureDirectoryExists($path.'/storage');
     File::put($path.'/storage/worktree-bootstrap.json', json_encode(['completed' => ['config', 'environment', 'composer', 'node'], 'stage' => 'database', 'status' => 'failed', 'branch' => 'lane']));
+    File::put($path.'/storage/worktree-bootstrap.clone', 'started');
     File::put($path.'/.env', "APP_NAME=Lane\n");
 
     try {
         $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
         expect(File::get($path.'/database/database.sqlite'))->toBe('main data');
+    } finally {
+        File::delete(base_path('database/database.sqlite'));
+    }
+});
+
+test('a database stage that stopped before its clone started keeps the existing database', function () {
+    config()->set('worktrees.bootstrap.strategy', 'native');
+    config()->set('worktrees.database.strategy', 'sqlite');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(DatabaseCloner::class);
+    app()->forgetInstance(WorktreeManager::class);
+    File::ensureDirectoryExists(base_path('database'));
+    File::put(base_path('database/database.sqlite'), 'main data');
+    $path = frontierWorktree($this, 'native-lane', 'lane');
+    File::ensureDirectoryExists($path.'/database');
+    File::put($path.'/database/database.sqlite', 'lane data');
+    File::ensureDirectoryExists($path.'/storage');
+    // The record says the stage started (e.g. the existence check timed out), but no clone began.
+    File::put($path.'/storage/worktree-bootstrap.json', json_encode(['completed' => ['config', 'environment', 'composer', 'node'], 'stage' => 'database', 'status' => 'failed', 'branch' => 'lane']));
+    File::put($path.'/.env', "APP_NAME=Lane\n");
+
+    try {
+        $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+        expect(File::get($path.'/database/database.sqlite'))->toBe('lane data');
     } finally {
         File::delete(base_path('database/database.sqlite'));
     }
