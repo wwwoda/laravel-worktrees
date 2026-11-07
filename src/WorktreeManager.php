@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Contracts\ProvisionsDatabases;
+use Woda\Worktrees\Shared\EnvFile;
 
 class WorktreeManager
 {
@@ -16,7 +18,7 @@ class WorktreeManager
      * they are untracked in most projects and would make every bootstrapped
      * worktree look dirty to delete and cleanup.
      */
-    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock'";
+    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/app/worktree'";
 
     public function __construct(
         private readonly string $basePath,
@@ -193,7 +195,7 @@ class WorktreeManager
     }
 
     /**
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
      */
@@ -249,12 +251,22 @@ class WorktreeManager
                 $this->copyConfigFiles($path);
                 $this->applyEnvReplacements($path, $name);
             });
+            // Shared services: the databases exist and `.env` names them before the
+            // app container starts, so its worker and scheduler start with them.
+            $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
+            if ($provisions && empty($options['skip_db'])) {
+                $run('database', fn () => $this->bootstrapStrategy->provisionDatabases($name, $path, [
+                    'from_main' => ! empty($options['from_main']),
+                    'branch' => $identity['branch'],
+                    'base' => $options['base'] ?? $this->baseBranch,
+                ], $processOutput, $step));
+            }
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
                 $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
                 $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
             }
-            if (empty($options['skip_db'])) {
+            if (! $provisions && empty($options['skip_db'])) {
                 $run('database', fn () => $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput));
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
@@ -467,11 +479,7 @@ class WorktreeManager
      */
     private function replaceEnvLine(string $content, string $key, string $line): string
     {
-        return (string) preg_replace_callback(
-            '/^'.preg_quote($key, '/').'=.*/m',
-            static fn (): string => $line,
-            $content,
-        );
+        return EnvFile::upsertLine($content, $key, $line);
     }
 
     public function portOffset(string $name): int

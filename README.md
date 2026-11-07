@@ -65,7 +65,7 @@ php artisan worktree:create --branch=existing # From existing branch
 php artisan worktree:create                   # Interactive mode
 ```
 
-Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db`
+Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main` (shared services)
 
 `--branch` attaches an existing local branch, or a remote `origin/<branch>`, before creating a new
 branch from `--base`. `--issue` fails when the issue has several linked branches; pass `--branch`.
@@ -131,6 +131,35 @@ The `database.strategy` config determines how databases are cloned:
 
 Docker containers are supported for MySQL and PostgreSQL — set the container name in config and the commands will be wrapped with `docker exec`.
 
+## Shared Services
+
+With `bootstrap.strategy` set to `shared`, all worktrees on a machine use one database server and one Redis, and each worktree runs one app container (started like the Sail strategy). Set `database.strategy` to `none`; the `shared` config section replaces it. Supported servers: MariaDB and MySQL.
+
+What each worktree gets:
+
+- **Its own databases:** `{prefix}_{name}` (app), `{prefix}_{name}_test`, `{prefix}_{name}_e2e`, and Laravel's parallel test databases `{prefix}_{name}_test_test_1` to `_N` (`parallel_workers`). A dash in the name becomes `_`.
+- **A template copy:** the app, test and e2e databases start as a copy of a template database (`copy_from_template`). After the copy, migrations newer than the template run in each.
+- **Its own database user** with a generated password. The user has rights on the exact database names above and on nothing else: it cannot create, read, change or drop the main database, a template, or another worktree's database. The grant escapes `_` and `%`, which MariaDB and MySQL read as wildcards in a `GRANT`.
+- **Two Redis database numbers** (default and cache), free among all worktrees; the numbers in `redis.reserved` (the main checkout's) are never given out.
+- **A state file** `storage/app/worktree/state.json` with its names, user, password and Redis numbers. A missing or broken file is rebuilt; it is never fatal.
+- **`.env` values** from the `shared.env` map, for example `DB_DATABASE={db_app}` and `DB_USERNAME={db_user}`. Add keys for the test and e2e names if your project reads them (`DB_TEST_DATABASE={db_test}`).
+
+Names are refused when they could equal another worktree's database (names that end in `-test`, `-e2e`, `-test-N`, `-e2e-N`), a template (`tpl-…`), the main database, or the names that another worktree already uses.
+
+### Template databases
+
+The template is named `{prefix}_tpl_{hash}`. The hash covers the content of `template.hash_paths` in the main checkout (migrations and seeders by default) and the seed command, so a changed migration or seeder gives a new template. The build runs `php artisan migrate --force` and then `template.seed_command`, in the main checkout's app container (`template.runner = container`) or on the host (`host`), connected as a temporary user that has rights on the template only. Builds run under a lock: a second setup waits for the first build and uses its result. A template counts as ready when its database exists and its marker in the main checkout's `storage/app/worktrees/templates/` exists.
+
+```bash
+php artisan worktree:template           # build the current template when it is missing
+php artisan worktree:template --prune   # also drop older templates
+php artisan worktree:template --name    # print the current template name
+```
+
+### Production-like data
+
+`worktree:create --from-main` copies the main checkout's database into the worktree's app database in place of the template. It works only where `shared.database.allow_from_main` is true (`WORKTREE_ALLOW_FROM_MAIN`); elsewhere it is refused.
+
 ## Port Isolation (Sail)
 
 When running multiple worktrees with Laravel Sail, each worktree needs unique host ports to avoid conflicts. If your `.env` contains `APP_PORT` or `VITE_PORT`, the package will automatically derive unique ports per worktree.
@@ -166,7 +195,8 @@ $this->app->bind(ProcessManager::class, MyProcessManager::class);
 ## Requirements
 
 - PHP 8.2+
-- Laravel 11 or 12
+- Laravel 11, 12 or 13
+- Shared services: the `mariadb`/`mariadb-dump` (or `mysql`/`mysqldump`) clients, inside the server's container (`shared.database.container`) or on the host
 
 ## License
 

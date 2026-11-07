@@ -21,7 +21,8 @@ class WorktreeCreateCommand extends Command
         {--pr= : Pull request number}
         {--skip-deps : Skip dependency installation}
         {--skip-build : Skip frontend build}
-        {--skip-db : Skip database cloning}';
+        {--skip-db : Skip database cloning}
+        {--from-main : Shared services: copy the main checkout\'s database instead of the template (only where config allows it)}';
 
     protected $description = 'Create a git worktree with full environment isolation';
 
@@ -117,6 +118,8 @@ class WorktreeCreateCommand extends Command
                 'skip_deps' => (bool) $this->option('skip-deps'),
                 'skip_build' => (bool) $this->option('skip-build'),
                 'skip_db' => (bool) $this->option('skip-db'),
+                'from_main' => (bool) $this->option('from-main'),
+                'base' => $baseBranch,
             ], $onStep, $processOutput);
         } catch (\RuntimeException $e) {
             $this->components->error($e->getMessage());

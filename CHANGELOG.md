@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Shared services strategy** (`bootstrap.strategy = shared`, config section `shared`): one MariaDB or MySQL server and one Redis for all worktrees. Each worktree gets its own app, test, e2e and parallel test databases copied from a template, its own database user with rights on its exact database names only, two Redis database numbers, a state file `storage/app/worktree/state.json`, and the values in its `.env`. Names that could equal another worktree's, a template's or the main database are refused.
+- **Template databases**, named by a hash of the main checkout's migrations, seeders and seed command, built under a lock as a temporary user with rights on the template only. `worktree:template [--prune] [--name]`.
+- **`worktree:create --from-main`**: copies the main database in place of the template, only where `shared.database.allow_from_main` is true.
+- Integration tests against a real MariaDB (`tests/Integration`, CI job `integration`).
+
 - **`Contracts\BootstrapStrategy` interface** — abstracts how bootstrap
   steps run for a worktree (composer install, node install, migrate,
   build, bring-up, tear-down).
