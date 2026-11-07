@@ -1,0 +1,101 @@
+<?php
+
+namespace Woda\Worktrees\Commands;
+
+use Illuminate\Console\Command;
+use Woda\Worktrees\Shared\SailConverter;
+
+use function Laravel\Prompts\select;
+
+class WorktreeConvertCommand extends Command
+{
+    protected $signature = 'worktree:convert
+        {name? : Convert only this worktree (main for the main checkout)}
+        {--all : Convert every worktree that is not converted yet, without asking}';
+
+    protected $description = 'Move Sail worktrees to shared services, keeping their data; the old volumes stay as backup';
+
+    public function handle(SailConverter $converter): int
+    {
+        $candidates = $converter->candidates();
+        $this->table(
+            ['Worktree', 'Branch', 'Last commit', 'Merged', 'Status'],
+            array_map(static fn (array $c): array => [
+                $c['name'], $c['branch'] ?? '(detached)', $c['last_commit'],
+                $c['main'] ? '' : ($c['merged'] ? 'yes' : 'no'),
+                $c['converted'] ? 'converted' : 'to convert',
+            ], $candidates),
+        );
+
+        $pending = array_values(array_filter($candidates, static fn (array $c): bool => ! $c['converted']));
+        $name = $this->argument('name');
+        if (is_string($name) && $name !== '') {
+            $pending = array_values(array_filter($candidates, static fn (array $c): bool => $c['name'] === $name));
+            if ($pending === []) {
+                $this->components->error("No worktree named '{$name}'.");
+
+                return self::FAILURE;
+            }
+            if ($pending[0]['converted']) {
+                $this->components->info("'{$name}' is converted already.");
+
+                return self::SUCCESS;
+            }
+        }
+        if ($pending === []) {
+            $this->components->info('Nothing to convert.');
+
+            return self::SUCCESS;
+        }
+
+        $ask = ! $this->option('all') && ! (is_string($name) && $name !== '');
+        $failed = [];
+        foreach ($pending as $candidate) {
+            $action = 'convert';
+            if ($ask) {
+                $merged = $candidate['merged'];
+                $action = (string) select(
+                    label: sprintf('%s (%s, %s)%s', $candidate['name'], $candidate['branch'] ?? 'detached', $candidate['last_commit'], $merged ? ': merged, delete suggested' : ''),
+                    options: $candidate['main']
+                        ? ['convert' => 'Convert', 'skip' => 'Skip']
+                        : ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'],
+                    default: $merged ? 'delete' : 'convert',
+                );
+            }
+            if ($action === 'skip') {
+                continue;
+            }
+            if ($action === 'delete') {
+                $this->call('worktree:delete', ['name' => $candidate['name']]);
+
+                continue;
+            }
+
+            $this->components->info("Converting '{$candidate['name']}'...");
+            try {
+                $converter->convert(
+                    $candidate,
+                    fn (string $message) => $this->line("  {$message}"),
+                    $this->output->isVerbose() ? fn (string $type, string $buffer) => $this->output->write($buffer) : null,
+                );
+                $this->components->info("'{$candidate['name']}' is converted. Its old volume stays as backup (worktree:volumes).");
+            } catch (\RuntimeException $e) {
+                $failed[] = $candidate['name'];
+                $this->components->error("'{$candidate['name']}': {$e->getMessage()}");
+                if ($candidate['main']) {
+                    $this->components->error('The main checkout converts first; stopping.');
+
+                    return self::FAILURE;
+                }
+            }
+        }
+
+        if ($failed !== []) {
+            $this->components->error('Not converted: '.implode(', ', $failed).'. Run worktree:convert again to retry.');
+
+            return self::FAILURE;
+        }
+
+        return self::SUCCESS;
+    }
+}
