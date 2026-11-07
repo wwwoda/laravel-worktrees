@@ -229,18 +229,23 @@ class DatabaseCloner
         $targetPath = $targetDir.'/database.sqlite';
         File::copy($sourcePath, $targetPath);
 
-        // Update .env in worktree to point to the copied database
+        $this->pointEnvAtWorktreeDatabase($worktreePath);
+    }
+
+    /**
+     * Point the worktree's `.env` at its own SQLite file (a copied `.env`
+     * names the main checkout's). Other drivers get their name from the
+     * standard rewrites.
+     */
+    public function pointEnvAtWorktreeDatabase(string $worktreePath): void
+    {
+        $targetPath = $worktreePath.'/database/database.sqlite';
         $envPath = $worktreePath.'/.env';
-        if (File::exists($envPath)) {
-            $envContent = File::get($envPath);
-            $absoluteTarget = realpath($targetPath) ?: $targetPath;
-            $envContent = (string) preg_replace(
-                '/^DB_DATABASE=.*/m',
-                'DB_DATABASE='.$absoluteTarget,
-                $envContent,
-            );
-            File::put($envPath, $envContent);
+        if ($this->resolveStrategy() !== 'sqlite' || ! File::exists($envPath) || ! File::exists($targetPath)) {
+            return;
         }
+        $absoluteTarget = realpath($targetPath) ?: $targetPath;
+        File::put($envPath, Shared\EnvFile::upsertLine(File::get($envPath), 'DB_DATABASE', 'DB_DATABASE='.$absoluteTarget));
     }
 
     // ──────────────────────────────────────────────────────────────
