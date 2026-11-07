@@ -1,0 +1,69 @@
+<?php
+
+use Illuminate\Process\PendingProcess;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\WorktreeManager;
+
+beforeEach(function () {
+    $this->base = sys_get_temp_dir().'/worktrees-review-'.uniqid();
+    File::ensureDirectoryExists($this->base);
+    config()->set('worktrees.base_path', $this->base);
+});
+
+afterEach(function () {
+    File::deleteDirectory($this->base);
+});
+
+test('delete of an unregistered directory fails with a message and keeps the directory', function () {
+    $path = $this->base.'/'.basename(base_path()).'-orphan';
+    File::ensureDirectoryExists($path);
+    Process::fake(['git worktree list --porcelain' => Process::result()]);
+
+    $this->artisan('worktree:delete', ['name' => 'orphan', '--force' => true])
+        ->expectsOutputToContain('not a registered worktree')
+        ->assertFailed();
+
+    expect(is_dir($path))->toBeTrue();
+});
+
+test('bootstrap resume of an unregistered directory fails with a message', function () {
+    Process::fake(['git worktree list --porcelain' => Process::result()]);
+
+    $this->artisan('worktree:bootstrap', ['name' => 'orphan', '--resume' => true])
+        ->expectsOutputToContain('not a registered worktree')
+        ->assertFailed();
+});
+
+test('cleanup asks gh from the project directory', function () {
+    $path = $this->base.'/'.basename(base_path()).'-ticket';
+    File::ensureDirectoryExists($path);
+    Process::fake([
+        'git worktree list --porcelain' => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/ticket\n\n"),
+        'git rev-parse --abbrev-ref HEAD' => Process::result('ticket'),
+        'gh pr list *' => Process::result('[]'),
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:cleanup', ['--dry-run' => true])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $process) => str_starts_with((string) $process->command, 'gh pr list')
+        && $process->path === base_path());
+});
+
+test('env_overrides values are written literally, also with dollar signs and backslashes', function () {
+    $path = $this->base.'/wt';
+    File::ensureDirectoryExists($path);
+    File::put($path.'/.env', "APP_NAME=Test\nSECRET=old\n");
+    config()->set('app.name', 'Te$1st');
+    config()->set('app.url', '');
+    config()->set('worktrees.env_overrides', ['SECRET' => 'pa$1ss\\0word', 'APP_URL' => '"https://${WORKTREE_HOST}"']);
+
+    $manager = app(WorktreeManager::class);
+    (new ReflectionMethod($manager, 'applyEnvReplacements'))->invoke($manager, $path, 'lane');
+
+    expect(File::get($path.'/.env'))
+        ->toContain('SECRET=pa$1ss\\0word')
+        ->toContain('APP_NAME="Te$1st (lane)"')
+        ->toContain('APP_URL="https://${WORKTREE_HOST}"');
+});

@@ -202,7 +202,12 @@ class WorktreeManager
         $identity = $this->describe($name);
         File::ensureDirectoryExists($path.'/storage');
         $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
-        if ($handle === false || ! flock($handle, LOCK_EX | LOCK_NB)) {
+        if ($handle === false) {
+            throw new RuntimeException('Cannot open the worktree bootstrap lock.');
+        }
+        if (! flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+
             throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
@@ -374,11 +379,7 @@ class WorktreeManager
         /** @var string $appName */
         $appName = config('app.name', 'Laravel');
 
-        $content = (string) preg_replace(
-            '/^APP_NAME=.*/m',
-            'APP_NAME="'.$appName.' ('.$name.')"',
-            $content,
-        );
+        $content = $this->replaceEnvLine($content, 'APP_NAME', 'APP_NAME="'.$appName.' ('.$name.')"');
 
         // Update APP_URL: woda-starter.laravel.test → woda-starter-foo-bar.laravel.test
         /** @var string $appUrl */
@@ -443,13 +444,27 @@ class WorktreeManager
             $pattern = '/^'.preg_quote($key, '/').'=.*/m';
 
             if (preg_match($pattern, $content)) {
-                $content = (string) preg_replace($pattern, $line, $content);
+                $content = $this->replaceEnvLine($content, $key, $line);
             } else {
                 $content = rtrim($content, "\n")."\n".$line."\n";
             }
         }
 
         File::put($envPath, $content);
+    }
+
+    /**
+     * Replace a `KEY=...` line with a literal line. A callback keeps `$1` or
+     * `\0` in values (passwords, `${VAR}` references) from being read as
+     * regex back-references.
+     */
+    private function replaceEnvLine(string $content, string $key, string $line): string
+    {
+        return (string) preg_replace_callback(
+            '/^'.preg_quote($key, '/').'=.*/m',
+            static fn (): string => $line,
+            $content,
+        );
     }
 
     public function portOffset(string $name): int

@@ -112,7 +112,7 @@ class WorktreeCleanupCommand extends Command
     private function closedReason(string $branch): ?string
     {
         // Check for a merged or closed PR on this branch
-        $result = Process::timeout(15)->run(
+        $result = Process::path(base_path())->timeout(15)->run(
             sprintf('gh pr list --head %s --state all --json state,number --limit 5', escapeshellarg($branch)),
         );
 
@@ -142,7 +142,7 @@ class WorktreeCleanupCommand extends Command
         if (preg_match('/^(\d+)-/', $branch, $matches)) {
             $issueNumber = $matches[1];
 
-            $result = Process::timeout(15)->run(
+            $result = Process::path(base_path())->timeout(15)->run(
                 sprintf('gh issue view %s --json state', $issueNumber),
             );
 

@@ -25,12 +25,18 @@ class WorktreeBootstrapCommand extends Command
 
             return self::FAILURE;
         }
-        $manager->bootstrap($name, [
-            'resume' => true,
-            'skip_deps' => (bool) $this->option('skip-deps'),
-            'skip_build' => (bool) $this->option('skip-build'),
-            'skip_db' => (bool) $this->option('skip-db'),
-        ], fn (string $stage) => $this->components->info($stage));
+        try {
+            $manager->bootstrap($name, [
+                'resume' => true,
+                'skip_deps' => (bool) $this->option('skip-deps'),
+                'skip_build' => (bool) $this->option('skip-build'),
+                'skip_db' => (bool) $this->option('skip-db'),
+            ], fn (string $stage) => $this->components->info($stage));
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }

@@ -82,27 +82,33 @@ class WorktreeDeleteCommand extends Command
             }
         }
 
-        $worktreeManager->describe($name);
+        try {
+            $worktreeManager->describe($name);
 
-        if ($processManager->isRunning($name)) {
-            $this->components->info("Terminating running process for '{$name}'...");
-        }
-        // Always: finished sessions may still be tracked and must not outlive the worktree.
-        $processManager->terminate($name);
+            if ($processManager->isRunning($name)) {
+                $this->components->info("Terminating running process for '{$name}'...");
+            }
+            // Always: finished sessions may still be tracked and must not outlive the worktree.
+            $processManager->terminate($name);
 
-        // Tear down per-worktree environment (e.g. docker compose down -v).
-        // No-op for the native bootstrap strategy.
-        $this->components->info('Tearing down worktree environment...');
-        $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
+            // Tear down per-worktree environment (e.g. docker compose down -v).
+            // No-op for the native bootstrap strategy.
+            $this->components->info('Tearing down worktree environment...');
+            $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
 
-        // Remove worktree
-        $this->components->info("Removing worktree '{$name}'...");
-        $worktreeManager->remove($name);
+            // Remove worktree
+            $this->components->info("Removing worktree '{$name}'...");
+            $worktreeManager->remove($name);
 
-        // Drop database
-        if (! $this->option('keep-db')) {
-            $suffix = str_replace('-', '_', $name);
-            $databaseCloner->drop($suffix);
+            // Drop database
+            if (! $this->option('keep-db')) {
+                $suffix = str_replace('-', '_', $name);
+                $databaseCloner->drop($suffix);
+            }
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return self::FAILURE;
         }
 
         $this->components->info("Worktree '{$name}' deleted.");
