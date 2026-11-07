@@ -3,6 +3,7 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
@@ -45,6 +46,7 @@ beforeEach(function () {
     $this->containers = [];
     $this->removed = [];
     $this->order = [];
+    $this->ups = [];
     $this->volumes = [];
     $this->volumeRemovals = [];
     $this->runningVolume = null;
@@ -75,7 +77,11 @@ beforeEach(function () {
                 ['master' => $this->main, ...$this->worktrees],
             ))),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
-            'docker compose up -d' => fn () => $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result(),
+            'docker compose up -d' => function (PendingProcess $p) {
+                $this->ups[] = $p->path;
+
+                return $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result();
+            },
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
             "'docker' 'ps' '-aq' *" => fn (PendingProcess $p) => Process::result(implode("\n", $this->containers[substr(end($p->command), strlen('label=com.docker.compose.project='))] ?? [])),
             "'docker' 'rm' '-f' 'worktree-convert-*" => Process::result(),
@@ -275,4 +281,28 @@ test('the backup list shows each old volume with its size; only named volumes ar
 
     $this->artisan('worktree:volumes', ['--remove' => ['hungryport-old1_mariadb']])->assertSuccessful();
     expect($this->volumeRemovals)->toHaveCount(1);
+});
+
+test('the main checkout gets the shared layout and a running app container before its template build', function () {
+    config()->set('worktrees.shared.app.compose_file', 'compose.worktree.yml');
+    app()->forgetInstance(BootstrapStrategy::class);
+    unset($this->server->databases['hungryport']);
+    $test = $this;
+    app()->instance(TemplateRecipe::class, new class($test) implements TemplateRecipe
+    {
+        public function __construct(private readonly object $test) {}
+
+        public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
+        {
+            if (! in_array($this->test->main, $this->test->ups, true)) {
+                throw new RuntimeException('The main app container is not running.');
+            }
+            $this->test->server->databases[$database] = ['migrated', 'seeded'];
+        }
+    });
+
+    $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
+
+    expect(File::get($this->main.'/.env'))->toContain('COMPOSE_FILE=compose.worktree.yml');
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d --force-recreate' && $p->path === $this->main);
 });

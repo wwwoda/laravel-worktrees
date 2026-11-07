@@ -221,6 +221,7 @@ class WorktreesServiceProvider extends ServiceProvider
             return new SailConverter(
                 manager: $app->make(WorktreeManager::class),
                 provisioner: $app->make(DatabaseProvisioner::class),
+                strategy: $app->make(BootstrapStrategy::class),
                 image: $config->string('convert.image', 'mariadb:10.11'),
                 volumePattern: $config->string('convert.volume', '{compose_project}_sail-mariadb'),
                 baseBranch: is_string($base = config('worktrees.base_branch')) ? $base : 'master',

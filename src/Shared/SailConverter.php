@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\ComposeProcess;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\WorktreeManager;
 
 /**
@@ -24,6 +26,7 @@ class SailConverter
     public function __construct(
         private readonly WorktreeManager $manager,
         private readonly DatabaseProvisioner $provisioner,
+        private readonly BootstrapStrategy $strategy,
         private readonly string $image,
         private readonly string $volumePattern,
         private readonly string $baseBranch,
@@ -90,12 +93,16 @@ class SailConverter
 
         try {
             if ($candidate['main']) {
-                $this->provisioner->provisionMain($path, $fill, $output, $step);
-                $step('Starting the main checkout\'s app container...');
-                $result = ComposeProcess::in($path, 600)->run('docker compose up -d', $output);
-                if (! $result->successful()) {
-                    throw new RuntimeException("Starting the main checkout's container failed: {$result->errorOutput()}");
+                // The shared layout first (COMPOSE_FILE, queue worker), then the new app
+                // container: the template build runs in it. After the databases are set
+                // up, recreate it so it starts with the new database settings.
+                if ($this->strategy instanceof ConfiguresWorktreeEnvironment) {
+                    $this->strategy->configureEnvironment($path, []);
                 }
+                $step('Starting the main checkout\'s app container...');
+                $this->compose($path, 'docker compose up -d', $output);
+                $this->provisioner->provisionMain($path, $fill, $output, $step);
+                $this->compose($path, 'docker compose up -d --force-recreate', $output);
             } else {
                 // The old bootstrap record says "done" for the Sail stages: start over.
                 $record = $path.'/storage/worktree-bootstrap.json';
@@ -119,6 +126,17 @@ class SailConverter
         $state->data['converted_at'] = date(DATE_ATOM);
         $state->data['old_volume'] = $this->volumeName($project);
         $state->save($path);
+    }
+
+    /**
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function compose(string $path, string $command, ?Closure $output): void
+    {
+        $result = ComposeProcess::in($path, 600)->run($command, $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("'{$command}' in the main checkout failed: {$result->errorOutput()}");
+        }
     }
 
     /**
