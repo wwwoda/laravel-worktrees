@@ -144,6 +144,8 @@ What each worktree gets:
 - **A state file** `storage/app/worktree/state.json` with its names, user, password and Redis numbers. A missing or broken file is rebuilt; it is never fatal.
 - **`.env` values** from the `shared.env` map, for example `DB_DATABASE={db_app}` and `DB_USERNAME={db_user}`. Add keys for the test and e2e names if your project reads them (`DB_TEST_DATABASE={db_test}`).
 
+The main database is `shared.database.main` (`WORKTREE_SHARED_DB_MAIN`); when it is empty, the package reads `DB_DATABASE` from the main checkout's `.env`, also when artisan runs in a linked worktree.
+
 Names are refused when they could equal another worktree's database (names that end in `-test`, `-e2e`, `-test-N`, `-e2e-N`), a template (`tpl-…`), the main database, or the names that another worktree already uses.
 
 ### Template databases

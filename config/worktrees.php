@@ -98,7 +98,9 @@ return [
             'app_port' => (int) env('WORKTREE_SHARED_DB_PORT', 3306),
 
             // The main checkout's database. Never written by a worktree command.
-            'main' => env('WORKTREE_SHARED_DB_MAIN', env('DB_DATABASE', 'laravel')),
+            // Empty: read DB_DATABASE from the main checkout's `.env` (also when
+            // artisan runs in a linked worktree, whose `.env` names its own database).
+            'main' => env('WORKTREE_SHARED_DB_MAIN'),
 
             // Names: {prefix}_{name}, {prefix}_{name}_test, {prefix}_{name}_e2e,
             // and Laravel's parallel test databases {prefix}_{name}_test_test_{1..N}.
