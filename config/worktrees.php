@@ -77,6 +77,38 @@ return [
     */
 
     'shared' => [
+        // The machine's shared stack. Started with this command (run in the
+        // main checkout) when the database server does not answer; never
+        // stopped, reset or upgraded by a worktree command.
+        'stack' => [
+            'start_command' => env('WORKTREE_SHARED_STACK_START_COMMAND'),
+            'wait_seconds' => (int) env('WORKTREE_SHARED_STACK_WAIT', 120),
+        ],
+
+        // The worktree's app container: the compose file (written to the
+        // worktree's `.env` as COMPOSE_FILE) and the service from
+        // 'bootstrap.sail.app_service'. The bundle is built inside it.
+        'app' => [
+            'compose_file' => env('WORKTREE_APP_COMPOSE_FILE'),
+        ],
+
+        // Copy `vendor` and the host `node_modules` from the main checkout with
+        // copy-on-write when the lock files are equal; otherwise install.
+        'dependencies' => [
+            'copy_on_write' => (bool) env('WORKTREE_COPY_ON_WRITE', true),
+        ],
+
+        // The queue worker of the app container: 'listen' (`queue:listen`, always
+        // runs the current code) or 'horizon'. Written to `.env` for the
+        // project's container to read, with the queues from config/horizon.php.
+        'queue' => [
+            'mode' => env('WORKTREE_QUEUE_MODE', 'listen'),
+            'env' => [
+                'mode' => 'WORKTREE_QUEUE_WORKER',
+                'queues' => 'WORKTREE_QUEUES',
+            ],
+        ],
+
         'database' => [
             // mariadb | mysql (pgsql follows)
             'driver' => env('WORKTREE_SHARED_DB_DRIVER', 'mariadb'),

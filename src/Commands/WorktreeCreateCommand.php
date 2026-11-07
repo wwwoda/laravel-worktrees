@@ -5,6 +5,7 @@ namespace Woda\Worktrees\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\WorktreeManager;
 
 use function Laravel\Prompts\search;
@@ -22,7 +23,8 @@ class WorktreeCreateCommand extends Command
         {--skip-deps : Skip dependency installation}
         {--skip-build : Skip frontend build}
         {--skip-db : Skip database cloning}
-        {--from-main : Shared services: copy the main checkout\'s database instead of the template (only where config allows it)}';
+        {--from-main : Shared services: copy the main checkout\'s database instead of the template (only where config allows it)}
+        {--horizon : Shared services: run Horizon as the queue worker instead of queue:listen}';
 
     protected $description = 'Create a git worktree with full environment isolation';
 
@@ -113,14 +115,19 @@ class WorktreeCreateCommand extends Command
             ? fn (string $type, string $buffer) => $this->output->write($buffer)
             : null;
 
+        $timings = [];
+        $started = microtime(true);
         try {
             $worktreeManager->bootstrap($name, [
                 'skip_deps' => (bool) $this->option('skip-deps'),
                 'skip_build' => (bool) $this->option('skip-build'),
                 'skip_db' => (bool) $this->option('skip-db'),
                 'from_main' => (bool) $this->option('from-main'),
+                'horizon' => (bool) $this->option('horizon'),
                 'base' => $baseBranch,
-            ], $onStep, $processOutput);
+            ], $onStep, $processOutput, function (string $stage, float $seconds) use (&$timings): void {
+                $timings[] = [$stage, number_format($seconds, 1).' s'];
+            });
         } catch (\RuntimeException $e) {
             $this->components->error($e->getMessage());
             $this->components->warn("The checkout is kept. Continue with: php artisan worktree:bootstrap {$name} --resume");
@@ -128,7 +135,13 @@ class WorktreeCreateCommand extends Command
             return self::FAILURE;
         }
 
+        $timings[] = ['total', number_format(microtime(true) - $started, 1).' s'];
+        $this->table(['Step', 'Time'], $timings);
         $this->components->info("Worktree '{$name}' is ready.");
+        $url = EnvFile::get($path.'/.env', 'APP_URL');
+        if ($url !== null && $url !== '') {
+            $this->line('  '.$url);
+        }
 
         return self::SUCCESS;
     }

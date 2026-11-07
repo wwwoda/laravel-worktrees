@@ -21,6 +21,7 @@ class DatabaseProvisioner
      */
     public function __construct(
         private readonly DatabaseServer $server,
+        private readonly SharedStack $stack,
         private readonly TemplateManager $templates,
         private readonly RedisAllocator $redis,
         private readonly WorktreeRegistry $registry,
@@ -55,9 +56,7 @@ class DatabaseProvisioner
         }
         $names = $this->names($name);
         $this->assertNoOtherWorktreeUses($names, $path);
-        if (! $this->server->ping()) {
-            throw new RuntimeException('The shared database server does not answer. Start the shared stack and run the setup again.');
-        }
+        $this->stack->ensureRunning($step, $output);
 
         $state = WorktreeState::load($path) ?? new WorktreeState([]);
         $password = $this->password($state, $names, $path);

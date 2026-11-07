@@ -156,6 +156,15 @@ php artisan worktree:template --prune   # also drop older templates
 php artisan worktree:template --name    # print the current template name
 ```
 
+### App container, dependencies and queue worker
+
+- **Shared stack:** when the database server does not answer, `shared.stack.start_command` runs in the main checkout, and the setup waits until the server answers. Worktree commands never stop, reset or upgrade the shared stack.
+- **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. `shared.app.compose_file` is written to the worktree's `.env` as `COMPOSE_FILE`, so compose uses the project's app-only file.
+- **Dependencies:** when `composer.lock` (or the node lock file) equals the main checkout's, `vendor` (or the host `node_modules`) is copied from the main checkout with copy-on-write: `cp -c` on macOS (APFS), `cp --reflink=always` elsewhere. When the filesystem cannot do that (for example ext4), or the lock files differ, `composer install` runs in the container and the node install on the host.
+- **Frontend:** the bundle is built in the container (`pnpm install --frozen-lockfile && pnpm run build`). Give the container its own `node_modules` volume in your compose file, because native packages install for one platform only. A `public/hot` whose dev server does not answer is removed.
+- **Queue worker:** `WORKTREE_QUEUE_WORKER=listen|horizon` and `WORKTREE_QUEUES=<list>` are written to `.env` for your container to read. The list holds every queue that `config/horizon.php` names when the project requires `laravel/horizon`, else `default`. `worktree:create --horizon` picks Horizon.
+- `worktree:create` prints the time of each step and the worktree's URL.
+
 ### Production-like data
 
 `worktree:create --from-main` copies the main checkout's database into the worktree's app database in place of the template. It works only where `shared.database.allow_from_main` is true (`WORKTREE_ALLOW_FROM_MAIN`); elsewhere it is refused.

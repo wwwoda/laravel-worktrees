@@ -21,6 +21,7 @@ use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\RedisAllocator;
 use Woda\Worktrees\Shared\SharedConfig;
+use Woda\Worktrees\Shared\SharedStack;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeRegistry;
 
@@ -50,6 +51,13 @@ class WorktreesServiceProvider extends ServiceProvider
                     appService: $appService,
                     nodePackageManager: $nodePackageManager,
                     buildFrontend: $buildFrontend,
+                    composeFile: (new SharedConfig)->nullableString('app.compose_file'),
+                    queueMode: (new SharedConfig)->string('queue.mode', 'listen'),
+                    queueEnvKeys: [
+                        'mode' => (new SharedConfig)->string('queue.env.mode', 'WORKTREE_QUEUE_WORKER'),
+                        'queues' => (new SharedConfig)->string('queue.env.queues', 'WORKTREE_QUEUES'),
+                    ],
+                    copyOnWrite: (bool) config('worktrees.shared.dependencies.copy_on_write', true),
                 ),
                 'sail' => new SailBootstrapStrategy(
                     appService: $appService,
@@ -150,6 +158,16 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorktreeRegistry::class);
 
+        $this->app->bindIf(SharedStack::class, function (Application $app): SharedStack {
+            $config = new SharedConfig;
+
+            return new SharedStack(
+                server: $app->make(DatabaseServer::class),
+                startCommand: $config->nullableString('stack.start_command'),
+                waitSeconds: $config->int('stack.wait_seconds', 120),
+            );
+        });
+
         $this->app->bindIf(TemplateManager::class, function (Application $app): TemplateManager {
             $config = new SharedConfig;
 
@@ -167,6 +185,7 @@ class WorktreesServiceProvider extends ServiceProvider
 
             return new DatabaseProvisioner(
                 server: $app->make(DatabaseServer::class),
+                stack: $app->make(SharedStack::class),
                 templates: $app->make(TemplateManager::class),
                 redis: new RedisAllocator(
                     registry: $app->make(WorktreeRegistry::class),

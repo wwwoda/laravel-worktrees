@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\Shared\EnvFile;
 
@@ -195,15 +196,17 @@ class WorktreeManager
     }
 
     /**
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
      */
     public function bootstrap(
         string $name,
         array $options = [],
         ?Closure $onStep = null,
         ?Closure $processOutput = null,
+        ?Closure $onStageDone = null,
     ): void {
         $step = $onStep ?? static fn () => null;
         $path = $this->pathFor($name);
@@ -235,7 +238,7 @@ class WorktreeManager
             if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
                 throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
             }
-            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume): void {
+            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
                     return;
                 }
@@ -243,13 +246,18 @@ class WorktreeManager
                 $state['status'] = 'running';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
                 $step($id);
+                $started = microtime(true);
                 $action();
+                $onStageDone && $onStageDone($id, microtime(true) - $started);
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             };
-            $run('config', function () use ($path, $name): void {
+            $run('config', function () use ($path, $name, $options): void {
                 $this->copyConfigFiles($path);
                 $this->applyEnvReplacements($path, $name);
+                if ($this->bootstrapStrategy instanceof ConfiguresWorktreeEnvironment) {
+                    $this->bootstrapStrategy->configureEnvironment($path, ['horizon' => ! empty($options['horizon'])]);
+                }
             });
             // Shared services: the databases exist and `.env` names them before the
             // app container starts, so its worker and scheduler start with them.
