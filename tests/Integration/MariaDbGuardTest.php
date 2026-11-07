@@ -91,3 +91,8 @@ test('the template copy carries the data and refuses to overwrite', function () 
     expect($this->server->runAs('root', (string) getenv('LW_TEST_MARIADB_PASSWORD'), "SELECT COUNT(*) FROM `{$names->app}`.`items`")->output)->toContain('1')
         ->and(fn () => $this->server->copyDatabase($this->template, $names->app))->toThrow(RuntimeException::class, 'exists already');
 });
+
+test('a failed copy leaves no partial target behind', function () {
+    expect(fn () => $this->server->copyDatabase($this->prefix.'_missing', $this->prefix.'_target'))->toThrow(RuntimeException::class)
+        ->and($this->server->databaseExists($this->prefix.'_target'))->toBeFalse();
+});

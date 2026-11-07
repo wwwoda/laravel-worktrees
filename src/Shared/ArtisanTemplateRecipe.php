@@ -37,6 +37,9 @@ final readonly class ArtisanTemplateRecipe implements TemplateRecipe
             'DB_DATABASE' => $database,
             'DB_USERNAME' => $user,
             'DB_PASSWORD' => $password,
+            // A config cache of the main checkout would ignore these values and point
+            // the build at the main database: read the config fresh instead.
+            'APP_CONFIG_CACHE' => '/tmp/worktree-template-'.bin2hex(random_bytes(6)).'-config.php',
         ];
         foreach (['php artisan migrate --force', $seedCommand] as $command) {
             if (trim($command) === '') {

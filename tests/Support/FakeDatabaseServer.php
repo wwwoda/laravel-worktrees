@@ -11,7 +11,7 @@ use Woda\Worktrees\Shared\ServerResult;
  * An in-memory database server for feature tests: databases hold a list of
  * rows, users hold their granted database names.
  */
-final class FakeDatabaseServer implements DatabaseServer
+class FakeDatabaseServer implements DatabaseServer
 {
     /** @var array<string, list<string>> */
     public array $databases = [];

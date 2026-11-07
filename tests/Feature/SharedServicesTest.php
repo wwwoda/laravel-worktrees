@@ -4,6 +4,7 @@ use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Shared\ArtisanTemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
@@ -244,4 +245,52 @@ test('templates and locks live in the main checkout also when artisan runs in a 
     } finally {
         MainCheckout::forget();
     }
+});
+
+test('the template build bypasses a config cache of the main checkout', function () {
+    $recipe = new ArtisanTemplateRecipe('container', 'laravel.test', 'mariadb', 3306);
+
+    $recipe->build('hp_tpl_abc', 'hp_tpl_builder', str_repeat('a', 32), 'php artisan db:seed --force');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "-e 'APP_CONFIG_CACHE=/tmp/worktree-template-")
+        && str_contains((string) $p->command, "-e 'DB_DATABASE=hp_tpl_abc'")
+        && str_contains((string) $p->command, 'php artisan migrate --force'));
+});
+
+test('a copy that stopped half way is dropped and copied again', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $path = ($this->path)('t9');
+    $state = WorktreeState::load($path);
+    $state->data['pending_copies'] = ['hp_t9'];
+    $state->save($path);
+    $this->server->databases['hp_t9'] = ['half'];
+
+    $after = app(DatabaseProvisioner::class)->provision('t9', $path);
+
+    expect($this->server->databases['hp_t9'])->toBe(['migrated', 'seeded'])
+        ->and($after->data['pending_copies'])->toBe([]);
+});
+
+test('names are reserved in the state before the server is touched', function () {
+    $this->server->databases = ['hungryport' => []];
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function copyDatabase(string $source, string $target, ?string $owner = null, ?Closure $output = null): void
+        {
+            throw new RuntimeException('copy failed');
+        }
+    };
+    $failing->databases = ['hungryport' => []];
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $first = $this->base.'/elsewhere/T9';
+    $this->worktrees['T9'] = $first;
+    File::ensureDirectoryExists($first);
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $first))->toThrow(RuntimeException::class, 'copy failed');
+
+    $second = $this->base.'/elsewhere/t9';
+    $this->worktrees['t9'] = $second;
+    File::ensureDirectoryExists($second);
+    expect(fn () => app(DatabaseProvisioner::class)->provision('t9', $second))->toThrow(RuntimeException::class, 'already uses the database names');
 });

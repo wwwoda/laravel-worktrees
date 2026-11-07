@@ -54,13 +54,40 @@ class DatabaseProvisioner
             throw new RuntimeException('--from-main is not allowed on this machine: production-like data stays on machines where config worktrees.shared.database.allow_from_main is true.');
         }
         $names = $this->names($name);
-        $this->assertNoOtherWorktreeUses($names, $path);
         if (! $this->server->ping()) {
             throw new RuntimeException('The shared database server does not answer. Start the shared stack and run the setup again.');
         }
 
-        $state = WorktreeState::load($path) ?? new WorktreeState([]);
-        $password = $this->password($state, $names, $path);
+        // Reserve the names under the shared lock before touching the server, so a
+        // concurrent setup with a name that maps to the same databases (`T9`, `t9`)
+        // sees them in this worktree's state and stops.
+        [$state, $password] = $this->withAllocationLock(function () use ($names, $path, $context): array {
+            $this->assertNoOtherWorktreeUses($names, $path);
+            $state = WorktreeState::load($path) ?? new WorktreeState([]);
+            $password = $this->password($state, $names, $path);
+            $state->data = [
+                ...$state->data,
+                'name' => $names->worktree,
+                'branch' => $context['branch'] ?? $state->string('branch'),
+                'base' => $context['base'] ?? $state->string('base'),
+                'databases' => ['app' => $names->app, 'test' => $names->test, 'e2e' => $names->e2e, 'parallel' => $names->parallel],
+                'user' => $names->user,
+                'password' => $password,
+                'created_at' => $state->string('created_at') ?? date(DATE_ATOM),
+            ];
+            $state->save($path);
+
+            return [$state, $password];
+        });
+
+        // A copy that stopped half way (process killed) left its target behind:
+        // it is this worktree's own name, so drop it and copy again.
+        foreach ($this->pendingCopies($state) as $database) {
+            if ($names->owns($database) && $this->server->databaseExists($database)) {
+                $step("Database {$database} is an unfinished copy; copying again.");
+                $this->server->dropDatabase($database);
+            }
+        }
 
         $missing = array_filter(
             ['app' => $names->app, 'test' => $names->test, 'e2e' => $names->e2e],
@@ -77,10 +104,10 @@ class DatabaseProvisioner
                     throw new RuntimeException("The main database '{$this->mainDatabase}' does not exist; --from-main has nothing to copy.");
                 }
                 $step("Copying the main database into {$database}...");
-                $this->server->copyDatabase($this->mainDatabase, $database, $names->user, $output);
+                $this->copy($state, $path, $this->mainDatabase, $database, $names->user, $output);
             } elseif (in_array($role, $this->copyFromTemplate, true) && $template !== null) {
                 $step("Copying template {$template} into {$database}...");
-                $this->server->copyDatabase($template, $database, $names->user, $output);
+                $this->copy($state, $path, $template, $database, $names->user, $output);
             } else {
                 $this->server->createDatabase($database, $names->user);
             }
@@ -90,30 +117,48 @@ class DatabaseProvisioner
         }
         $this->server->grantUser($names->user, $password, $names->databases());
 
-        return $this->withAllocationLock(function () use ($state, $names, $password, $path, $context, $template, $fromMain, $missing): WorktreeState {
+        return $this->withAllocationLock(function () use ($state, $path, $template, $fromMain, $missing): WorktreeState {
             $redis = $state->redis();
             if (count($redis) !== 2 || $this->redis->taken($path, $redis)) {
                 $redis = $this->redis->allocate($path);
             }
             $state->data = [
                 ...$state->data,
-                'name' => $names->worktree,
-                'branch' => $context['branch'] ?? $state->string('branch'),
-                'base' => $context['base'] ?? $state->string('base'),
-                'databases' => ['app' => $names->app, 'test' => $names->test, 'e2e' => $names->e2e, 'parallel' => $names->parallel],
-                'user' => $names->user,
-                'password' => $password,
                 'redis' => $redis,
                 'compose_project' => EnvFile::get($path.'/.env', 'COMPOSE_PROJECT_NAME'),
                 'template' => $template,
                 'source' => isset($missing['app']) ? ($fromMain ? 'main' : 'template') : ($state->string('source') ?? 'existing'),
-                'created_at' => $state->string('created_at') ?? date(DATE_ATOM),
             ];
             $state->save($path);
             $this->writeEnv($path, $state);
 
             return $state;
         });
+    }
+
+    /**
+     * Copy with a record in the state file while the copy runs, so a copy that
+     * stops half way is found and repeated on the next run.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function copy(WorktreeState $state, string $path, string $source, string $target, string $owner, ?Closure $output): void
+    {
+        $state->data['pending_copies'] = [...$this->pendingCopies($state), $target];
+        $state->save($path);
+        $this->server->copyDatabase($source, $target, $owner, $output);
+        $state->data['pending_copies'] = array_values(array_diff($this->pendingCopies($state), [$target]));
+        $state->save($path);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function pendingCopies(WorktreeState $state): array
+    {
+        $pending = $state->data['pending_copies'] ?? [];
+
+        return is_array($pending) ? array_values(array_filter($pending, is_string(...))) : [];
     }
 
     private function assertNoOtherWorktreeUses(WorktreeNames $names, string $path): void
