@@ -39,6 +39,13 @@ interface DatabaseServer
     public function dropDatabase(string $database): void;
 
     /**
+     * Run an SQL dump file into an existing database, as admin.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function importFile(string $database, string $file, ?Closure $output = null): void;
+
+    /**
      * Create or update a user with rights on exactly these databases.
      *
      * @param  list<string>  $databases

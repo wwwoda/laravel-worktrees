@@ -68,6 +68,12 @@ class FakeDatabaseServer implements DatabaseServer
         unset($this->databases[$database]);
     }
 
+    public function importFile(string $database, string $file, ?Closure $output = null): void
+    {
+        $this->log[] = "import {$database}";
+        $this->databases[$database] = ['imported: '.trim((string) file_get_contents($file))];
+    }
+
     public function grantUser(string $user, string $password, array $databases): void
     {
         $this->log[] = "grant {$user}";

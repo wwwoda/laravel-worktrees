@@ -84,6 +84,16 @@ final readonly class MariaDbServer implements DatabaseServer
         $this->admin('DROP DATABASE IF EXISTS `'.Identifier::check($database).'`');
     }
 
+    public function importFile(string $database, string $file, ?Closure $output = null): void
+    {
+        $command = sprintf('%s -u %s%s %s < %s', $this->client, escapeshellarg($this->adminUser), $this->hostFlags(),
+            escapeshellarg(Identifier::check($database)), escapeshellarg($file));
+        $result = Process::env(['MYSQL_PWD' => $this->adminPassword])->timeout(1800)->run($this->wrap($command), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("Importing into '{$database}' failed: {$result->errorOutput()}");
+        }
+    }
+
     public function grantUser(string $user, string $password, array $databases): void
     {
         $account = $this->account($user);

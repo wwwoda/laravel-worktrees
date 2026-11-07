@@ -228,7 +228,7 @@ class WorktreeManager
      * folders). With `setup`, existing config files are kept and a `.env`
      * without a bootstrap record is completed instead of refused.
      *
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool, fill_app?: (Closure(string): void)|null}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
      * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
@@ -302,6 +302,7 @@ class WorktreeManager
             if ($provisions && empty($options['skip_db'])) {
                 $run('database', fn () => $this->bootstrapStrategy->provisionDatabases($name, $path, [
                     'from_main' => ! empty($options['from_main']),
+                    'fill_app' => $options['fill_app'] ?? null,
                     'branch' => $identity['branch'],
                     'base' => $options['base'] ?? $this->baseBranch,
                 ], $processOutput, $step));
