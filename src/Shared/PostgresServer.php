@@ -201,11 +201,11 @@ final readonly class PostgresServer implements DatabaseServer
     {
         $this->createDatabase($target, $owner);
         $credentials = '-U '.escapeshellarg($this->adminUser).$this->hostFlags();
-        // Restore as the owner role, so the objects belong to it.
-        $setRole = $owner !== null ? 'SET ROLE "'.Identifier::check($owner).'";' : '';
+        // Restore as admin (extensions may need it); copyDatabase() then hands
+        // every object inside the copy to the owner role.
         $script = sprintf(
-            'f=$(mktemp) && %s %s --no-owner --no-privileges %s > "$f" && { echo %s; cat "$f"; } | %s -X -q -v ON_ERROR_STOP=1 %s -d %s; s=$?; rm -f "$f"; exit $s',
-            $this->dumpClient, $credentials, escapeshellarg($source), escapeshellarg($setRole),
+            'f=$(mktemp) && %s %s --no-owner --no-privileges %s > "$f" && %s -X -q -v ON_ERROR_STOP=1 %s -d %s < "$f"; s=$?; rm -f "$f"; exit $s',
+            $this->dumpClient, $credentials, escapeshellarg($source),
             $this->client, $credentials, escapeshellarg($target),
         );
         $result = Process::env(['PGPASSWORD' => $this->adminPassword])->timeout(1800)->run($this->wrap('sh -c '.escapeshellarg($script)), $output);

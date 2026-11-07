@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\File;
+use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\PostgresServer;
 use Woda\Worktrees\Shared\RecreateDatabasesGuard;
@@ -48,4 +49,24 @@ test('the recreate guard runs at boot from the worker environment, before Larave
         app()->setBasePath($base);
         File::deleteDirectory($dir);
     }
+});
+
+test('PostgreSQL gets its own default ports and host unless config names them', function () {
+    config()->set('worktrees.shared.database.driver', 'pgsql');
+    config()->set('worktrees.shared.database.port', null);
+    config()->set('worktrees.shared.database.app_host', null);
+    config()->set('worktrees.shared.database.app_port', null);
+    config()->set('worktrees.shared.database.main', 'app');
+
+    $provisioner = app(DatabaseProvisioner::class);
+    $read = fn (string $property) => (new ReflectionProperty($provisioner, $property))->getValue($provisioner);
+    $server = app(DatabaseServer::class);
+
+    expect($read('appHost'))->toBe('pgsql')
+        ->and($read('appPort'))->toBe(5432)
+        ->and((new ReflectionProperty($server, 'port'))->getValue($server))->toBe(5432);
+
+    config()->set('worktrees.shared.database.app_port', '6543');
+    $provisioner = app(DatabaseProvisioner::class);
+    expect((new ReflectionProperty($provisioner, 'appPort'))->getValue($provisioner))->toBe(6543);
 });

@@ -130,7 +130,7 @@ class WorktreesServiceProvider extends ServiceProvider
                     driver: $driver,
                     container: $config->nullableString('database.container'),
                     host: $config->string('database.host', '127.0.0.1'),
-                    port: $config->int('database.port', 3306),
+                    port: $config->int('database.port', self::defaultPort()),
                     adminUser: $config->nullableString('database.admin_username') ?? 'root',
                     adminPassword: $config->string('database.admin_password', ''),
                     client: $config->nullableString('database.client') ?? ($driver === 'mysql' ? 'mysql' : 'mariadb'),
@@ -139,7 +139,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 'pgsql' => new PostgresServer(
                     container: $config->nullableString('database.container'),
                     host: $config->string('database.host', '127.0.0.1'),
-                    port: $config->int('database.port', 5432),
+                    port: $config->int('database.port', self::defaultPort()),
                     adminUser: $config->nullableString('database.admin_username') ?? 'postgres',
                     adminPassword: $config->string('database.admin_password', ''),
                     client: $config->nullableString('database.client') ?? 'psql',
@@ -155,8 +155,8 @@ class WorktreesServiceProvider extends ServiceProvider
             return new ArtisanTemplateRecipe(
                 mode: $config->string('database.template.runner', 'container'),
                 appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
-                databaseHost: $config->string('database.app_host', 'mariadb'),
-                databasePort: $config->int('database.app_port', 3306),
+                databaseHost: $config->nullableString('database.app_host') ?? self::defaultAppHost(),
+                databasePort: $config->int('database.app_port', self::defaultPort()),
                 extraEnv: $config->stringMap('database.template.env'),
             );
         });
@@ -192,8 +192,8 @@ class WorktreesServiceProvider extends ServiceProvider
                 parallelWorkers: $config->int('database.parallel_workers', 8),
                 allowFromMain: (bool) config('worktrees.shared.database.allow_from_main', false),
                 copyFromTemplate: $config->stringList('database.copy_from_template'),
-                appHost: $config->string('database.app_host', 'mariadb'),
-                appPort: $config->int('database.app_port', 3306),
+                appHost: $config->nullableString('database.app_host') ?? self::defaultAppHost(),
+                appPort: $config->int('database.app_port', self::defaultPort()),
                 envMap: $config->stringMap('env'),
             );
         });
@@ -214,6 +214,25 @@ class WorktreesServiceProvider extends ServiceProvider
         $connection = config('database.default');
         $driver = config('database.connections.'.(is_string($connection) ? $connection : '').'.driver');
         RecreateDatabasesGuard::check(true, is_string($driver) ? $driver : '', base_path());
+    }
+
+    private static function sharedDriver(): string
+    {
+        return (new SharedConfig)->string('database.driver', 'mariadb');
+    }
+
+    private static function defaultPort(): int
+    {
+        return self::sharedDriver() === 'pgsql' ? 5432 : 3306;
+    }
+
+    private static function defaultAppHost(): string
+    {
+        return match (self::sharedDriver()) {
+            'pgsql' => 'pgsql',
+            'mysql' => 'mysql',
+            default => 'mariadb',
+        };
     }
 
     private static function mainDatabaseFromMainCheckout(): string

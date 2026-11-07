@@ -159,3 +159,17 @@ test('a failed later template build keeps its error and retires the builder', fu
         ->and($this->server->databaseExists($first))->toBeTrue()
         ->and($this->server->runAs($this->prefix.'_tpl_builder', 'x', 'SELECT 1')->successful)->toBeFalse();
 });
+
+test('--from-main of a main database in use with a superuser extension restores it', function () {
+    config()->set('worktrees.shared.database.allow_from_main', true);
+    $this->server->runAs('postgres', $this->rootPassword, 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;', $this->prefix.'_main');
+    $holder = proc_open(['psql', '-h', (string) getenv('LW_TEST_PGSQL_HOST'), '-U', 'postgres', '-d', $this->prefix.'_main', '-c', 'SELECT pg_sleep(6)'],
+        [], $pipes, null, ['PGPASSWORD' => $this->rootPassword, 'PATH' => (string) getenv('PATH')]);
+    usleep(800_000);
+
+    $state = ($this->provision)('t9', true);
+    proc_close($holder);
+
+    expect(($this->as)($state, 'SELECT id FROM items', "{$this->prefix}_t9")->output)->toContain('1')
+        ->and($this->server->runAs('postgres', $this->rootPassword, "SELECT extname FROM pg_extension WHERE extname = 'pg_stat_statements'", "{$this->prefix}_t9")->output)->toContain('pg_stat_statements');
+});
