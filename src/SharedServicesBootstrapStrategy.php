@@ -86,6 +86,13 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
     {
         if ($this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output)) {
+            // The copied autoload files describe the main checkout's classes; the
+            // branch may have moved some. Build them for this worktree.
+            $result = $this->compose($worktreePath, 300)->run($this->execCommand('composer dump-autoload --no-interaction'), $output);
+            if (! $result->successful()) {
+                throw new RuntimeException("composer dump-autoload failed: {$result->errorOutput()}");
+            }
+
             return;
         }
         parent::installComposerDependencies($worktreePath, $output);
