@@ -50,6 +50,8 @@ beforeEach(function () {
     // No Redis here: emptying its numbers is covered by the feature tests.
     app()->instance(RedisServer::class, new class(null, '', 0) extends RedisServer
     {
+        public function ping(): void {}
+
         public function flush(int $database): void {}
     });
     $this->paths = [];
