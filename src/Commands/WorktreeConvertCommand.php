@@ -54,12 +54,16 @@ class WorktreeConvertCommand extends Command
             $action = 'convert';
             if ($ask) {
                 $merged = $candidate['merged'];
+                // Delete goes through worktree:delete <name>, which finds the folder by
+                // name: offer it only when that name leads to exactly this folder.
+                $deletable = ! $candidate['main'] && $converter->deletableByName($candidate['name'], $candidate['path']);
                 $action = (string) select(
-                    label: sprintf('%s (%s, %s)%s', $candidate['name'], $candidate['branch'] ?? 'detached', $candidate['last_commit'], $merged ? ': merged, delete suggested' : ''),
-                    options: $candidate['main']
-                        ? ['convert' => 'Convert', 'skip' => 'Skip']
-                        : ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'],
-                    default: $merged ? 'delete' : 'convert',
+                    label: sprintf('%s (%s, %s)%s', $candidate['name'], $candidate['branch'] ?? 'detached', $candidate['last_commit'],
+                        $merged ? ($deletable ? ': merged, delete suggested' : ': merged; outside the worktree folder, delete it by hand') : ''),
+                    options: $deletable
+                        ? ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip']
+                        : ['convert' => 'Convert', 'skip' => 'Skip'],
+                    default: $merged && $deletable ? 'delete' : 'convert',
                 );
             }
             if ($action === 'skip') {

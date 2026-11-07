@@ -7,6 +7,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
 use Woda\Worktrees\Tests\Support\FakeTemplateRecipe;
@@ -46,6 +47,7 @@ beforeEach(function () {
     $this->containers = [];
     $this->removed = [];
     $this->order = [];
+    $this->countFails = false;
     $this->ups = [];
     $this->volumes = [];
     $this->volumeRemovals = [];
@@ -100,7 +102,9 @@ beforeEach(function () {
                 return Process::result('cid');
             },
             "'docker' 'exec' 'worktree-convert-*' 'mariadb' '-N' '-e' 'SELECT 1'" => Process::result('1'),
-            "'docker' 'exec' 'worktree-convert-*' 'mariadb' '-N' '-e' 'SELECT COUNT*" => fn () => Process::result((string) count($this->volumes[$this->runningVolume])),
+            "'docker' 'exec' 'worktree-convert-*' 'mariadb' '-N' '-e' 'SELECT COUNT*" => fn () => $this->countFails
+                ? Process::result(errorOutput: 'server gone', exitCode: 1)
+                : Process::result((string) count($this->volumes[$this->runningVolume])),
             'docker exec *mariadb-dump*' => function (PendingProcess $p) {
                 preg_match("/> '([^']+)'$/", (string) $p->command, $m);
                 File::put($m[1], implode(',', $this->volumes[$this->runningVolume]));
@@ -305,4 +309,34 @@ test('the main checkout gets the shared layout and a running app container befor
 
     expect(File::get($this->main.'/.env'))->toContain('COMPOSE_FILE=compose.worktree.yml');
     Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d --force-recreate' && $p->path === $this->main);
+});
+
+test('a failed read of the old database stops the conversion instead of using the template', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    $this->countFails = true;
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('Reading the old database from volume')
+        ->assertFailed();
+
+    expect($this->server->databaseExists('hp_old1'))->toBeFalse()
+        ->and(SailConverter::isConverted($path))->toBeFalse();
+
+    $this->countFails = false;
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});
+
+test('delete is offered only for a worktree whose name leads to its own folder', function () {
+    sailWorktree($this, 'old1', 'merged-branch');
+    $outside = $this->base.'/elsewhere/old1';
+    File::ensureDirectoryExists($outside);
+    File::put($outside.'/.env', "COMPOSE_PROJECT_NAME=other-old1\nDB_DATABASE=hungryport\n");
+    $this->worktrees['merged-branch-2'] = $outside;
+
+    $this->artisan('worktree:convert')
+        ->expectsChoice('main (master, 2026-11-01)', 'skip', ['convert' => 'Convert', 'skip' => 'Skip'])
+        ->expectsChoice('old1 (merged-branch, 2026-11-01): merged, delete suggested', 'skip', ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'])
+        ->expectsChoice('old1 (merged-branch-2, 2026-11-01)', 'skip', ['convert' => 'Convert', 'skip' => 'Skip'])
+        ->assertSuccessful();
 });

@@ -64,6 +64,20 @@ class SailConverter
         return $list;
     }
 
+    /**
+     * True when `worktree:delete <name>` would act on exactly this folder.
+     */
+    public function deletableByName(string $name, string $path): bool
+    {
+        try {
+            $managed = $this->manager->pathFor($name);
+        } catch (RuntimeException) {
+            return false;
+        }
+
+        return (realpath($managed) ?: $managed) === (realpath($path) ?: $path);
+    }
+
     public static function isConverted(string $path): bool
     {
         $state = WorktreeState::load($path);
@@ -252,7 +266,11 @@ class SailConverter
             }
             $count = Process::timeout(30)->run(['docker', 'exec', $container, 'mariadb', '-N', '-e',
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{$database}'"]);
-            if (! $count->successful() || (int) trim($count->output()) === 0) {
+            if (! $count->successful()) {
+                // Not proof of an empty volume: stop, so a later run can retry.
+                throw new RuntimeException("Reading the old database from volume '{$volume}' failed: {$count->errorOutput()}");
+            }
+            if ((int) trim($count->output()) === 0) {
                 $step("The old volume '{$volume}' holds no data: the worktree starts from the template.");
 
                 return null;
