@@ -71,6 +71,10 @@ final readonly class MariaDbServer implements DatabaseServer
             ->run($this->wrap('sh -c '.escapeshellarg($script)), $output);
 
         if (! $result->successful()) {
+            // The target did not exist before this copy: remove the partial one, so
+            // the next run copies again instead of keeping an incomplete database.
+            $this->dropDatabase($target);
+
             throw new RuntimeException("Copying '{$source}' to '{$target}' failed: {$result->errorOutput()}");
         }
     }
