@@ -135,6 +135,7 @@ test('vendor and node_modules are copied with copy-on-write when the lock files 
     Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array($flag, $p->command, true) && in_array($this->main.'/vendor', $p->command, true));
     Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array($this->main.'/node_modules', $p->command, true));
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) (is_array($p->command) ? implode(' ', $p->command) : $p->command), 'composer install'));
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T 'laravel.test' sh -c 'composer dump-autoload --no-interaction'" && $p->path === ($this->path)('t9'));
     Process::assertNotRan('pnpm install');
 });
 

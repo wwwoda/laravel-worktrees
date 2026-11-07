@@ -294,3 +294,43 @@ test('names are reserved in the state before the server is touched', function ()
     File::ensureDirectoryExists($second);
     expect(fn () => app(DatabaseProvisioner::class)->provision('t9', $second))->toThrow(RuntimeException::class, 'already uses the database names');
 });
+
+test('a resumed --from-main setup keeps copying the main database', function () {
+    config()->set('worktrees.shared.database.allow_from_main', true);
+    $failing = new class extends FakeDatabaseServer
+    {
+        public bool $fail = true;
+
+        public function copyDatabase(string $source, string $target, ?string $owner = null, ?Closure $output = null): void
+        {
+            if ($this->fail && $source === 'hungryport') {
+                throw new RuntimeException('copy failed');
+            }
+            parent::copyDatabase($source, $target, $owner, $output);
+        }
+    };
+    $failing->databases = ['hungryport' => ['production-like']];
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+
+    $this->artisan('worktree:create', ['name' => 't9', '--from-main' => true])->assertFailed();
+    $failing->fail = false;
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true])->assertSuccessful();
+
+    expect($failing->databases['hp_t9'])->toBe(['production-like'])
+        ->and(WorktreeState::load(($this->path)('t9'))?->data)->not->toHaveKey('from_main_requested');
+});
+
+test('without a configured main database, the main checkout\'s .env names it', function () {
+    // The invoking checkout's .env says DB_DATABASE=app; the main checkout's says hp_main.
+    config()->set('worktrees.shared.database.main', null);
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    File::put($main.'/.env', "DB_DATABASE=hp_main\n");
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    $this->artisan('worktree:create', ['name' => 'main'])
+        ->expectsOutputToContain("would use the main database 'hp_main'")
+        ->assertFailed();
+});
