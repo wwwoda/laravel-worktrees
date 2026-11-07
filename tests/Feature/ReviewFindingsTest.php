@@ -67,3 +67,24 @@ test('env_overrides values are written literally, also with dollar signs and bac
         ->toContain('APP_NAME="Te$1st (lane)"')
         ->toContain('APP_URL="https://${WORKTREE_HOST}"');
 });
+
+test('the package\'s own bootstrap files do not make a worktree dirty', function () {
+    $path = $this->base.'/'.basename(base_path()).'-lane';
+    File::ensureDirectoryExists($path.'/storage');
+    $git = fn (array $arguments) => Process::path($path)->run(['git', ...$arguments])->throw();
+    $git(['init', '-b', 'lane']);
+    $git(['config', 'user.email', 'test@example.invalid']);
+    $git(['config', 'user.name', 'Test']);
+    $git(['config', 'commit.gpgsign', 'false']);
+    $git(['commit', '--allow-empty', '-m', 'Base']);
+    File::put($path.'/storage/worktree-bootstrap.json', '{}');
+    File::put($path.'/storage/worktree-bootstrap.lock', '');
+
+    $manager = app(WorktreeManager::class);
+    expect($manager->isDirty('lane'))->toBeFalse()
+        ->and($manager->safetyCheck('lane')['clean'])->toBeTrue();
+
+    File::put($path.'/edit.txt', 'work');
+    expect($manager->isDirty('lane'))->toBeTrue()
+        ->and($manager->safetyCheck('lane')['clean'])->toBeFalse();
+});

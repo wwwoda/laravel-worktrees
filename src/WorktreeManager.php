@@ -11,6 +11,13 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 
 class WorktreeManager
 {
+    /**
+     * `git status` without the files this package writes into a worktree:
+     * they are untracked in most projects and would make every bootstrapped
+     * worktree look dirty to delete and cleanup.
+     */
+    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock'";
+
     public function __construct(
         private readonly string $basePath,
         private readonly string $branchPrefix,
@@ -158,7 +165,7 @@ class WorktreeManager
         $path = $this->pathFor($name);
 
         // Check for uncommitted changes
-        $statusResult = Process::path($path)->timeout(10)->run('git status --porcelain');
+        $statusResult = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
         if (! $statusResult->successful()) {
             throw new RuntimeException('Cannot verify worktree changes.');
         }
@@ -321,7 +328,7 @@ class WorktreeManager
     {
         $path = $this->pathFor($name);
 
-        $result = Process::path($path)->timeout(10)->run('git status --porcelain');
+        $result = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
 
         if (! $result->successful()) {
             throw new RuntimeException('Cannot verify worktree changes.');
