@@ -170,8 +170,10 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         }
         foreach ($targets as $database) {
             $result = $this->compose($worktreePath, 600)->run(
-                sprintf('docker compose exec -T -e %s %s sh -c %s',
+                // A config cache would ignore DB_DATABASE: read the config fresh.
+                sprintf('docker compose exec -T -e %s -e %s %s sh -c %s',
                     escapeshellarg('DB_DATABASE='.$database),
+                    escapeshellarg('APP_CONFIG_CACHE=/tmp/worktree-migrate-'.bin2hex(random_bytes(6)).'-config.php'),
                     escapeshellarg($this->appService()),
                     escapeshellarg('php artisan migrate --force'),
                 ),
