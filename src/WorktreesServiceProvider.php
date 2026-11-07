@@ -18,6 +18,8 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\ArtisanTemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
+use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\RedisAllocator;
 use Woda\Worktrees\Shared\SharedConfig;
@@ -194,7 +196,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 ),
                 registry: $app->make(WorktreeRegistry::class),
                 prefix: $config->string('database.prefix', 'wt'),
-                mainDatabase: $config->string('database.main', 'laravel'),
+                mainDatabase: $config->nullableString('database.main') ?? self::mainDatabaseFromMainCheckout(),
                 parallelWorkers: $config->int('database.parallel_workers', 8),
                 allowFromMain: (bool) config('worktrees.shared.database.allow_from_main', false),
                 copyFromTemplate: $config->stringList('database.copy_from_template'),
@@ -203,6 +205,16 @@ class WorktreesServiceProvider extends ServiceProvider
                 envMap: $config->stringMap('env'),
             );
         });
+    }
+
+    private static function mainDatabaseFromMainCheckout(): string
+    {
+        $database = EnvFile::get(MainCheckout::file('.env'), 'DB_DATABASE');
+        if ($database === null || $database === '') {
+            throw new InvalidArgumentException('Cannot tell the main database: set WORKTREE_SHARED_DB_MAIN (worktrees.shared.database.main), or DB_DATABASE in the main checkout\'s .env.');
+        }
+
+        return $database;
     }
 
     public function boot(): void

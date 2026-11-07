@@ -51,6 +51,9 @@ class DatabaseProvisioner
     public function provision(string $name, string $path, array $context = [], bool $fromMain = false, ?Closure $output = null, ?Closure $onStep = null): WorktreeState
     {
         $step = $onStep ?? static fn (string $message) => null;
+        // A run that was asked for --from-main and stopped before the app copy
+        // finished keeps that choice: a resume must not switch to the template.
+        $fromMain = $fromMain || (WorktreeState::load($path)?->data['from_main_requested'] ?? false) === true;
         if ($fromMain && ! $this->allowFromMain) {
             throw new RuntimeException('--from-main is not allowed on this machine: production-like data stays on machines where config worktrees.shared.database.allow_from_main is true.');
         }
@@ -60,7 +63,7 @@ class DatabaseProvisioner
         // Reserve the names under the shared lock before touching the server, so a
         // concurrent setup with a name that maps to the same databases (`T9`, `t9`)
         // sees them in this worktree's state and stops.
-        [$state, $password] = $this->withAllocationLock(function () use ($names, $path, $context): array {
+        [$state, $password] = $this->withAllocationLock(function () use ($names, $path, $context, $fromMain): array {
             $this->assertNoOtherWorktreeUses($names, $path);
             $state = WorktreeState::load($path) ?? new WorktreeState([]);
             $password = $this->password($state, $names, $path);
@@ -74,6 +77,9 @@ class DatabaseProvisioner
                 'password' => $password,
                 'created_at' => $state->string('created_at') ?? date(DATE_ATOM),
             ];
+            if ($fromMain && ! $this->server->databaseExists($names->app)) {
+                $state->data['from_main_requested'] = true;
+            }
             $state->save($path);
 
             return [$state, $password];
@@ -128,6 +134,7 @@ class DatabaseProvisioner
                 'template' => $template,
                 'source' => isset($missing['app']) ? ($fromMain ? 'main' : 'template') : ($state->string('source') ?? 'existing'),
             ];
+            unset($state->data['from_main_requested']);
             $state->save($path);
             $this->writeEnv($path, $state);
 
