@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
+use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
@@ -43,6 +44,7 @@ beforeEach(function () {
     app()->instance(TemplateRecipe::class, $this->recipe);
 
     $this->worktrees = [];
+    $this->commonDir = '';
     $this->fakeProcesses = function () {
         Process::fake([
             'git show-ref *' => Process::result(exitCode: 1),
@@ -59,10 +61,12 @@ beforeEach(function () {
                 ['master' => base_path(), ...$this->worktrees],
             ))),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
+            'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
             '*' => Process::result(),
         ]);
     };
     ($this->fakeProcesses)();
+    MainCheckout::forget();
     $this->path = fn (string $name) => $this->base.'/'.basename(base_path()).'-'.$name;
 });
 
@@ -227,4 +231,17 @@ test('worktree:template builds the template on demand', function () {
     $this->artisan('worktree:template')->assertSuccessful();
 
     expect($this->recipe->built)->toBe([app(TemplateManager::class)->name()]);
+});
+
+test('templates and locks live in the main checkout also when artisan runs in a linked worktree', function () {
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    try {
+        expect(MainCheckout::file('storage/app/worktrees/template.lock'))->toBe($main.'/storage/app/worktrees/template.lock');
+    } finally {
+        MainCheckout::forget();
+    }
 });

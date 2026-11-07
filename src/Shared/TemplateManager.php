@@ -13,7 +13,8 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
  * a lock and kept until a prune.
  *
  * A template counts as ready when its database exists and its marker file
- * `storage/app/worktrees/templates/<name>.ready` in the main checkout exists.
+ * `storage/app/worktrees/templates/<name>.ready` in the main checkout exists
+ * (the main checkout also when artisan runs in a linked worktree).
  * A database without the marker is a build that stopped half way; it is
  * dropped and built again.
  */
@@ -42,7 +43,7 @@ class TemplateManager
         hash_update($context, "seed:{$this->seedCommand}\n");
         $files = [];
         foreach ($this->hashPaths as $relative) {
-            $path = base_path($relative);
+            $path = MainCheckout::file($relative);
             if (is_file($path)) {
                 $files[$relative] = $path;
             } elseif (is_dir($path)) {
@@ -156,7 +157,7 @@ class TemplateManager
      */
     private function lock(?Closure $onStep)
     {
-        $path = base_path('storage/app/worktrees/template.lock');
+        $path = MainCheckout::file('storage/app/worktrees/template.lock');
         File::ensureDirectoryExists(dirname($path));
         $handle = fopen($path, 'c');
         if ($handle === false) {
@@ -182,6 +183,6 @@ class TemplateManager
 
     private function markerPath(string $name): string
     {
-        return base_path('storage/app/worktrees/templates/'.$name.'.ready');
+        return MainCheckout::file('storage/app/worktrees/templates/'.$name.'.ready');
     }
 }

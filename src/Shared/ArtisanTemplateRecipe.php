@@ -55,8 +55,8 @@ final readonly class ArtisanTemplateRecipe implements TemplateRecipe
     private function process(array $env): PendingProcess
     {
         return $this->mode === 'host'
-            ? Process::path(base_path())->timeout(1800)->env($env)
-            : ComposeProcess::in(base_path(), 1800);
+            ? Process::path(MainCheckout::path())->timeout(1800)->env($env)
+            : ComposeProcess::in(MainCheckout::path(), 1800);
     }
 
     /**

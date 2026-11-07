@@ -169,7 +169,7 @@ class DatabaseProvisioner
      */
     private function withAllocationLock(Closure $callback): mixed
     {
-        $lockPath = base_path('storage/app/worktrees/allocate.lock');
+        $lockPath = MainCheckout::file('storage/app/worktrees/allocate.lock');
         File::ensureDirectoryExists(dirname($lockPath));
         $handle = fopen($lockPath, 'c');
         if ($handle === false || ! flock($handle, LOCK_EX)) {
