@@ -78,7 +78,7 @@ return [
 
     'shared' => [
         'database' => [
-            // mariadb | mysql (pgsql follows)
+            // mariadb | mysql | pgsql
             'driver' => env('WORKTREE_SHARED_DB_DRIVER', 'mariadb'),
 
             // How the package reaches the server as admin. With a container,
@@ -87,11 +87,13 @@ return [
             'container' => env('WORKTREE_SHARED_DB_CONTAINER'),
             'host' => env('WORKTREE_SHARED_DB_ADMIN_HOST', '127.0.0.1'),
             'port' => (int) env('WORKTREE_SHARED_DB_ADMIN_PORT', 3306),
-            'admin_username' => env('WORKTREE_SHARED_DB_ADMIN_USERNAME', 'root'),
+            // Empty: root (MariaDB, MySQL) or postgres (PostgreSQL).
+            'admin_username' => env('WORKTREE_SHARED_DB_ADMIN_USERNAME'),
             'admin_password' => env('WORKTREE_SHARED_DB_ADMIN_PASSWORD', ''),
             // Client commands, with options if needed (e.g. 'mariadb --skip-ssl').
-            'client' => env('WORKTREE_SHARED_DB_CLIENT', 'mariadb'),
-            'dump_client' => env('WORKTREE_SHARED_DB_DUMP_CLIENT', 'mariadb-dump'),
+            // Empty: mariadb/mariadb-dump, mysql/mysqldump or psql/pg_dump by driver.
+            'client' => env('WORKTREE_SHARED_DB_CLIENT'),
+            'dump_client' => env('WORKTREE_SHARED_DB_DUMP_CLIENT'),
 
             // How the app containers reach the server (written to `.env`).
             'app_host' => env('WORKTREE_SHARED_DB_HOST', 'mariadb'),

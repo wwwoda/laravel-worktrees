@@ -3,6 +3,7 @@
 namespace Woda\Worktrees;
 
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\ParallelTesting;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
@@ -21,6 +22,8 @@ use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
+use Woda\Worktrees\Shared\PostgresServer;
+use Woda\Worktrees\Shared\RecreateDatabasesGuard;
 use Woda\Worktrees\Shared\RedisAllocator;
 use Woda\Worktrees\Shared\SharedConfig;
 use Woda\Worktrees\Shared\TemplateManager;
@@ -129,10 +132,19 @@ class WorktreesServiceProvider extends ServiceProvider
                     container: $config->nullableString('database.container'),
                     host: $config->string('database.host', '127.0.0.1'),
                     port: $config->int('database.port', 3306),
-                    adminUser: $config->string('database.admin_username', 'root'),
+                    adminUser: $config->nullableString('database.admin_username') ?? 'root',
                     adminPassword: $config->string('database.admin_password', ''),
-                    client: $config->string('database.client', $driver === 'mysql' ? 'mysql' : 'mariadb'),
-                    dumpClient: $config->string('database.dump_client', $driver === 'mysql' ? 'mysqldump' : 'mariadb-dump'),
+                    client: $config->nullableString('database.client') ?? ($driver === 'mysql' ? 'mysql' : 'mariadb'),
+                    dumpClient: $config->nullableString('database.dump_client') ?? ($driver === 'mysql' ? 'mysqldump' : 'mariadb-dump'),
+                ),
+                'pgsql' => new PostgresServer(
+                    container: $config->nullableString('database.container'),
+                    host: $config->string('database.host', '127.0.0.1'),
+                    port: $config->int('database.port', 5432),
+                    adminUser: $config->nullableString('database.admin_username') ?? 'postgres',
+                    adminPassword: $config->string('database.admin_password', ''),
+                    client: $config->nullableString('database.client') ?? 'psql',
+                    dumpClient: $config->nullableString('database.dump_client') ?? 'pg_dump',
                 ),
                 default => throw new InvalidArgumentException("Unknown shared database driver '{$driver}'."),
             };
@@ -200,6 +212,17 @@ class WorktreesServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (class_exists(ParallelTesting::class) && $this->app->bound(\Illuminate\Testing\ParallelTesting::class)) {
+            ParallelTesting::setUpProcess(static function (): void {
+                $connection = config('database.default');
+                RecreateDatabasesGuard::check(
+                    (bool) ParallelTesting::option('recreate_databases'),
+                    is_string($driver = config('database.connections.'.(is_string($connection) ? $connection : '').'.driver')) ? $driver : '',
+                    base_path(),
+                );
+            });
+        }
+
         $this->publishes([
             __DIR__.'/../config/worktrees.php' => config_path('worktrees.php'),
         ], 'worktrees-config');

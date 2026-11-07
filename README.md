@@ -133,7 +133,7 @@ Docker containers are supported for MySQL and PostgreSQL — set the container n
 
 ## Shared Services
 
-With `bootstrap.strategy` set to `shared`, all worktrees on a machine use one database server and one Redis, and each worktree runs one app container (started like the Sail strategy). Set `database.strategy` to `none`; the `shared` config section replaces it. Supported servers: MariaDB and MySQL.
+With `bootstrap.strategy` set to `shared`, all worktrees on a machine use one database server and one Redis, and each worktree runs one app container (started like the Sail strategy). Set `database.strategy` to `none`; the `shared` config section replaces it. Supported servers: MariaDB, MySQL and PostgreSQL (see below for what PostgreSQL does differently).
 
 What each worktree gets:
 
@@ -147,6 +147,16 @@ What each worktree gets:
 The main database is `shared.database.main` (`WORKTREE_SHARED_DB_MAIN`); when it is empty, the package reads `DB_DATABASE` from the main checkout's `.env`, also when artisan runs in a linked worktree.
 
 Names are refused when they could equal another worktree's database (names that end in `-test`, `-e2e`, `-test-N`, `-e2e-N`), a template (`tpl-…`), the main database, or the names that another worktree already uses.
+
+### PostgreSQL
+
+Set `shared.database.driver` to `pgsql` (admin user `postgres` by default, clients `psql` and `pg_dump`). PostgreSQL cannot limit the right to create databases to names, so it works differently:
+
+- The worktree's role has no right to create databases. The package creates **every** database of the worktree in advance, the parallel test databases (`parallel_workers`) too, and makes the role their owner.
+- **`php artisan test --parallel --recreate-databases` does not work** in a PostgreSQL worktree: the role cannot create the databases again. The package stops such a run at the start with a clear message. Run `php artisan test --parallel` without it; the databases exist already.
+- `CONNECT` is revoked from `PUBLIC` on every database the package creates, so no other role can connect to a worktree's or a template database.
+- Copies use `CREATE DATABASE … TEMPLATE …`. A source with open connections (the main database for `--from-main`) is dumped and restored instead. Objects in the copy are handed to the worktree's role.
+- The template builder role keeps owning the template's objects and can no longer log in after the build.
 
 ### Template databases
 
