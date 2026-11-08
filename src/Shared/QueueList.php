@@ -56,6 +56,16 @@ final class QueueList
     {
         $composer = json_decode((string) @file_get_contents($worktreePath.'/composer.json'), true);
 
-        return is_array($composer) && is_array($composer['require'] ?? null) && array_key_exists('laravel/horizon', $composer['require']);
+        if (! is_array($composer)) {
+            return false;
+        }
+        // Horizon is often a dev dependency, which the development install also installs.
+        foreach (['require', 'require-dev'] as $section) {
+            if (is_array($composer[$section] ?? null) && array_key_exists('laravel/horizon', $composer[$section])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
