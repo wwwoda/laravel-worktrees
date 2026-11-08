@@ -92,7 +92,8 @@ test('provisioning copies the template and gives each worktree its own guarded u
         ->and($query($t91, "INSERT INTO `{$template}`.users VALUES ('x')")->successful)->toBeFalse()
         ->and($query($t91, "SELECT 1 FROM `{$this->prefix}_main`.users")->successful)->toBeFalse()
         ->and($t9->redis())->not->toBe($t91->redis())
-        ->and($this->server->userExists($this->prefix.'_tpl_builder'))->toBeFalse();
+        // The builder stays as the definer of template views, but cannot log in.
+        ->and($this->server->runAs('root', (string) getenv('LW_TEST_MARIADB_PASSWORD'), "SHOW CREATE USER '{$this->prefix}_tpl_builder'@'%'")->output)->toContain('ACCOUNT LOCK');
 });
 
 test('provisioning again keeps the data of an existing database', function () {

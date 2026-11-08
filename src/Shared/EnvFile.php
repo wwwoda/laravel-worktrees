@@ -41,6 +41,7 @@ final class EnvFile
             return null;
         }
 
-        return trim($match[1], " \t\"'");
+        // A CRLF file leaves "\r" at the end of the line; it is not part of the value.
+        return trim($match[1], " \t\r\"'");
     }
 }
