@@ -90,6 +90,9 @@ class DatabaseProvisioner
             return [$state, $password];
         });
 
+        // The user first: PostgreSQL makes it the owner of each new database.
+        $this->server->grantUser($names->user, $password, $names->databases());
+
         // A copy that stopped half way (process killed) left its target behind:
         // it is this worktree's own name, so drop it and copy again.
         foreach ($this->pendingCopies($state) as $database) {
@@ -137,6 +140,13 @@ class DatabaseProvisioner
         }
         foreach (array_diff(['app' => $names->app, 'test' => $names->test, 'e2e' => $names->e2e], $missing) as $database) {
             $step("Database {$database} exists; kept as it is.");
+        }
+        if ($this->server->requiresDatabasesInAdvance()) {
+            // The user cannot create databases here: Laravel's parallel test
+            // databases must exist before the tests run.
+            foreach ($names->parallel as $database) {
+                $this->server->createDatabase($database, $names->user);
+            }
         }
         $this->server->grantUser($names->user, $password, $names->databases());
 

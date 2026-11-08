@@ -159,20 +159,31 @@ class TemplateManager
         }
         $builder = $this->builder($name);
         $password = bin2hex(random_bytes(16));
-        // Account and database setup sit inside the cleanup: a failed grant must not leave the builder behind.
+        // The user first: PostgreSQL makes it the owner of the new database. Both sit
+        // inside the cleanup: a failed setup must not leave the builder able to log in.
         try {
-            $this->server->createDatabase($name, $builder);
             $this->server->grantUser($builder, $password, [$name]);
+            $this->server->createDatabase($name, $builder);
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
+            // Inside the guard: if retiring fails, the template is not marked ready.
+            $this->server->finishTemplateBuild($builder, $name);
         } catch (\Throwable $error) {
-            $this->server->dropDatabase($name);
-            $this->server->dropUser($builder);
+            // Clean up without hiding the build error. The builder belongs to this
+            // template only: it goes with the database. If either drop fails, the
+            // builder is retired, so it can at least no longer log in.
+            try {
+                $this->server->dropDatabase($name);
+                $this->server->dropUser($builder);
+            } catch (\Throwable) {
+                try {
+                    $this->server->finishTemplateBuild($builder, $name);
+                } catch (\Throwable) {
+                    // The build error below is what the person needs to see.
+                }
+            }
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
         }
-        // Retired, not dropped: views and routines of the template name the builder
-        // as definer, and a dump of them needs that account to exist.
-        $this->server->retireUser($builder);
         File::ensureDirectoryExists(dirname($this->markerPath($name)));
         File::put($this->markerPath($name), date(DATE_ATOM)."\n");
     }
