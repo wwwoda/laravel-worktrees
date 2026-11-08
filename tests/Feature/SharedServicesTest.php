@@ -495,3 +495,13 @@ test('pruning waits for a running template build', function () {
     proc_close($builder);
     File::delete($lock.'.held');
 });
+
+test('a run without --resume starts its stage record anew, so a failed provisioning is not skipped later', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $this->server->up = false;
+
+    expect(fn () => app(WorktreeManager::class)->bootstrap('t9'))->toThrow(RuntimeException::class);
+
+    $record = json_decode(File::get(($this->path)('t9').'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->not->toContain('database');
+});

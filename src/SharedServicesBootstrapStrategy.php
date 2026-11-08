@@ -103,6 +103,15 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         return [...parent::protectedCheckouts(), MainCheckout::path()];
     }
 
+    /**
+     * Lend missing build contexts from the main checkout: artisan may run in a
+     * linked worktree that has no complete `vendor` either.
+     */
+    protected function buildContextSource(): string
+    {
+        return MainCheckout::path();
+    }
+
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void
     {
         $this->provisioner->provision(
@@ -246,6 +255,28 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
     }
 
     /**
+     * True when a Vite dev server answers at the URL: `/@vite/client` returns a 2xx
+     * status. An error page of another service or a proxy does not count.
+     */
+    public static function devServerAnswers(string $url): bool
+    {
+        if (! preg_match('#^https?://#', $url)) {
+            return false;
+        }
+        // Dev servers often use self-signed certificates; only the status counts here.
+        $context = stream_context_create(['http' => ['timeout' => 2, 'ignore_errors' => true], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
+        $stream = @fopen(rtrim($url, '/').'/@vite/client', 'r', false, $context);
+        if ($stream === false) {
+            return false;
+        }
+        $headers = stream_get_meta_data($stream)['wrapper_data'] ?? [];
+        fclose($stream);
+        $status = is_array($headers) && is_string($headers[0] ?? null) && preg_match('#^HTTP/\S+\s+(\d{3})#', $headers[0], $match) ? (int) $match[1] : 0;
+
+        return $status >= 200 && $status < 300;
+    }
+
+    /**
      * @param  (Closure(string, string): void)|null  $output
      */
     private function removeStaleHotFile(string $worktreePath, ?Closure $output): void
@@ -255,14 +286,7 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
             return;
         }
         $url = trim((string) File::get($hot));
-        $answers = $this->devServerAnswers ?? static function (string $url): bool {
-            if (! preg_match('#^https?://#', $url)) {
-                return false;
-            }
-            $context = stream_context_create(['http' => ['timeout' => 2, 'ignore_errors' => true], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
-
-            return @file_get_contents(rtrim($url, '/').'/@vite/client', false, $context, 0, 1) !== false;
-        };
+        $answers = $this->devServerAnswers ?? self::devServerAnswers(...);
         if (! $answers($url)) {
             File::delete($hot);
             $output && $output('out', "Removed public/hot: no dev server answers at {$url}.\n");
