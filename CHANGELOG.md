@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.1 (unreleased)
+## v0.2.1 (2026-11-08)
 
 A fix for the `shared` strategy. No breaking change.
 
