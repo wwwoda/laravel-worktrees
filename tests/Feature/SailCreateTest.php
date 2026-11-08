@@ -45,7 +45,7 @@ test('worktree:create with the Sail strategy sets up a worktree like HungryPort 
 
             return Process::result();
         },
-        'git worktree list --porcelain' => fn () => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
+        'git worktree list --porcelain' => fn () => Process::result('worktree '.base_path()."\nHEAD 000\nbranch refs/heads/master\n\nworktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
         "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
         '*' => Process::result(),
     ]);

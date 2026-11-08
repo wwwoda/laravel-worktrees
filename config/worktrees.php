@@ -165,6 +165,17 @@ return [
             ],
         ],
 
+        // worktree:convert and worktree:volumes (moving Sail worktrees).
+        'convert' => [
+            // Image of the temporary database that reads an old volume.
+            'image' => env('WORKTREE_CONVERT_IMAGE', 'mariadb:10.11'),
+            // The old database volume of a worktree; {compose_project} is the
+            // old COMPOSE_PROJECT_NAME (else the folder name).
+            'volume' => env('WORKTREE_CONVERT_VOLUME', '{compose_project}_sail-mariadb'),
+            // Volumes that worktree:volumes lists as backups (a regular expression).
+            'backup_volumes' => env('WORKTREE_BACKUP_VOLUMES', '/_sail-(mariadb|mysql|pgsql|redis)$/'),
+        ],
+
         'redis' => [
             // Must not exceed the shared Redis `databases` setting.
             'databases' => (int) env('WORKTREE_SHARED_REDIS_DATABASES', 256),

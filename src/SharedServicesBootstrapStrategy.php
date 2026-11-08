@@ -66,6 +66,37 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
     }
 
     /**
+     * Switch the queue worker of an existing worktree and recreate its app
+     * container, so the worker starts in the new mode.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function switchQueueWorker(string $worktreePath, string $mode, ?Closure $output = null): void
+    {
+        if (! in_array($mode, ['listen', 'horizon'], true)) {
+            throw new RuntimeException("Unknown queue worker mode '{$mode}'. Use 'listen' or 'horizon'.");
+        }
+        // The recreate below acts on the worktree's compose project: not on the main checkout's.
+        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
+        EnvFile::upsert($worktreePath.'/.env', [
+            $this->queueEnvKeys['mode'] => $mode,
+            $this->queueEnvKeys['queues'] => implode(',', QueueList::for($worktreePath)),
+        ]);
+        $result = $this->compose($worktreePath, 300)->run(
+            'docker compose up -d --force-recreate --no-deps '.escapeshellarg($this->appService()),
+            $output,
+        );
+        if (! $result->successful()) {
+            throw new RuntimeException("Restarting the app container failed: {$result->errorOutput()}");
+        }
+    }
+
+    public function queueWorkerMode(string $worktreePath): ?string
+    {
+        return EnvFile::get($worktreePath.'/.env', $this->queueEnvKeys['mode']);
+    }
+
+    /**
      * The main checkout's compose project holds its app (and may hold the shared
      * stack): a worktree must not share it, also when artisan runs in a linked worktree.
      */
@@ -92,6 +123,7 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
             (bool) ($options['from_main'] ?? false),
             $output,
             $onStep,
+            $options['fill_app'] ?? null,
         );
     }
 
