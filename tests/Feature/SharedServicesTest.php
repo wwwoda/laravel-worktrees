@@ -514,6 +514,20 @@ test('a worktree that lost its state file keeps its names and Redis numbers also
     expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
 });
 
+test('a worktree that lost its state file keeps its names and Redis numbers when another line of its .env is broken', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::delete(WorktreeState::path(($this->path)('t9')));
+    File::append(($this->path)('t9').'/.env', "BROKEN=\"never closed\n");
+
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+
+    $this->artisan('worktree:create', ['name' => 't10'])->assertSuccessful();
+    expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
+});
+
 test('an incomplete state file of another worktree does not hide its names', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     File::put(WorktreeState::path(($this->path)('t9')), json_encode(['schema' => WorktreeState::SCHEMA]));
