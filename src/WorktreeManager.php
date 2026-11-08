@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
+use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\SailConverter;
@@ -394,10 +395,18 @@ class WorktreeManager
                     'base' => $options['base'] ?? $this->baseBranch,
                 ], $processOutput, $step));
             }
+            $node = fn () => $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
+            // Container strategies install node on the host before the containers start (see the contract).
+            $nodeFirst = $this->bootstrapStrategy instanceof InstallsNodeBeforeBringUp;
+            if ($nodeFirst && empty($options['skip_deps'])) {
+                $node();
+            }
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
                 $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
-                $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
+                if (! $nodeFirst) {
+                    $node();
+                }
             }
             if (! $provisions && empty($options['skip_db'])) {
                 $run('database', function () use ($path, $name, $processOutput, $step): void {

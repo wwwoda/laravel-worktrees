@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
 
 /**
  * Sail / docker-compose bootstrap.
@@ -30,7 +31,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
  * every compose invocation; compose then falls back to the new worktree's
  * own `.env` for project name + everything else.
  */
-class SailBootstrapStrategy implements BootstrapStrategy
+class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp
 {
     public function __construct(
         private readonly string $appService,
@@ -62,6 +63,87 @@ class SailBootstrapStrategy implements BootstrapStrategy
         // Give the app service a moment to pass its DB-wait entrypoint before
         // the first `exec` lands.
         $this->waitForService($worktreePath, $output);
+        $this->ensureVolumesMounted($worktreePath, $config, $output);
+    }
+
+    /**
+     * `up -d` keeps a running app container as it is. When a host install replaced
+     * a folder on which that container mounts a named volume (`node_modules`), the
+     * mount is gone (Linux), and the container works on the host's files. A restart
+     * mounts the volume again.
+     *
+     * @param  array<mixed>|null  $config
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function ensureVolumesMounted(string $worktreePath, ?array $config, ?Closure $output): void
+    {
+        $targets = $this->volumeTargets($config);
+        if ($targets === []) {
+            return;
+        }
+        $missing = $this->unmountedTargets($worktreePath, $targets);
+        if ($missing === []) {
+            return;
+        }
+        $output && $output('out', 'The app container lost its volume at '.implode(', ', $missing).": restarting it.\n");
+        $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
+            'docker compose restart '.escapeshellarg($this->appService),
+            $output,
+        );
+        if (! $result->successful()) {
+            throw new RuntimeException("Restarting the app container failed: {$result->errorOutput()}");
+        }
+        $this->waitForService($worktreePath, $output);
+        $missing = $this->unmountedTargets($worktreePath, $targets);
+        if ($missing !== []) {
+            throw new RuntimeException('The app container has no volume at '.implode(', ', $missing).' after a restart. Run docker compose up -d --force-recreate in the worktree, then resume.');
+        }
+    }
+
+    /**
+     * The container paths where the app service mounts a named volume.
+     *
+     * @param  array<mixed>|null  $config
+     * @return list<string>
+     */
+    private function volumeTargets(?array $config): array
+    {
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $service = $services[$this->appService] ?? null;
+        $volumes = is_array($service) && is_array($service['volumes'] ?? null) ? $service['volumes'] : [];
+        $targets = [];
+        foreach ($volumes as $volume) {
+            if (is_array($volume) && ($volume['type'] ?? null) === 'volume' && is_string($volume['target'] ?? null) && $volume['target'] !== '') {
+                $targets[] = rtrim($volume['target'], '/') ?: '/';
+            }
+        }
+
+        return array_values(array_unique($targets));
+    }
+
+    /**
+     * The targets that are no mount point in the app container. Empty when its
+     * mount table cannot be read: the next step reports a container that does not run.
+     *
+     * @param  list<string>  $targets
+     * @return list<string>
+     */
+    private function unmountedTargets(string $worktreePath, array $targets): array
+    {
+        $result = $this->compose($worktreePath, 30)->run($this->execCommand('cat /proc/self/mountinfo'));
+        if (! $result->successful() || trim($result->output()) === '') {
+            return [];
+        }
+        $mounted = [];
+        foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
+            // Field 5 is the mount point, with space, tab, newline and backslash as octal escapes.
+            $fields = explode(' ', $line);
+            if (isset($fields[4])) {
+                $mounted[] = (string) preg_replace_callback('/\\\\([0-7]{3})/', static fn (array $m): string => chr((int) octdec($m[1])), $fields[4]);
+            }
+        }
+
+        return array_values(array_diff($targets, $mounted));
     }
 
     /**

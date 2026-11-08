@@ -9,7 +9,8 @@ use Closure;
  *
  * The shape of the steps (composer install → node install → migrate → build)
  * stays the same across strategies; what differs is whether they execute
- * natively on the host or inside docker compose services.
+ * natively on the host or inside docker compose services. A strategy that
+ * implements InstallsNodeBeforeBringUp gets its node install before bringUp.
  *
  * Selected by WorktreesServiceProvider from `config('worktrees.bootstrap.strategy')`:
  *   'native' (default) — runs commands directly via `Process::path($worktree)->run(...)`.

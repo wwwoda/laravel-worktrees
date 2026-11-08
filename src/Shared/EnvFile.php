@@ -2,6 +2,7 @@
 
 namespace Woda\Worktrees\Shared;
 
+use Dotenv\Dotenv;
 use Dotenv\Exception\InvalidFileException;
 use Dotenv\Parser\Parser;
 use Illuminate\Support\Facades\File;
@@ -74,6 +75,26 @@ final class EnvFile
         }
 
         return $value;
+    }
+
+    /**
+     * The value as Laravel reads it from this file: `${OTHER}` references are
+     * expanded with the values of the same file. The process environment does not
+     * count, as it holds the values of the checkout that runs artisan. When dotenv
+     * cannot parse the file, the value without expansion.
+     */
+    public static function resolved(string $path, string $key): ?string
+    {
+        if (! File::exists($path)) {
+            return null;
+        }
+        try {
+            $values = Dotenv::parse(File::get($path));
+        } catch (InvalidFileException) {
+            return self::get($path, $key);
+        }
+
+        return $values[$key] ?? null;
     }
 
     private static function lineKey(string $line): string

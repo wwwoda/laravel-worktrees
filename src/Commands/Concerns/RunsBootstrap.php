@@ -65,7 +65,7 @@ trait RunsBootstrap
         $this->table(['Step', 'Time'], $timings);
         $this->components->info("Worktree '{$name}' is ready.");
         $write('['.date('H:i:s')."] Ready.\n");
-        $url = EnvFile::get($path.'/.env', 'APP_URL');
+        $url = EnvFile::resolved($path.'/.env', 'APP_URL');
         if ($url !== null && $url !== '') {
             $this->line('  '.$url);
         }
