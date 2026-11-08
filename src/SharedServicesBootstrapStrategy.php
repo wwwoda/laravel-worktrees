@@ -3,7 +3,6 @@
 namespace Woda\Worktrees;
 
 use Closure;
-use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
@@ -66,6 +65,15 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         EnvFile::upsert($worktreePath.'/.env', $values);
     }
 
+    /**
+     * The shared stack runs in the main checkout's compose project: a worktree
+     * must not share it, also when artisan runs in a linked worktree.
+     */
+    protected function protectedCheckouts(): array
+    {
+        return [...parent::protectedCheckouts(), MainCheckout::path()];
+    }
+
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void
     {
         $this->provisioner->provision(
@@ -80,42 +88,8 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        $this->assertOwnComposeProject($worktreePath);
         parent::bringUp($worktreePath, $output);
         $this->removeStaleHotFile($worktreePath, $output);
-    }
-
-    public function tearDown(string $worktreePath, ?Closure $output = null): void
-    {
-        $this->assertOwnComposeProject($worktreePath);
-        parent::tearDown($worktreePath, $output);
-    }
-
-    public function tearDownKeepingVolumes(string $worktreePath, ?Closure $output = null): void
-    {
-        $this->assertOwnComposeProject($worktreePath);
-        parent::tearDownKeepingVolumes($worktreePath, $output);
-    }
-
-    /**
-     * `up` and `down -v` act on the worktree's compose project. When it is the
-     * main checkout's project (a copied COMPOSE_PROJECT_NAME), they would act on
-     * the main checkout's containers, and with them the shared stack.
-     */
-    private function assertOwnComposeProject(string $worktreePath): void
-    {
-        $ours = $this->composeProjectName($this->compose($worktreePath, 60));
-        if ($ours !== null && $ours === $this->composeProjectName(ComposeProcess::in(MainCheckout::path(), 60))) {
-            throw new RuntimeException("The worktree has the same compose project as the main checkout ('{$ours}'): starting or stopping it would act on the main checkout's containers and the shared stack. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
-        }
-    }
-
-    private function composeProjectName(PendingProcess $process): ?string
-    {
-        $result = $process->run('docker compose config --format json');
-        $config = $result->successful() ? json_decode($result->output(), true) : null;
-
-        return is_array($config) && is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
     }
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
