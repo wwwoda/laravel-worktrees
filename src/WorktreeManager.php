@@ -293,18 +293,29 @@ class WorktreeManager
     public function describe(string $name): array
     {
         $path = $this->pathFor($name);
+        $worktree = $this->registeredEntry($path);
+        $statePath = $path.'/storage/worktree-bootstrap.json';
+
+        return [
+            'path' => $path,
+            'branch' => is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null,
+            'head' => is_string($worktree['head'] ?? null) ? $worktree['head'] : '',
+            'bootstrap' => File::exists($statePath)
+                ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR) : null,
+        ];
+    }
+
+    /**
+     * The `git worktree list` entry of a path; fails when Git does not know the path as a worktree.
+     *
+     * @return array<string, mixed>
+     */
+    private function registeredEntry(string $path): array
+    {
         foreach ($this->list() as $worktree) {
             $registeredPath = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
             if ((realpath($registeredPath) ?: $registeredPath) === (realpath($path) ?: $path)) {
-                $statePath = $path.'/storage/worktree-bootstrap.json';
-
-                return [
-                    'path' => $path,
-                    'branch' => is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null,
-                    'head' => is_string($worktree['head'] ?? null) ? $worktree['head'] : '',
-                    'bootstrap' => File::exists($statePath)
-                        ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR) : null,
-                ];
+                return $worktree;
             }
         }
 
@@ -324,6 +335,8 @@ class WorktreeManager
         if (! $this->exists($name)) {
             return;
         }
+        // Only a registered worktree's stack is torn down; a look-alike directory may hold another project.
+        $this->registeredEntry($path);
 
         if ($keepDatabase && $this->bootstrapStrategy instanceof SailBootstrapStrategy) {
             $this->bootstrapStrategy->tearDownKeepingVolumes($path, $output);

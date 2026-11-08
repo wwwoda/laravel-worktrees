@@ -45,7 +45,11 @@ class WorktreeCreateCommand extends Command
 
         // Interactive mode: no name, no branch/issue/pr options
         if ($name === null && ! $branch && ! $issue && ! $pr) {
-            [$name, $branch] = $this->interactive();
+            $chosen = $this->interactive();
+            if ($chosen === null) {
+                return self::FAILURE;
+            }
+            [$name, $branch] = $chosen;
         }
 
         // Non-interactive --issue
@@ -134,18 +138,24 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * @return array{string, string|null}
+     * Null when the chosen source could not be resolved; the error is already printed.
+     *
+     * @return array{string, string|null}|null
      */
-    private function interactive(): array
+    private function interactive(): ?array
     {
         $mode = $this->promptMode();
 
-        [$defaultName, $branch] = match ($mode) {
+        $chosen = match ($mode) {
             'issue' => $this->promptIssue(),
             'pr' => $this->promptPullRequest(),
             'branch' => $this->promptBranch(),
             'fresh' => ['', null],
         };
+        if ($chosen === null) {
+            return null;
+        }
+        [$defaultName, $branch] = $chosen;
 
         $name = $this->promptName($defaultName);
 
@@ -170,16 +180,16 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptIssue(): array
+    private function promptIssue(): ?array
     {
         $result = Process::path(base_path())->run('gh issue list --state open --limit 100 --json number,title');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch issues: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
         /** @var list<array{number: int, title: string}> $issues */
@@ -207,23 +217,26 @@ class WorktreeCreateCommand extends Command
             scroll: 10,
         );
 
+        // An unresolved issue (several linked branches, gh failed) stops; it must not fall back to a fresh branch.
         $branch = $this->resolveIssueBranch($issueNumber);
-        $defaultName = (string) $issueNumber;
+        if ($branch === null) {
+            return null;
+        }
 
-        return [$defaultName, $branch];
+        return [(string) $issueNumber, $branch];
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptPullRequest(): array
+    private function promptPullRequest(): ?array
     {
         $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title,headRefName');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch PRs: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
         /** @var list<array{number: int, title: string, headRefName: string}> $prs */
@@ -260,16 +273,16 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptBranch(): array
+    private function promptBranch(): ?array
     {
         $result = Process::path(base_path())->run(['git', 'branch', '-a', '--format=%(refname:short)']);
 
         if (! $result->successful()) {
             $this->components->error('Failed to list branches: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
         $checkedOut = $this->branchesCheckedOutByWorktrees();
