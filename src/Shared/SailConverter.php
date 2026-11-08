@@ -169,6 +169,12 @@ class SailConverter
         }
         $step("Removing the old containers of compose project '{$project}'...");
         $this->removeOldContainers($project, $output);
+        if ($candidate['main']) {
+            // The shared stack may run in the main checkout's compose project; only its
+            // database container is known by name. Its start command brings back any
+            // other shared container (Redis) that the removal took.
+            $this->provisioner->restartServer($step, $output);
+        }
 
         $dump = $this->dumpOldVolume($project, $oldDatabase, $step, $output);
         // Provisioning keeps an existing database and fills only a new one. When the

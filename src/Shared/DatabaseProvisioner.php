@@ -177,6 +177,18 @@ class DatabaseProvisioner
     }
 
     /**
+     * Run the shared stack's start command even when the database answers, so
+     * shared containers that were removed (Redis) come back.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function restartServer(?Closure $onStep = null, ?Closure $output = null): void
+    {
+        $this->stack->restart($onStep, $output);
+    }
+
+    /**
      * The app database a conversion fills: the main database for the main
      * checkout, the derived app database for a worktree.
      */

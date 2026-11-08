@@ -5,8 +5,10 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
@@ -541,4 +543,23 @@ test('a temporary database that cannot be removed fails the conversion', functio
         ->assertFailed();
 
     expect($this->server->databaseExists('hp_old1'))->toBeFalse();
+});
+
+test('after the main checkout\'s old containers are removed, the shared stack is started again', function () {
+    config()->set('worktrees.shared.stack.start_command', 'docker compose -f shared.yml up -d');
+    app()->forgetInstance(SailConverter::class);
+    app()->forgetInstance(DatabaseProvisioner::class);
+
+    $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
+
+    Process::assertRan('docker compose -f shared.yml up -d');
+});
+
+test('the definer rewrite of an import keeps the dump private', function () {
+    Process::fake(['*' => Process::result()]);
+    $server = new MariaDbServer('mariadb', null, '127.0.0.1', 3306, 'root', '');
+
+    $server->importFile('hp_t9', '/tmp/dump.sql', owner: 'hp_t9');
+
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'umask 077 && sed -E'));
 });
