@@ -50,6 +50,12 @@ class WorktreeCleanupCommand extends Command
                 continue;
             }
 
+            if ($worktreeManager->safetyCheck($name)['unpushed']) {
+                $this->components->warn("Skipping '{$name}' — has unpushed commits.");
+
+                continue;
+            }
+
             $reason = $this->closedReason($branch);
 
             if ($reason !== null) {
@@ -81,14 +87,21 @@ class WorktreeCleanupCommand extends Command
         }
 
         foreach (array_keys($toRemove) as $name) {
-            if ($processManager->isRunning($name)) {
-                $processManager->terminate($name);
+            $processManager->terminate($name);
+
+            try {
+                $worktreeManager->tearDown($name);
+                $worktreeManager->removeSharedDatabases($name);
+                $worktreeManager->remove($name);
+            } catch (\RuntimeException $e) {
+                $this->components->error("Skipping '{$name}': {$e->getMessage()}");
+
+                continue;
             }
 
-            $worktreeManager->remove($name);
-
-            $suffix = str_replace('-', '_', $name);
-            $databaseCloner->drop($suffix);
+            if (! $worktreeManager->usesSharedDatabases()) {
+                $databaseCloner->drop(str_replace('-', '_', $name));
+            }
 
             $this->components->info("Removed '{$name}'.");
         }
@@ -101,7 +114,7 @@ class WorktreeCleanupCommand extends Command
     private function closedReason(string $branch): ?string
     {
         // Check for a merged or closed PR on this branch
-        $result = Process::timeout(15)->run(
+        $result = Process::path(base_path())->timeout(15)->run(
             sprintf('gh pr list --head %s --state all --json state,number --limit 5', escapeshellarg($branch)),
         );
 
@@ -131,7 +144,7 @@ class WorktreeCleanupCommand extends Command
         if (preg_match('/^(\d+)-/', $branch, $matches)) {
             $issueNumber = $matches[1];
 
-            $result = Process::timeout(15)->run(
+            $result = Process::path(base_path())->timeout(15)->run(
                 sprintf('gh issue view %s --json state', $issueNumber),
             );
 

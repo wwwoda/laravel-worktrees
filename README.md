@@ -65,7 +65,45 @@ php artisan worktree:create --branch=existing # From existing branch
 php artisan worktree:create                   # Interactive mode
 ```
 
-Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db`
+Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db` (with shared services only on a resume, once the worktree has its own databases), `--from-main` (shared services)
+
+`--branch` attaches an existing local branch, or a remote `origin/<branch>`, before creating a new
+branch from `--base`. `--issue` fails when the issue has several linked branches; pass `--branch`.
+A failed bootstrap keeps the checkout so it can be resumed.
+
+### `worktree:bootstrap`
+
+Inspect or resume the environment setup of an existing worktree. Resume skips completed stages,
+keeps the copied configuration and never touches uncommitted edits. Stage progress is recorded in
+`storage/worktree-bootstrap.json` inside the worktree.
+
+```bash
+php artisan worktree:bootstrap my-feature --status   # JSON: path, branch, head, bootstrap record
+php artisan worktree:bootstrap my-feature --resume
+```
+
+### `worktree:setup`
+
+Set up a git worktree that another tool created (for example frontier), at any path, with the same steps as `worktree:create` except creating the git worktree. The folder must be a registered worktree of this repository.
+
+```bash
+php artisan worktree:setup ../lanes/t901             # name from the folder: t901
+php artisan worktree:setup /tmp/lane --name=t902
+```
+
+Options: `--name`, `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main`, `--horizon`.
+
+`worktree:setup` and `worktree:create` can run again on the same worktree: each step checks what is already done and does only what is missing. A database that exists is never dropped, recreated or migrated fresh; existing config files are kept. Every step is also written to `storage/logs/worktree-setup.log` in the worktree, so a run in the background can be followed.
+
+### `worktree:worker`
+
+Show or switch the queue worker of a shared-services worktree, and restart its app container.
+
+```bash
+php artisan worktree:worker t9             # prints listen or horizon
+php artisan worktree:worker t9 horizon
+php artisan worktree:worker ../lanes/t901 listen
+```
 
 ### `worktree:list`
 
@@ -79,12 +117,18 @@ php artisan worktree:list --json
 ```bash
 php artisan worktree:delete my-feature
 php artisan worktree:delete my-feature --force     # Skip safety checks
-php artisan worktree:delete my-feature --keep-db    # Keep cloned database
+php artisan worktree:delete my-feature --keep-db    # Keep cloned database and compose volumes
+php artisan worktree:delete my-feature --delete-branch  # Also delete the branch when it is merged
 ```
+
+Delete and cleanup only remove directories that git registers as worktrees of this repository.
+Teardown brings down every compose profile of the worktree; a failed teardown keeps the checkout.
+
+Order: (shared services) check the worktree's state file, stop the worktree's containers, drop the worktree's own databases and user and empty its Redis numbers, then remove the folder and prune. The check comes before anything is stopped: every name in the state file must be one of the names derived from the worktree name, and neither the main database nor a template. Without a state file nothing is guessed. A missing or bad state file stops the delete with nothing changed. After the removal the command fails when the folder still exists or `git worktree list` still names it. A remaining branch is reported; a merged one can be deleted (asked, or `--delete-branch`).
 
 ### `worktree:cleanup`
 
-Remove stale worktrees.
+Remove worktrees whose PR or issue is closed. Dirty worktrees and worktrees with unpushed commits are skipped.
 
 ```bash
 php artisan worktree:cleanup --dry-run
@@ -113,6 +157,65 @@ The `database.strategy` config determines how databases are cloned:
 
 Docker containers are supported for MySQL and PostgreSQL — set the container name in config and the commands will be wrapped with `docker exec`.
 
+## Shared Services
+
+With `bootstrap.strategy` set to `shared`, all worktrees on a machine use one database server and one Redis, and each worktree runs one app container (started like the Sail strategy). Set `database.strategy` to `none`; the `shared` config section replaces it. Supported servers: MariaDB, MySQL and PostgreSQL (see below for what PostgreSQL does differently).
+
+What each worktree gets:
+
+- **Its own databases:** `{prefix}_{name}` (app), `{prefix}_{name}_test`, `{prefix}_{name}_e2e`, and Laravel's parallel test databases `{prefix}_{name}_test_test_1` to `_N` (`parallel_workers`). A dash in the name becomes `_`.
+- **A template copy:** the app, test and e2e databases start as a copy of a template database (`copy_from_template`). After the copy, migrations newer than the template run in each.
+- **Its own database user** with a generated password. The user has rights on the exact database names above and on nothing else: it cannot create, read, change or drop the main database, a template, or another worktree's database. The grant escapes `_` and `%`, which MariaDB and MySQL read as wildcards in a `GRANT`.
+- **Two Redis database numbers** (default and cache), free among all worktrees; the numbers in `redis.reserved` (the main checkout's) are never given out.
+- **A state file** `storage/app/worktree/state.json` with its names, user, password and Redis numbers. A missing or broken file is rebuilt; it is never fatal.
+- **`.env` values** from the `shared.env` map, for example `DB_DATABASE={db_app}` and `DB_USERNAME={db_user}`. Add keys for the test and e2e names if your project reads them (`DB_TEST_DATABASE={db_test}`).
+
+The main database is `shared.database.main` (`WORKTREE_SHARED_DB_MAIN`); when it is empty, the package reads `DB_DATABASE` from the main checkout's `.env`, also when artisan runs in a linked worktree.
+
+Names are refused when they could equal another worktree's database (names that end in `-test`, `-e2e`, `-test-N`, `-e2e-N`), a template (`tpl-…`), the main database, or the names that another worktree already uses.
+
+### PostgreSQL
+
+Set `shared.database.driver` to `pgsql` (admin user `postgres` by default, clients `psql` and `pg_dump`). PostgreSQL cannot limit the right to create databases to names, so it works differently:
+
+- The worktree's role has no right to create databases. The package creates **every** database of the worktree in advance, the parallel test databases (`parallel_workers`) too, and makes the role their owner.
+- **`php artisan test --parallel --recreate-databases` does not work** in a PostgreSQL worktree: the role cannot create the databases again. The package stops such a run at the start with a clear message. Run `php artisan test --parallel` without it; the databases exist already.
+- `CONNECT` is revoked from `PUBLIC` on every database the package creates, so no other role can connect to a worktree's or a template database.
+- Copies use `CREATE DATABASE … TEMPLATE …`. A source with open connections (the main database for `--from-main`) is dumped and restored instead. Objects in the copy are handed to the worktree's role.
+- The template builder role keeps owning the template's objects and can no longer log in after the build.
+- `worktree:convert` reads the old Sail volume with MariaDB, so it cannot import that data into a PostgreSQL server: it stops before it changes anything when an old volume exists.
+
+### Template databases
+
+The template is named `{prefix}_tpl_{hash}`. The hash covers the content of `template.hash_paths` in the main checkout (migrations and seeders by default) and the seed command, so a changed migration or seeder gives a new template. The build runs `php artisan migrate --force` and then `template.seed_command`, in the main checkout's app container (`template.runner = container`) or on the host (`host`), connected as a temporary user that has rights on the template only. Builds run under a lock: a second setup waits for the first build and uses its result. A template counts as ready when its database exists and its marker in the main checkout's `storage/app/worktrees/templates/` exists.
+
+```bash
+php artisan worktree:template           # build the current template when it is missing
+php artisan worktree:template --prune   # also drop older templates
+php artisan worktree:template --name    # print the current template name
+```
+
+### App container, dependencies and queue worker
+
+- **Shared stack:** when the database server does not answer, `shared.stack.start_command` runs in the main checkout, and the setup waits until the server answers. Worktree commands never stop, reset or upgrade the shared stack.
+- **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. `shared.app.compose_file` is written to the worktree's `.env` as `COMPOSE_FILE`, so compose uses the project's app-only file.
+- **Dependencies:** when `composer.lock` (or the node lock file) equals the main checkout's, `vendor` (or the host `node_modules`) is copied from the main checkout with copy-on-write: `cp -c` on macOS (APFS), `cp --reflink=always` elsewhere. When the filesystem cannot do that (for example ext4), or the lock files differ, `composer install` runs in the container and the node install on the host.
+- **Frontend:** the bundle is built in the container (`pnpm install --frozen-lockfile && pnpm run build`). Give the container its own `node_modules` volume in your compose file, because native packages install for one platform only. A `public/hot` whose dev server does not answer is removed.
+- **Queue worker:** `WORKTREE_QUEUE_WORKER=listen|horizon` and `WORKTREE_QUEUES=<list>` are written to `.env` for your container to read. The list holds every queue that `config/horizon.php` names when the project requires `laravel/horizon`, else `default`. `worktree:create --horizon` picks Horizon.
+- `worktree:create` prints the time of each step and the worktree's URL.
+
+### Moving Sail worktrees: `worktree:convert` and `worktree:volumes`
+
+`worktree:convert` lists every worktree and the main checkout with its branch, last commit date, whether the branch is merged into the base branch, and whether it is converted. It asks per worktree: convert, delete (suggested when merged), or skip. Delete of a worktree that was never set up with shared services keeps its old volume as backup, like `--keep-db`. `--all` converts everything without asking; a name (or a folder path, when several worktrees have the same name) converts one. The main checkout converts first. Converted worktrees are skipped on the next run.
+
+For each worktree it removes the old containers (found by their compose project label, so the old compose file is not needed), starts a temporary database container (`shared.convert.image`) straight from the old volume (`shared.convert.volume`, default `{compose_project}_sail-mariadb`) with `--skip-grant-tables`, dumps the old database, imports it into the worktree's new app database on the shared server, and sets up the rest like `worktree:setup`. An empty or missing old volume means a template copy, with a message. The main checkout's data goes into the main database; its user has the main database's name and its Redis numbers are the reserved ones. A conversion that stops can run again: it uses the old names that the first run recorded.
+
+The old volumes stay as backup. `worktree:volumes` lists the volumes that match `shared.convert.backup_volumes` with their size; `--remove=NAME` (repeatable) removes only volumes from that list.
+
+### Production-like data
+
+`worktree:create --from-main` copies the main checkout's database into the worktree's app database in place of the template. It works only where `shared.database.allow_from_main` is true (`WORKTREE_ALLOW_FROM_MAIN`); elsewhere it is refused.
+
 ## Port Isolation (Sail)
 
 When running multiple worktrees with Laravel Sail, each worktree needs unique host ports to avoid conflicts. If your `.env` contains `APP_PORT` or `VITE_PORT`, the package will automatically derive unique ports per worktree.
@@ -125,6 +228,10 @@ WORKTREE_VITE_PORT_BASE=5200
 ```
 
 Port replacement only applies when the key already exists in your `.env` file — it won't inject ports you haven't defined.
+
+### Databases with the Sail strategy
+
+The MySQL and PostgreSQL clone strategies copy the database on the main checkout's server. When each Sail worktree runs its own database service (the usual Sail compose file), the worktree does not use that server: set `WORKTREE_DB_STRATEGY=none` and let the worktree's migrations fill its own service. Keep `mysql` or `pgsql` only when the worktrees' `DB_HOST` points at the main checkout's server. The SQLite strategy works with Sail: the worktree's `.env` gets the relative path `database/database.sqlite`, which resolves on the host and in the container.
 
 ## ProcessManager Contract
 
@@ -147,8 +254,9 @@ $this->app->bind(ProcessManager::class, MyProcessManager::class);
 
 ## Requirements
 
-- PHP 8.2+
-- Laravel 11 or 12
+- PHP 8.2+ (Laravel 13 needs 8.3+)
+- Laravel 11, 12 or 13
+- Shared services: the `mariadb`/`mariadb-dump` (or `mysql`/`mysqldump`) clients, inside the server's container (`shared.database.container`) or on the host
 
 ## License
 

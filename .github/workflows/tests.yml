@@ -4,17 +4,16 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
 
 jobs:
   tests:
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        php: [8.2, 8.3, 8.4]
-        laravel: [11.*, 12.*]
+        php: [8.3, 8.4]
+        laravel: [12.*, 13.*]
 
     name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel }}
 
@@ -34,7 +33,55 @@ jobs:
           composer update --prefer-dist --no-interaction
 
       - name: Run tests
-        run: vendor/bin/pest
+        run: vendor/bin/pest --testsuite=Feature
 
-      - name: Run PHPStan
-        run: vendor/bin/phpstan analyse
+      - name: Run static checks
+        run: composer check
+
+  integration:
+    runs-on: ubuntu-latest
+
+    name: Integration (MariaDB 10.11, PostgreSQL 17)
+
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: lwtestroot
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: lwtestroot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, curl, libxml, mbstring, zip
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction
+
+      - name: Build the test runner (PHP with database clients)
+        run: docker build -t lw-test-runner:ci -f tests/Integration/runner.Dockerfile tests/Integration
+
+      - name: Run integration tests
+        run: >-
+          docker run --rm --network host -v "$PWD:/app"
+          -e LW_TEST_MARIADB_HOST=127.0.0.1 -e LW_TEST_MARIADB_PORT=3306 -e LW_TEST_MARIADB_PASSWORD=lwtestroot
+          -e LW_TEST_PGSQL_HOST=127.0.0.1 -e LW_TEST_PGSQL_PORT=5432 -e LW_TEST_PGSQL_PASSWORD=lwtestroot
+          lw-test-runner:ci php vendor/bin/pest --testsuite=Integration
