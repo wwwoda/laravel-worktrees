@@ -88,6 +88,8 @@ return [
         // The worktree's app container: the compose file (written to the
         // worktree's `.env` as COMPOSE_FILE) and the service from
         // 'bootstrap.sail.app_service'. The bundle is built inside it.
+        // Empty: the project's default compose file, which must then be
+        // app-only (no database or Redis service of its own).
         'app' => [
             'compose_file' => env('WORKTREE_APP_COMPOSE_FILE'),
         ],
