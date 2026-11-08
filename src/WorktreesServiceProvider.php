@@ -28,6 +28,7 @@ use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\PostgresServer;
 use Woda\Worktrees\Shared\RecreateDatabasesGuard;
 use Woda\Worktrees\Shared\RedisAllocator;
+use Woda\Worktrees\Shared\RedisServer;
 use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\SharedConfig;
 use Woda\Worktrees\Shared\SharedStack;
@@ -182,6 +183,17 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorktreeRegistry::class);
 
+        $this->app->bindIf(RedisServer::class, function (): RedisServer {
+            $config = new SharedConfig;
+
+            return new RedisServer(
+                container: $config->nullableString('redis.container'),
+                host: $config->string('redis.host', '127.0.0.1'),
+                port: $config->int('redis.port', 6379),
+                password: $config->nullableString('redis.password'),
+            );
+        });
+
         $this->app->bindIf(SharedStack::class, function (Application $app): SharedStack {
             $config = new SharedConfig;
 
@@ -226,6 +238,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 appHost: $config->nullableString('database.app_host') ?? self::defaultAppHost(),
                 appPort: $config->int('database.app_port', self::defaultPort()),
                 envMap: $config->stringMap('env'),
+                redisServer: $app->make(RedisServer::class),
             );
         });
     }

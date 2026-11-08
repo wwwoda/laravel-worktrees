@@ -6,6 +6,7 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MariaDbServer;
+use Woda\Worktrees\Shared\RedisServer;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 
@@ -46,6 +47,13 @@ beforeEach(function () {
         }
     });
 
+    // No Redis here: emptying its numbers is covered by the feature tests.
+    app()->instance(RedisServer::class, new class(null, '', 0) extends RedisServer
+    {
+        public function ping(): void {}
+
+        public function flush(int $database): void {}
+    });
     $this->paths = [];
     Process::fake(['git worktree list --porcelain' => fn () => Process::result(implode('', array_map(
         fn (string $path) => "worktree {$path}\nHEAD abc\nbranch refs/heads/x\n\n", $this->paths)))]);
@@ -118,4 +126,22 @@ test('provisioning again keeps the data of an existing database', function () {
 
     expect($this->server->runAs((string) $again->string('user'), (string) $again->string('password'), "SELECT email FROM `{$this->prefix}_t9`.users")->output)
         ->toContain('mine@example.com');
+});
+
+test('deleting worktree t9 leaves t9-1, the main database and the templates untouched', function () {
+    $t9 = ($this->provision)('t9');
+    $t91 = ($this->provision)('t9-1');
+    $template = app(TemplateManager::class)->name();
+
+    $removed = app(DatabaseProvisioner::class)->deprovision('t9', $this->base.'/t9');
+
+    expect($removed)->toContain("database {$this->prefix}_t9", "user {$this->prefix}_t9")
+        ->and($this->server->databaseExists($this->prefix.'_t9'))->toBeFalse()
+        ->and($this->server->databaseExists($this->prefix.'_t9_e2e'))->toBeFalse()
+        ->and($this->server->userExists($this->prefix.'_t9'))->toBeFalse()
+        ->and($this->server->databaseExists($this->prefix.'_t9_1'))->toBeTrue()
+        ->and($this->server->databaseExists($this->prefix.'_t9_1_e2e'))->toBeTrue()
+        ->and($this->server->databaseExists($this->prefix.'_main'))->toBeTrue()
+        ->and($this->server->databaseExists($template))->toBeTrue()
+        ->and($this->server->runAs((string) $t91->string('user'), (string) $t91->string('password'), "SELECT email FROM `{$this->prefix}_t9_1`.users")->output)->toContain('test@example.com');
 });

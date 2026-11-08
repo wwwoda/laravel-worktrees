@@ -118,10 +118,13 @@ php artisan worktree:list --json
 php artisan worktree:delete my-feature
 php artisan worktree:delete my-feature --force     # Skip safety checks
 php artisan worktree:delete my-feature --keep-db    # Keep cloned database and compose volumes
+php artisan worktree:delete my-feature --delete-branch  # Also delete the branch when it is merged
 ```
 
 Delete and cleanup only remove directories that git registers as worktrees of this repository.
 Teardown brings down every compose profile of the worktree; a failed teardown keeps the checkout.
+
+Order: (shared services) check the worktree's state file, stop the worktree's containers, drop the worktree's own databases and user and empty its Redis numbers, then remove the folder and prune. The check comes before anything is stopped: every name in the state file must be one of the names derived from the worktree name, and neither the main database nor a template. Without a state file nothing is guessed. A missing or bad state file stops the delete with nothing changed. After the removal the command fails when the folder still exists or `git worktree list` still names it. A remaining branch is reported; a merged one can be deleted (asked, or `--delete-branch`).
 
 ### `worktree:cleanup`
 
@@ -203,7 +206,7 @@ php artisan worktree:template --name    # print the current template name
 
 ### Moving Sail worktrees: `worktree:convert` and `worktree:volumes`
 
-`worktree:convert` lists every worktree and the main checkout with its branch, last commit date, whether the branch is merged into the base branch, and whether it is converted. It asks per worktree: convert, delete (suggested when merged), or skip. `--all` converts everything without asking; a name (or a folder path, when several worktrees have the same name) converts one. The main checkout converts first. Converted worktrees are skipped on the next run.
+`worktree:convert` lists every worktree and the main checkout with its branch, last commit date, whether the branch is merged into the base branch, and whether it is converted. It asks per worktree: convert, delete (suggested when merged), or skip. Delete of a worktree that was never set up with shared services keeps its old volume as backup, like `--keep-db`. `--all` converts everything without asking; a name (or a folder path, when several worktrees have the same name) converts one. The main checkout converts first. Converted worktrees are skipped on the next run.
 
 For each worktree it removes the old containers (found by their compose project label, so the old compose file is not needed), starts a temporary database container (`shared.convert.image`) straight from the old volume (`shared.convert.volume`, default `{compose_project}_sail-mariadb`) with `--skip-grant-tables`, dumps the old database, imports it into the worktree's new app database on the shared server, and sets up the rest like `worktree:setup`. An empty or missing old volume means a template copy, with a message. The main checkout's data goes into the main database; its user has the main database's name and its Redis numbers are the reserved ones. A conversion that stops can run again: it uses the old names that the first run recorded.
 

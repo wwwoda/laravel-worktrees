@@ -4,6 +4,7 @@ namespace Woda\Worktrees\Commands;
 
 use Illuminate\Console\Command;
 use Woda\Worktrees\Shared\SailConverter;
+use Woda\Worktrees\Shared\WorktreeState;
 
 use function Laravel\Prompts\select;
 
@@ -85,7 +86,14 @@ class WorktreeConvertCommand extends Command
                 continue;
             }
             if ($action === 'delete') {
-                if ($this->call('worktree:delete', ['name' => $candidate['name']]) !== self::SUCCESS) {
+                // Without a state file the worktree was never set up with shared services:
+                // it has no shared databases to drop, and its old volume stays as backup
+                // (worktree:volumes) like the volume of a converted worktree.
+                $options = ['name' => $candidate['name']];
+                if (WorktreeState::load($candidate['path']) === null) {
+                    $options['--keep-db'] = true;
+                }
+                if ($this->call('worktree:delete', $options) !== self::SUCCESS) {
                     $failed[] = $candidate['name'];
                 }
 

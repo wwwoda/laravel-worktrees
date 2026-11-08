@@ -33,6 +33,7 @@ class DatabaseProvisioner
         private readonly string $appHost,
         private readonly int $appPort,
         private readonly array $envMap,
+        private readonly ?RedisServer $redisServer = null,
     ) {}
 
     public function names(string $name): WorktreeNames
@@ -284,6 +285,105 @@ class DatabaseProvisioner
         $this->writeEnv($path, $state);
 
         return $state;
+    }
+
+    /**
+     * The checks of deprovision(), without any change: what it would drop, or
+     * an exception that says why nothing may be dropped. worktree:delete runs
+     * them before it stops anything.
+     *
+     * @return array{databases: list<string>, user: string, redis: list<int>}
+     */
+    public function checkDeprovision(string $name, string $path): array
+    {
+        $state = WorktreeState::load($path);
+        if ($state === null) {
+            throw new RuntimeException("Worktree '{$name}' has no state file: its shared databases are not dropped, because nothing is guessed. Drop them by hand if needed.");
+        }
+        // The allowed names come from the worktree being deleted, never from the
+        // state file: a copied or stale state of another worktree must not count.
+        $names = $this->names($name);
+        $stateName = $state->string('name');
+        if ($stateName !== null && strtolower($stateName) !== strtolower($name)) {
+            throw new RuntimeException("The state file of '{$name}' belongs to worktree '{$stateName}'. Nothing was dropped.");
+        }
+        // The state's lists must have their full shape: a part that does not parse
+        // would read as "nothing to drop" and leave data behind half deleted.
+        $recorded = $state->data['databases'] ?? null;
+        // Provisioning always writes the parallel list (empty with no workers): a missing one is incomplete.
+        $parallel = is_array($recorded) ? ($recorded['parallel'] ?? null) : null;
+        if (! is_array($recorded) || ! is_string($recorded['app'] ?? null) || ! is_string($recorded['test'] ?? null) || ! is_string($recorded['e2e'] ?? null)
+            || ! is_array($parallel) || ! array_is_list($parallel) || array_filter($parallel, static fn (mixed $value): bool => ! is_string($value)) !== []) {
+            throw new RuntimeException("The database list in the state file of '{$name}' is incomplete. Nothing was dropped.");
+        }
+        if (! $this->redis->isAllocation($state->data['redis'] ?? null)) {
+            throw new RuntimeException("The Redis numbers in the state file of '{$name}' are missing or not an allocation of this package. Nothing was dropped.");
+        }
+        $databases = $state->databases();
+        foreach ($databases as $database) {
+            if (! ($names->owns($database) || $names->ownsParallel($database)) || strtolower($database) === strtolower($this->mainDatabase)
+                || str_starts_with($database, $this->templates->prefix())) {
+                throw new RuntimeException("Refusing to drop '{$database}': it is not one of the worktree's own database names. Nothing was dropped.");
+            }
+        }
+        $user = $state->string('user');
+        if ($user === null) {
+            throw new RuntimeException("The state file of '{$name}' names no user; it is incomplete. Nothing was dropped.");
+        }
+        if ($user !== $names->user) {
+            throw new RuntimeException("Refusing to drop user '{$user}': it is not the worktree's own user. Nothing was dropped.");
+        }
+
+        $numbers = $state->redis();
+        if ($numbers !== [] && $this->redis->taken($path, $numbers)) {
+            throw new RuntimeException('Another worktree or the main checkout also uses Redis databases '.implode(', ', $numbers).' of this state. Nothing was dropped.');
+        }
+
+        return ['databases' => $databases, 'user' => $user, 'redis' => $numbers];
+    }
+
+    /**
+     * Drop a deleted worktree's own databases and user and empty its Redis
+     * numbers. Only names that its state file lists, that its name derives
+     * and that are neither the main database nor a template are touched; any
+     * other name stops the whole step before anything is dropped.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string> what was removed
+     */
+    public function deprovision(string $name, string $path, ?Closure $onStep = null): array
+    {
+        $step = $onStep ?? static fn (string $message) => null;
+        ['databases' => $databases, 'user' => $user, 'redis' => $numbers] = $this->checkDeprovision($name, $path);
+
+        // Reach Redis before anything is dropped, so a Redis problem leaves the
+        // worktree whole instead of half deleted. The flush itself comes first too:
+        // a Redis that answers PING may still refuse FLUSHDB (ACL).
+        if ($numbers !== [] && $this->redisServer !== null) {
+            $this->redisServer->ping();
+        }
+        $removed = [];
+        foreach ($numbers as $number) {
+            if ($this->redisServer === null) {
+                continue;
+            }
+            $this->redisServer->flush($number);
+            $removed[] = "Redis database {$number}";
+        }
+
+        foreach ($databases as $database) {
+            if ($this->server->databaseExists($database)) {
+                $step("Dropping database {$database}...");
+                $this->server->dropDatabase($database);
+                $removed[] = "database {$database}";
+            }
+        }
+        if ($this->server->userExists($user)) {
+            $this->server->dropUser($user);
+            $removed[] = "user {$user}";
+        }
+
+        return $removed;
     }
 
     /**
