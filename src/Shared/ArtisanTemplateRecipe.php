@@ -17,6 +17,8 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
  */
 final readonly class ArtisanTemplateRecipe implements TemplateRecipe
 {
+    private const SECRETS = ['DB_PASSWORD'];
+
     /**
      * @param  array<string, string>  $extraEnv
      */
@@ -57,9 +59,13 @@ final readonly class ArtisanTemplateRecipe implements TemplateRecipe
      */
     private function process(array $env): PendingProcess
     {
-        return $this->mode === 'host'
-            ? Process::path(MainCheckout::path())->timeout(1800)->env($env)
-            : ComposeProcess::in(MainCheckout::path(), 1800);
+        if ($this->mode === 'host') {
+            return Process::path(MainCheckout::path())->timeout(1800)->env($env);
+        }
+        $process = ComposeProcess::in(MainCheckout::path(), 1800);
+
+        // Secrets reach `docker compose exec -e KEY` through the environment, not the command line.
+        return $process->env([...$process->environment, ...array_intersect_key($env, array_flip(self::SECRETS))]);
     }
 
     /**
@@ -72,7 +78,7 @@ final readonly class ArtisanTemplateRecipe implements TemplateRecipe
         }
         $flags = '';
         foreach ($env as $key => $value) {
-            $flags .= ' -e '.escapeshellarg($key.'='.$value);
+            $flags .= in_array($key, self::SECRETS, true) ? ' -e '.$key : ' -e '.escapeshellarg($key.'='.$value);
         }
 
         return sprintf('docker compose exec -T%s %s sh -c %s', $flags, escapeshellarg($this->appService), escapeshellarg($command));

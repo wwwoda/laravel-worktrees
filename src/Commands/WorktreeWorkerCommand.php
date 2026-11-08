@@ -27,6 +27,9 @@ class WorktreeWorkerCommand extends Command
         try {
             $path = is_dir($target) ? (string) realpath($target) : $manager->pathFor($target);
             $manager->describePath($path);
+            if ($manager->isMainCheckout($path)) {
+                throw new \RuntimeException('This is the main checkout; the worker switch changes worktrees only.');
+            }
         } catch (\RuntimeException $e) {
             $this->components->error($e->getMessage());
 

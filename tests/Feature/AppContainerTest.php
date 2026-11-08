@@ -77,6 +77,8 @@ beforeEach(function () {
 
                 return Process::result();
             },
+            'docker compose config --format json' => Process::result(),
+            'docker compose up -d' => fn () => isset($this->onUp) ? ($this->onUp)() : Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -224,4 +226,96 @@ test('create prints the time of each step and the URL', function () {
         ->expectsOutputToContain('total')
         ->expectsOutputToContain('https://app-t9.test')
         ->assertSuccessful();
+});
+
+test('Horizon in require-dev also gives the queue list of its config', function () {
+    $dir = $this->base.'/horizon-dev';
+    File::ensureDirectoryExists($dir.'/config');
+    File::put($dir.'/composer.json', json_encode(['require-dev' => ['laravel/horizon' => '^5.0']]));
+    File::put($dir.'/config/horizon.php', "<?php return ['defaults' => ['supervisor-1' => ['queue' => ['default', 'mail']]]];");
+
+    expect(QueueList::for($dir))->toBe(['default', 'mail']);
+});
+
+test('the bundle build in the container installs with the lock file of each package manager', function (string $pm, string $install) {
+    config()->set('worktrees.bootstrap.build_frontend', true);
+    config()->set('worktrees.bootstrap.node_package_manager', $pm);
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T 'laravel.test' sh -c '{$install} && {$pm} run build'");
+})->with([
+    'pnpm' => ['pnpm', 'pnpm install --frozen-lockfile'],
+    'npm' => ['npm', 'npm ci'],
+    'yarn' => ['yarn', 'yarn install --frozen-lockfile'],
+    'bun' => ['bun', 'bun install --frozen-lockfile'],
+]);
+
+test('the shared stack starts without the per-worktree variables of this process', function () {
+    config()->set('worktrees.shared.stack.start_command', 'docker compose -f shared.yml up -d');
+    $this->server->up = false;
+    putenv('COMPOSE_PROJECT_NAME=app-lane');
+
+    try {
+        $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    } finally {
+        putenv('COMPOSE_PROJECT_NAME');
+    }
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose -f shared.yml up -d' && $p->path === $this->main
+        && ($p->environment['COMPOSE_PROJECT_NAME'] ?? null) === false
+        && ($p->environment['DB_DATABASE'] ?? null) === false);
+});
+
+test('a worktree whose compose project is the main checkout\'s is neither started nor torn down', function () {
+    // Both folders answer with the project name `app`: the worktree's .env kept the main checkout's name.
+    Process::fake(['docker compose config --format json' => Process::result(json_encode(['name' => 'app', 'services' => []]))]);
+
+    $this->artisan('worktree:create', ['name' => 't9'])
+        ->expectsOutputToContain('same compose project')
+        ->assertFailed();
+    Process::assertNotRan('docker compose up -d');
+
+    expect(fn () => app(BootstrapStrategy::class)->tearDown(($this->path)('t9')))->toThrow(RuntimeException::class, 'same compose project');
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'down'));
+});
+
+test('the dev server probe counts only a successful answer', function () {
+    $router = $this->base.'/router.php';
+    File::put($router, '<?php http_response_code(str_contains($_SERVER["REQUEST_URI"], "/ok/") ? 200 : 404); echo "x";');
+    $port = 20000 + random_int(0, 9999);
+    $server = proc_open([PHP_BINARY, '-S', "127.0.0.1:{$port}", $router], [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+    $deadline = microtime(true) + 5;
+    while (! @fsockopen('127.0.0.1', $port) && microtime(true) < $deadline) {
+        usleep(50_000);
+    }
+
+    try {
+        expect(SharedServicesBootstrapStrategy::devServerAnswers("http://127.0.0.1:{$port}/ok"))->toBeTrue()
+            ->and(SharedServicesBootstrapStrategy::devServerAnswers("http://127.0.0.1:{$port}/missing"))->toBeFalse()
+            ->and(SharedServicesBootstrapStrategy::devServerAnswers('http://127.0.0.1:1'))->toBeFalse();
+    } finally {
+        proc_terminate($server);
+        proc_close($server);
+    }
+});
+
+test('missing Sail build contexts are lent from the main checkout', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    File::ensureDirectoryExists($this->main.'/vendor/laravel/sail/runtimes/8.4');
+    File::put($this->main.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
+    $seen = null;
+    Process::fake(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
+    $this->onUp = function () use ($worktree, &$seen) {
+        $seen = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+
+        return Process::result();
+    };
+
+    app(BootstrapStrategy::class)->bringUp($worktree);
+
+    expect($seen)->toBeTrue();
 });

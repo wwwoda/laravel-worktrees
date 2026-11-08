@@ -3,8 +3,8 @@
 namespace Woda\Worktrees\Shared;
 
 use Closure;
-use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\ComposeProcess;
 
 /**
  * The shared stack of the machine (database server, Redis, tools). Worktree
@@ -32,7 +32,9 @@ class SharedStack
             throw new RuntimeException('The shared database server does not answer, and no start command is configured (worktrees.shared.stack.start_command). Start the shared stack and run the setup again.');
         }
         $onStep && $onStep('Starting the shared stack...');
-        $result = Process::path(MainCheckout::path())->timeout(600)->run($this->startCommand, $output);
+        // Without the variables this process may carry from a linked worktree's .env
+        // (COMPOSE_PROJECT_NAME, DB_*): the command must see the main checkout's own.
+        $result = ComposeProcess::in(MainCheckout::path(), 600)->run($this->startCommand, $output);
         if (! $result->successful()) {
             throw new RuntimeException("Starting the shared stack failed: {$result->errorOutput()}");
         }

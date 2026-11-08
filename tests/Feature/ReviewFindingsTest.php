@@ -79,6 +79,8 @@ test('the package\'s own bootstrap files do not make a worktree dirty', function
     $git(['commit', '--allow-empty', '-m', 'Base']);
     File::put($path.'/storage/worktree-bootstrap.json', '{}');
     File::put($path.'/storage/worktree-bootstrap.lock', '');
+    File::ensureDirectoryExists($path.'/storage/logs');
+    File::put($path.'/storage/logs/worktree-setup.log', 'step');
 
     $manager = app(WorktreeManager::class);
     expect($manager->isDirty('lane'))->toBeFalse()
@@ -87,4 +89,58 @@ test('the package\'s own bootstrap files do not make a worktree dirty', function
     File::put($path.'/edit.txt', 'work');
     expect($manager->isDirty('lane'))->toBeTrue()
         ->and($manager->safetyCheck('lane')['clean'])->toBeFalse();
+});
+
+test('delete of an unregistered directory without --force fails before the safety checks', function () {
+    $path = $this->base.'/'.basename(base_path()).'-orphan';
+    File::ensureDirectoryExists($path);
+    Process::fake(['git worktree list --porcelain' => Process::result(), '*' => Process::result()]);
+
+    $this->artisan('worktree:delete', ['name' => 'orphan'])
+        ->expectsOutputToContain('not a registered worktree')
+        ->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $process) => $process->path === $path);
+    expect(is_dir($path))->toBeTrue();
+});
+
+test('delete and bootstrap print a broken bootstrap record as an error', function (string $command, array $options) {
+    $path = $this->base.'/'.basename(base_path()).'-lane';
+    File::ensureDirectoryExists($path.'/storage');
+    File::put($path.'/storage/worktree-bootstrap.json', '{"stages":');
+    Process::fake([
+        'git worktree list --porcelain' => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan($command, ['name' => 'lane', ...$options])
+        ->expectsOutputToContain('worktree-bootstrap.json is not valid JSON')
+        ->assertFailed();
+
+    expect(is_dir($path))->toBeTrue();
+})->with([
+    'delete' => ['worktree:delete', ['--force' => true]],
+    'bootstrap --resume' => ['worktree:bootstrap', ['--resume' => true]],
+    'bootstrap --status' => ['worktree:bootstrap', ['--status' => true]],
+]);
+
+test('bootstrap --resume prints a bootstrap record with the wrong shape as an error', function (string $record) {
+    $path = $this->base.'/'.basename(base_path()).'-lane';
+    File::ensureDirectoryExists($path.'/storage');
+    File::put($path.'/storage/worktree-bootstrap.json', $record);
+    Process::fake([
+        // The first entry is the main checkout.
+        'git worktree list --porcelain' => Process::result('worktree '.base_path()."\nHEAD abc\nbranch refs/heads/master\n\nworktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:bootstrap', ['name' => 'lane', '--resume' => true])
+        ->expectsOutputToContain('worktree-bootstrap.json')
+        ->assertFailed();
+})->with(['null' => ['null'], 'completed is a string' => ['{"completed":"running"}'], 'list' => ['[1]']]);
+
+test('delete of an invalid name fails with a message', function () {
+    $this->artisan('worktree:delete', ['name' => '../lane', '--force' => true])
+        ->expectsOutputToContain('name')
+        ->assertFailed();
 });

@@ -14,6 +14,8 @@ use Woda\Worktrees\SailBootstrapStrategy;
 beforeEach(function () {
     $this->base = sys_get_temp_dir().'/worktrees-sail-'.uniqid();
     File::ensureDirectoryExists($this->base);
+    // The test writes the application's .env; a .env that was there before is put back afterwards.
+    $this->envBefore = File::exists(base_path('.env')) ? File::get(base_path('.env')) : null;
     File::put(base_path('.env'), "APP_NAME=App\nAPP_URL=https://app.hp.test\nCOMPOSE_PROJECT_NAME=hungryport\nWORKTREE_HOST=app.hp.test\n");
     config()->set('app.name', 'App');
     config()->set('app.url', 'https://app.hp.test');
@@ -31,7 +33,7 @@ beforeEach(function () {
 
 afterEach(function () {
     File::deleteDirectory($this->base);
-    File::delete(base_path('.env'));
+    $this->envBefore === null ? File::delete(base_path('.env')) : File::put(base_path('.env'), $this->envBefore);
 });
 
 test('worktree:create with the Sail strategy sets up a worktree like HungryPort expects', function () {

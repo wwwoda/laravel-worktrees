@@ -12,6 +12,7 @@ use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
 use Woda\Worktrees\Tests\Support\FakeTemplateRecipe;
+use Woda\Worktrees\WorktreeManager;
 
 /*
  * worktree:create with the shared-services strategy. Docker and git calls are
@@ -63,6 +64,7 @@ beforeEach(function () {
             ))),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
+            'docker compose config --format json' => Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -169,6 +171,26 @@ test('a second setup waits for a running template build and does not build twice
     proc_close($builder);
 });
 
+test('a template build that fails while it sets up its builder leaves no builder account', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function grantUser(string $user, string $password, array $databases): void
+        {
+            parent::grantUser($user, $password, $databases);
+
+            throw new RuntimeException('grant failed');
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'grant failed');
+
+    expect($failing->users)->toBe([])
+        ->and($failing->databaseExists($templates->name()))->toBeFalse();
+});
+
 test('--from-main copies the main database where config allows it', function () {
     config()->set('worktrees.shared.database.allow_from_main', true);
 
@@ -207,6 +229,47 @@ test('names that could equal another worktree, a template or the main database a
     'main database' => ['main', 'hp_main', 'main database'],
 ]);
 
+test('on MySQL a name whose user would exceed 32 characters is refused before the server is touched', function () {
+    $mysql = new class extends FakeDatabaseServer
+    {
+        public function driver(): string
+        {
+            return 'mysql';
+        }
+    };
+    $mysql->databases = ['hungryport' => []];
+    app()->instance(DatabaseServer::class, $mysql);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($mysql));
+    $name = 'a-long-worktree-name-for-mysql';
+
+    $this->artisan('worktree:create', ['name' => $name])
+        ->expectsOutputToContain('more than 32 characters')
+        ->assertFailed();
+
+    expect($mysql->log)->toBe([]);
+});
+
+test('on MariaDB the same name is accepted', function () {
+    $this->artisan('worktree:create', ['name' => 'a-long-worktree-name-for-mysql'])->assertSuccessful();
+
+    expect($this->server->users)->toHaveKey('hp_a_long_worktree_name_for_mysql');
+});
+
+test('--skip-db is refused before the worktree has its own databases', function () {
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])
+        ->expectsOutputToContain('--skip-db')
+        ->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'docker compose up'));
+    expect($this->server->users)->toBe([]);
+});
+
+test('--skip-db is accepted on a resume once the databases exist', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true, '--skip-db' => true])->assertSuccessful();
+});
+
 test('a name another worktree already uses is refused', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $this->worktrees['other'] = $this->base.'/elsewhere/T9';
@@ -215,6 +278,18 @@ test('a name another worktree already uses is refused', function () {
     expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
         ->toThrow(RuntimeException::class, 'already uses the database names');
 });
+
+test('a name another worktree uses is refused also when that worktree lost its state file', function (string $stateContent) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $stateContent === '' ? File::delete(WorktreeState::path(($this->path)('t9'))) : File::put(WorktreeState::path(($this->path)('t9')), $stateContent);
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+    $password = $this->server->users['hp_t9']['password'];
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+    expect($this->server->users['hp_t9']['password'])->toBe($password);
+})->with(['missing' => [''], 'broken' => ['{broken']]);
 
 test('a broken state file is rebuilt and keeps the password of .env', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
@@ -333,4 +408,100 @@ test('without a configured main database, the main checkout\'s .env names it', f
     $this->artisan('worktree:create', ['name' => 'main'])
         ->expectsOutputToContain("would use the main database 'hp_main'")
         ->assertFailed();
+});
+
+test('a worktree with the main checkout\'s compose project is not started, also when artisan runs elsewhere', function () {
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+    Process::fake(['docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode(['name' => $p->path === base_path() ? 'elsewhere' : 'app']))]);
+
+    $this->artisan('worktree:create', ['name' => 't9'])
+        ->expectsOutputToContain('same compose project')
+        ->assertFailed();
+
+    Process::assertNotRan('docker compose up -d');
+    MainCheckout::forget();
+});
+
+test('Redis numbers of a worktree that lost its state file stay taken', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::delete(WorktreeState::path(($this->path)('t9')));
+
+    $this->artisan('worktree:create', ['name' => 't10'])->assertSuccessful();
+
+    expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
+});
+
+test('an incomplete state file of another worktree does not hide its names', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::put(WorktreeState::path(($this->path)('t9')), json_encode(['schema' => WorktreeState::SCHEMA]));
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+});
+
+test('--skip-db without --resume is refused also after the databases exist', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    expect(fn () => app(WorktreeManager::class)->bootstrap('t9', ['skip_db' => true]))->toThrow(RuntimeException::class, '--skip-db');
+
+    expect(File::get(($this->path)('t9').'/.env'))->toContain('DB_DATABASE=hp_t9');
+});
+
+test('the template build in the container keeps the password off the command line', function () {
+    $recipe = new ArtisanTemplateRecipe('container', 'laravel.test', 'mariadb', 3306);
+
+    $recipe->build('hp_tpl_abc', 'hp_tpl_builder', str_repeat('a', 32), '');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'php artisan migrate --force')
+        && ! str_contains((string) $p->command, str_repeat('a', 32))
+        && str_contains((string) $p->command, ' -e DB_PASSWORD ')
+        && ($p->environment['DB_PASSWORD'] ?? null) === str_repeat('a', 32));
+});
+
+test('the mysql driver picks the mysql clients when none are configured', function () {
+    config()->set('worktrees.shared.database.driver', 'mysql');
+    $config = require __DIR__.'/../../config/worktrees.php';
+    config()->set('worktrees.shared.database.client', $config['shared']['database']['client']);
+    config()->set('worktrees.shared.database.dump_client', $config['shared']['database']['dump_client']);
+    app()->forgetInstance(DatabaseServer::class);
+
+    $server = app(DatabaseServer::class);
+
+    expect((new ReflectionProperty($server, 'client'))->getValue($server))->toBe('mysql')
+        ->and((new ReflectionProperty($server, 'dumpClient'))->getValue($server))->toBe('mysqldump');
+});
+
+test('pruning waits for a running template build', function () {
+    $templates = app(TemplateManager::class);
+    $lock = base_path('storage/app/worktrees/template.lock');
+    File::ensureDirectoryExists(dirname($lock));
+    $builder = proc_open([PHP_BINARY, '-r', sprintf(
+        '$h = fopen(%s, "c"); flock($h, LOCK_EX); file_put_contents(%s, "locked"); usleep(1500000); flock($h, LOCK_UN);',
+        var_export($lock, true), var_export($lock.'.held', true),
+    )], [], $pipes);
+    while (! File::exists($lock.'.held')) {
+        usleep(50_000);
+    }
+    $started = microtime(true);
+
+    $templates->prune();
+
+    expect(microtime(true) - $started)->toBeGreaterThan(1.0);
+    proc_close($builder);
+    File::delete($lock.'.held');
+});
+
+test('a run without --resume starts its stage record anew, so a failed provisioning is not skipped later', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $this->server->up = false;
+
+    expect(fn () => app(WorktreeManager::class)->bootstrap('t9'))->toThrow(RuntimeException::class);
+
+    $record = json_decode(File::get(($this->path)('t9').'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->not->toContain('database');
 });

@@ -13,12 +13,14 @@ final readonly class RedisAllocator
 {
     /**
      * @param  list<int>  $reserved
+     * @param  list<string>  $envKeys  `.env` keys that hold a worktree's Redis numbers
      */
     public function __construct(
         private WorktreeRegistry $registry,
         private int $databases,
         private array $reserved,
         private int $perWorktree = 2,
+        private array $envKeys = [],
     ) {}
 
     /**
@@ -34,10 +36,7 @@ final readonly class RedisAllocator
      */
     public function allocate(string $worktreePath): array
     {
-        $used = $this->reserved;
-        foreach ($this->registry->otherStates($worktreePath) as $state) {
-            $used = [...$used, ...$state->redis()];
-        }
+        $used = [...$this->reserved, ...$this->usedByOthers($worktreePath)];
 
         $free = [];
         for ($number = 0; $number < $this->databases && count($free) < $this->perWorktree; $number++) {
@@ -59,12 +58,32 @@ final readonly class RedisAllocator
      */
     public function taken(string $worktreePath, array $numbers): bool
     {
-        foreach ($this->registry->otherStates($worktreePath) as $state) {
-            if (array_intersect($numbers, $state->redis()) !== []) {
-                return true;
-            }
+        if (array_intersect($numbers, $this->usedByOthers($worktreePath)) !== []) {
+            return true;
         }
 
         return in_array(true, array_map(fn (int $n): bool => in_array($n, $this->reserved, true), $numbers), true);
+    }
+
+    /**
+     * Numbers other worktrees use: from their state, and from their `.env` too,
+     * so a worktree that lost its state file keeps its numbers.
+     *
+     * @return list<int>
+     */
+    private function usedByOthers(string $worktreePath): array
+    {
+        $used = [];
+        foreach ($this->registry->otherWorktrees($worktreePath) as $path => $state) {
+            $used = [...$used, ...($state?->redis() ?? [])];
+            foreach ($this->envKeys as $key) {
+                $value = EnvFile::get($path.'/.env', $key);
+                if ($value !== null && ctype_digit($value)) {
+                    $used[] = (int) $value;
+                }
+            }
+        }
+
+        return $used;
     }
 }
