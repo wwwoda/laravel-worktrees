@@ -7,11 +7,15 @@ use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
+use Woda\Worktrees\Commands\WorktreeConvertCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
+use Woda\Worktrees\Commands\WorktreeSetupCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
+use Woda\Worktrees\Commands\WorktreeVolumesCommand;
+use Woda\Worktrees\Commands\WorktreeWorkerCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\Contracts\TemplateRecipe;
@@ -22,7 +26,9 @@ use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\RedisAllocator;
+use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\SharedConfig;
+use Woda\Worktrees\Shared\SharedStack;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeRegistry;
 
@@ -52,6 +58,13 @@ class WorktreesServiceProvider extends ServiceProvider
                     appService: $appService,
                     nodePackageManager: $nodePackageManager,
                     buildFrontend: $buildFrontend,
+                    composeFile: (new SharedConfig)->nullableString('app.compose_file'),
+                    queueMode: (new SharedConfig)->string('queue.mode', 'listen'),
+                    queueEnvKeys: [
+                        'mode' => (new SharedConfig)->string('queue.env.mode', 'WORKTREE_QUEUE_WORKER'),
+                        'queues' => (new SharedConfig)->string('queue.env.queues', 'WORKTREE_QUEUES'),
+                    ],
+                    copyOnWrite: (bool) config('worktrees.shared.dependencies.copy_on_write', true),
                 ),
                 'sail' => new SailBootstrapStrategy(
                     appService: $appService,
@@ -65,6 +78,7 @@ class WorktreesServiceProvider extends ServiceProvider
         });
 
         $this->registerSharedServices();
+        $this->registerConverter();
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -157,6 +171,16 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorktreeRegistry::class);
 
+        $this->app->bindIf(SharedStack::class, function (Application $app): SharedStack {
+            $config = new SharedConfig;
+
+            return new SharedStack(
+                server: $app->make(DatabaseServer::class),
+                startCommand: $config->nullableString('stack.start_command'),
+                waitSeconds: $config->int('stack.wait_seconds', 120),
+            );
+        });
+
         $this->app->bindIf(TemplateManager::class, function (Application $app): TemplateManager {
             $config = new SharedConfig;
 
@@ -174,6 +198,7 @@ class WorktreesServiceProvider extends ServiceProvider
 
             return new DatabaseProvisioner(
                 server: $app->make(DatabaseServer::class),
+                stack: $app->make(SharedStack::class),
                 templates: $app->make(TemplateManager::class),
                 redis: new RedisAllocator(
                     registry: $app->make(WorktreeRegistry::class),
@@ -190,6 +215,23 @@ class WorktreesServiceProvider extends ServiceProvider
                 appHost: $config->string('database.app_host', 'mariadb'),
                 appPort: $config->int('database.app_port', 3306),
                 envMap: $config->stringMap('env'),
+            );
+        });
+    }
+
+    private function registerConverter(): void
+    {
+        $this->app->bindIf(SailConverter::class, function (Application $app): SailConverter {
+            $config = new SharedConfig;
+
+            return new SailConverter(
+                manager: $app->make(WorktreeManager::class),
+                provisioner: $app->make(DatabaseProvisioner::class),
+                strategy: $app->make(BootstrapStrategy::class),
+                image: $config->string('convert.image', 'mariadb:10.11'),
+                volumePattern: $config->string('convert.volume', '{compose_project}_sail-mariadb'),
+                baseBranch: is_string($base = config('worktrees.base_branch')) ? $base : 'master',
+                keepContainers: array_filter([$config->nullableString('database.container')]),
             );
         });
     }
@@ -219,6 +261,10 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeCleanupCommand::class,
                 WorktreeOpenCommand::class,
                 WorktreeTemplateCommand::class,
+                WorktreeSetupCommand::class,
+                WorktreeWorkerCommand::class,
+                WorktreeConvertCommand::class,
+                WorktreeVolumesCommand::class,
             ]);
         }
     }

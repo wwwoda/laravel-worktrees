@@ -11,7 +11,7 @@ use Closure;
 interface ProvisionsDatabases
 {
     /**
-     * @param  array{from_main?: bool, branch?: string|null, base?: string|null}  $options
+     * @param  array{from_main?: bool, branch?: string|null, base?: string|null, fill_app?: (Closure(string): void)|null}  $options
      * @param  (Closure(string, string): void)|null  $output
      * @param  (Closure(string): void)|null  $onStep
      */

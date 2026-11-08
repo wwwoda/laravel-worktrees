@@ -90,6 +90,26 @@ final readonly class MariaDbServer implements DatabaseServer
         $this->admin('DROP DATABASE IF EXISTS `'.Identifier::check($database).'`');
     }
 
+    public function importFile(string $database, string $file, ?Closure $output = null, ?string $owner = null): void
+    {
+        if ($owner !== null) {
+            // The dump's definers are accounts of the old server; the owner is the account here.
+            // umask 077: the rewritten copy holds the data; no other local user may read it.
+            // The rewritten copy goes on every exit: a failed rewrite must not leave the data behind.
+            $rewrite = Process::timeout(600)->run(sprintf('umask 077 && sed -E %1$s %2$s > %3$s && mv %3$s %2$s; s=$?; rm -f %3$s; exit $s',
+                escapeshellarg(self::definerRewrite($owner)), escapeshellarg($file), escapeshellarg($file.'.d')));
+            if (! $rewrite->successful()) {
+                throw new RuntimeException("Preparing the import into '{$database}' failed: {$rewrite->errorOutput()}");
+            }
+        }
+        $command = sprintf('%s -u %s%s %s < %s', $this->client, escapeshellarg($this->adminUser), $this->hostFlags(),
+            escapeshellarg(Identifier::check($database)), escapeshellarg($file));
+        $result = Process::env(['MYSQL_PWD' => $this->adminPassword])->timeout(1800)->run($this->wrap($command), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("Importing into '{$database}' failed: {$result->errorOutput()}");
+        }
+    }
+
     public function grantUser(string $user, string $password, array $databases): void
     {
         $account = $this->account($user);

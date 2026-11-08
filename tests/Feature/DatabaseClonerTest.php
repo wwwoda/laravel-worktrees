@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\DatabaseCloner;
 
 test('resolveStrategy returns sqlite for auto strategy when DB is sqlite', function () {
@@ -92,6 +93,22 @@ test('drop does nothing for none strategy', function () {
     $cloner->drop('test');
     expect(true)->toBeTrue();
 });
+
+test('targetExists fails when the server cannot be asked, instead of reporting no database', function (string $strategy, string $default) {
+    config()->set('database.default', $default);
+    config()->set("database.connections.{$default}.database", 'app');
+    Process::fake(['*' => Process::result(errorOutput: 'connection refused', exitCode: 1)]);
+    $cloner = new DatabaseCloner(
+        strategy: $strategy,
+        sqliteCopy: true,
+        mysqlDockerContainer: null,
+        pgsqlDockerContainer: null,
+        dockerHost: '127.0.0.1',
+    );
+
+    expect(fn () => $cloner->targetExists('/tmp/none', 'lane'))->toThrow(RuntimeException::class, 'connection refused')
+        ->and($cloner->listCloned())->toBe([]);
+})->with(['mysql' => ['mysql', 'mysql'], 'pgsql' => ['pgsql', 'pgsql']]);
 
 test('a SQLite clone points .env at a path that works on the host and in a container', function () {
     $source = database_path('database.sqlite');
