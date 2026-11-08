@@ -165,8 +165,8 @@ $this->app->bind(ProcessManager::class, MyProcessManager::class);
 
 ## Requirements
 
-- PHP 8.2+
-- Laravel 11 or 12
+- PHP 8.2+ (Laravel 13 needs 8.3+)
+- Laravel 11, 12 or 13
 
 ## License
 
