@@ -176,10 +176,9 @@ class DatabaseProvisioner
     {
         $ours = array_map(strtolower(...), [...$names->databases(), $names->user]);
         foreach ($this->registry->otherWorktrees($path) as $otherPath => $state) {
-            // A worktree that lost its state file still names its databases and user in its .env.
-            $theirs = $state !== null
-                ? [...$state->databases(), (string) $state->string('user')]
-                : $this->envNames($otherPath);
+            // A worktree that lost its state file (or has an incomplete one) still names
+            // its databases and user in its .env: count both.
+            $theirs = [...$this->envNames($otherPath), ...($state?->databases() ?? []), (string) $state?->string('user')];
             if (array_intersect($ours, array_map(strtolower(...), $theirs)) !== []) {
                 throw new RuntimeException("The worktree at {$otherPath} already uses the database names of '{$names->worktree}'. Choose another name.");
             }
