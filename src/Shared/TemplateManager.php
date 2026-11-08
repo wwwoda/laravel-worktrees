@@ -152,19 +152,25 @@ class TemplateManager
             $this->server->grantUser($builder, $password, [$name]);
             $this->server->createDatabase($name, $builder);
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
+            // Inside the guard: if retiring fails, the template is not marked ready.
+            $this->server->finishTemplateBuild($builder, $name);
         } catch (\Throwable $error) {
-            // Clean up without hiding the build error. On PostgreSQL the builder
-            // may still own older templates: retire it the driver's way.
+            // Clean up without hiding the build error; each step on its own, so the
+            // builder is retired even when the drop fails. On PostgreSQL it may still
+            // own older templates: retire it the driver's way.
             try {
                 $this->server->dropDatabase($name);
-                $this->server->finishTemplateBuild($builder, $name);
             } catch (\Throwable) {
                 // The build error below is what the person needs to see.
+            }
+            try {
+                $this->server->finishTemplateBuild($builder, $name);
+            } catch (\Throwable) {
+                // As above.
             }
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
         }
-        $this->server->finishTemplateBuild($builder, $name);
         File::ensureDirectoryExists(dirname($this->markerPath($name)));
         File::put($this->markerPath($name), date(DATE_ATOM)."\n");
     }

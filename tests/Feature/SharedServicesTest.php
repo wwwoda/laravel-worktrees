@@ -551,3 +551,47 @@ test('.env values with CRLF line endings are read without the carriage return', 
     expect(EnvFile::get($file, 'DB_DATABASE'))->toBe('wt_main')
         ->and(EnvFile::get($file, 'DB_PASSWORD'))->toBe('secret');
 });
+
+test('a failed template build retires the builder also when dropping its database fails', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function dropDatabase(string $database): void
+        {
+            throw new RuntimeException('drop failed');
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new class implements TemplateRecipe
+    {
+        public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
+        {
+            throw new RuntimeException('migration failed');
+        }
+    });
+
+    expect(fn () => app(TemplateManager::class)->ensure())->toThrow(RuntimeException::class, 'migration failed')
+        ->and($failing->users)->toBe([]);
+});
+
+test('a builder that cannot be retired after the build leaves no ready template', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public int $finishCalls = 0;
+
+        public function finishTemplateBuild(string $builder, string $template): void
+        {
+            if (++$this->finishCalls === 1) {
+                throw new RuntimeException('admin connection lost');
+            }
+            parent::finishTemplateBuild($builder, $template);
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'admin connection lost')
+        ->and($templates->isReady($templates->name()))->toBeFalse()
+        ->and($failing->finishCalls)->toBe(2)
+        ->and($failing->users)->toBe([]);
+});
