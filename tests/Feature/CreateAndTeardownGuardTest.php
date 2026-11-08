@@ -3,6 +3,7 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\SailBootstrapStrategy;
 use Woda\Worktrees\WorktreeManager;
 
 beforeEach(function () {
@@ -48,4 +49,44 @@ test('teardown of an unregistered directory runs no command in it', function () 
         ->toThrow(RuntimeException::class, 'not a registered worktree');
 
     Process::assertNotRan(fn (PendingProcess $process) => $process->path === $path);
+});
+
+test('a Sail build context under a missing vendor is lent from the running checkout while compose starts', function () {
+    $worktree = $this->base.'/wt';
+    $source = $this->base.'/main';
+    File::ensureDirectoryExists($worktree);
+    File::ensureDirectoryExists($source.'/vendor/laravel/sail/runtimes/8.4');
+    File::put($source.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
+    $config = json_encode(['services' => [
+        'laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']],
+        'mariadb' => ['image' => 'mariadb:10.11'],
+    ]]);
+    $seenAtUp = null;
+    Process::fake([
+        'docker compose config --format json' => Process::result($config),
+        'docker compose up -d' => function () use ($worktree, &$seenAtUp) {
+            $seenAtUp = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+
+            return Process::result();
+        },
+        "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
+        '*' => Process::result(),
+    ]);
+    $strategy = new class('laravel.test', 'pnpm', false, $source) extends SailBootstrapStrategy
+    {
+        public function __construct(string $appService, string $pm, bool $build, private string $source)
+        {
+            parent::__construct($appService, $pm, $build);
+        }
+
+        protected function buildContextSource(): string
+        {
+            return $this->source;
+        }
+    };
+
+    $strategy->bringUp($worktree);
+
+    expect($seenAtUp)->toBeTrue()
+        ->and(file_exists($worktree.'/vendor'))->toBeFalse();
 });

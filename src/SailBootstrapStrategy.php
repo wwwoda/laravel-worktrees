@@ -64,10 +64,17 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
-            'docker compose up -d',
-            $output,
-        );
+        $lent = $this->lendBuildContexts($worktreePath);
+        try {
+            $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
+                'docker compose up -d',
+                $output,
+            );
+        } finally {
+            foreach ($lent as $directory) {
+                File::deleteDirectory($directory);
+            }
+        }
 
         if (! $result->successful()) {
             throw new RuntimeException("docker compose up -d failed: {$result->errorOutput()}");
@@ -76,6 +83,61 @@ class SailBootstrapStrategy implements BootstrapStrategy
         // Give the app service a moment to pass its DB-wait entrypoint before
         // the first `exec` lands.
         $this->waitForService($worktreePath, $output);
+    }
+
+    /**
+     * Sail's compose file builds the app image from `vendor/laravel/sail/runtimes/...`,
+     * but a fresh worktree has no `vendor` before Composer runs in that container.
+     * Copy each missing build context under `vendor` from the checkout that runs
+     * artisan (it has `vendor`); the caller removes the copies after `compose up`,
+     * so the Composer stage still sees the worktree as it was.
+     *
+     * @return list<string> the directories created here
+     */
+    private function lendBuildContexts(string $worktreePath): array
+    {
+        $result = $this->compose($worktreePath, 60)->run('docker compose config --format json');
+        $config = $result->successful() ? json_decode($result->output(), true) : null;
+        $services = is_array($config) && is_array($config['services'] ?? null) ? $config['services'] : [];
+        $lent = [];
+        foreach ($services as $service) {
+            $context = is_array($service) && is_array($service['build'] ?? null) ? ($service['build']['context'] ?? null) : null;
+            // Compose prints the path as given or resolved; accept both spellings of the worktree.
+            $root = null;
+            foreach (array_unique([rtrim($worktreePath, '/'), realpath($worktreePath) ?: $worktreePath]) as $candidate) {
+                if (is_string($context) && str_starts_with($context, $candidate.'/vendor/')) {
+                    $root = $candidate;
+                }
+            }
+            if ($root === null || ! is_string($context) || is_dir($context)) {
+                continue;
+            }
+            $relative = substr($context, strlen($root) + 1);
+            $source = $this->buildContextSource().'/'.$relative;
+            if (! is_dir($source)) {
+                continue;
+            }
+            // Remember the top-most directory created here; that is what goes again.
+            $created = $root;
+            foreach (explode('/', $relative) as $part) {
+                $created .= '/'.$part;
+                if (! file_exists($created)) {
+                    break;
+                }
+            }
+            File::copyDirectory($source, $context);
+            $lent[] = $created;
+        }
+
+        return array_values(array_unique($lent));
+    }
+
+    /**
+     * Where missing build contexts are copied from: the checkout that runs artisan.
+     */
+    protected function buildContextSource(): string
+    {
+        return base_path();
     }
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
