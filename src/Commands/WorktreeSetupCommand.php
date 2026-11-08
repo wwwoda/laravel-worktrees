@@ -31,20 +31,24 @@ class WorktreeSetupCommand extends Command
 
             return self::FAILURE;
         }
-        $nameOption = $this->option('name');
-        $name = is_string($nameOption) && $nameOption !== ''
-            ? $nameOption
-            : trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower(basename($path))), '-');
-        if (! preg_match('/^[a-zA-Z0-9-]+$/', $name)) {
-            $this->components->error('Name must be alphanumeric with hyphens only.');
+        try {
+            $described = $manager->describePath($path);
+            if ($manager->isMainCheckout($path)) {
+                throw new \RuntimeException('This is the main checkout; a worktree setup does not change it.');
+            }
+        } catch (\RuntimeException|\JsonException $e) {
+            $this->components->error($e->getMessage());
 
             return self::FAILURE;
         }
-
-        try {
-            $manager->describePath($path);
-        } catch (\RuntimeException $e) {
-            $this->components->error($e->getMessage());
+        // A run again keeps the name of the first run: completed stages used it.
+        $recorded = is_array($described['bootstrap']) && is_string($described['bootstrap']['name'] ?? null) ? $described['bootstrap']['name'] : null;
+        $nameOption = $this->option('name');
+        $name = is_string($nameOption) && $nameOption !== ''
+            ? $nameOption
+            : ($recorded ?? trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower(basename($path))), '-'));
+        if (! preg_match('/^[a-zA-Z0-9-]+$/', $name)) {
+            $this->components->error('Name must be alphanumeric with hyphens only.');
 
             return self::FAILURE;
         }
