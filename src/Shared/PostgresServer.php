@@ -120,7 +120,9 @@ final readonly class PostgresServer implements DatabaseServer
         $existing = $this->listDatabases();
         foreach ($databases as $database) {
             if (in_array(Identifier::check($database), $existing, true)) {
-                $sql .= "ALTER DATABASE \"{$database}\" OWNER TO \"{$user}\";\n";
+                // A database made elsewhere may still allow PUBLIC CONNECT: close it, as createDatabase() does.
+                $sql .= "REVOKE ALL ON DATABASE \"{$database}\" FROM PUBLIC;\n"
+                    ."ALTER DATABASE \"{$database}\" OWNER TO \"{$user}\";\n";
             }
         }
         $this->admin($sql);

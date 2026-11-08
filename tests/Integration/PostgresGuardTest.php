@@ -188,3 +188,14 @@ test('--from-main hands over composite and range types too', function () {
         ->and($owners->output)->toContain("money_pair={$p}_t9")
         ->and(($this->as)($state, 'ALTER TYPE money_pair ADD ATTRIBUTE note TEXT', "{$p}_t9")->successful)->toBeTrue();
 });
+
+test('a database that existed with PUBLIC CONNECT is closed to other roles when a worktree takes it', function () {
+    $p = $this->prefix;
+    $this->server->runAs('postgres', $this->rootPassword, "CREATE DATABASE {$p}_t9");
+    $t91 = ($this->provision)('t9-1');
+
+    $t9 = ($this->provision)('t9');
+
+    expect(($this->as)($t91, 'SELECT 1', "{$p}_t9")->successful)->toBeFalse()
+        ->and(($this->as)($t9, 'SELECT 1', "{$p}_t9")->successful)->toBeTrue();
+});
