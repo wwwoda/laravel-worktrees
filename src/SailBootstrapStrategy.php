@@ -32,29 +32,6 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
  */
 class SailBootstrapStrategy implements BootstrapStrategy
 {
-    /**
-     * Vars that are typically set per-worktree in `.env` and would otherwise
-     * leak from the parent process and override the new worktree's values.
-     */
-    private const INHERITED_VARS_TO_CLEAR = [
-        'COMPOSE_PROJECT_NAME',
-        'COMPOSE_FILE',
-        'COMPOSE_PROFILES',
-        'WORKTREE_HOST',
-        'APP_NAME',
-        'APP_URL',
-        'APP_KEY',
-        'DB_DATABASE',
-        'DB_HOST',
-        'DB_PORT',
-        'DB_USERNAME',
-        'DB_PASSWORD',
-        'REDIS_HOST',
-        'REDIS_PORT',
-        'MAIL_HOST',
-        'MAIL_PORT',
-    ];
-
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
@@ -92,7 +69,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
      *
      * @return array<mixed>|null
      */
-    private function composeConfig(string $path): ?array
+    protected function composeConfig(string $path): ?array
     {
         $result = $this->compose($path, 60)->run('docker compose config --format json');
         $config = $result->successful() ? json_decode($result->output(), true) : null;
@@ -107,7 +84,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
      *
      * @param  array<mixed>|null  $config
      */
-    private function assertOwnComposeProject(string $worktreePath, ?array $config): void
+    protected function assertOwnComposeProject(string $worktreePath, ?array $config): void
     {
         $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
         if ($ours === null) {
@@ -282,26 +259,17 @@ class SailBootstrapStrategy implements BootstrapStrategy
      * that would interfere with compose's project-name / .env resolution
      * cleared. See class docblock.
      */
-    private function compose(string $worktreePath, int $timeout): PendingProcess
+    protected function compose(string $worktreePath, int $timeout): PendingProcess
     {
-        $keys = self::INHERITED_VARS_TO_CLEAR;
-        if (File::exists($worktreePath.'/.env')) {
-            preg_match_all('/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/m', File::get($worktreePath.'/.env'), $matches);
-            $keys = [...$keys, ...$matches[1]];
-        }
-        // Every inherited Compose control variable (COMPOSE_ENV_FILES, COMPOSE_DISABLE_ENV_FILE, ...)
-        // could point compose at another configuration.
-        foreach ([...array_keys(getenv()), ...array_keys($_ENV), ...array_keys($_SERVER)] as $key) {
-            if (is_string($key) && str_starts_with($key, 'COMPOSE_')) {
-                $keys[] = $key;
-            }
-        }
-        $clearedEnv = array_fill_keys($keys, false);
-
-        return Process::path($worktreePath)->timeout($timeout)->env($clearedEnv);
+        return ComposeProcess::in($worktreePath, $timeout);
     }
 
-    private function execCommand(string $cmd): string
+    protected function appService(): string
+    {
+        return $this->appService;
+    }
+
+    protected function execCommand(string $cmd): string
     {
         return sprintf(
             'docker compose exec -T %s sh -c %s',

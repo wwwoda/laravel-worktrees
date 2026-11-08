@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Shared services strategy** (`bootstrap.strategy = shared`, config section `shared`): one MariaDB or MySQL server and one Redis for all worktrees. Each worktree gets its own app, test, e2e and parallel test databases copied from a template, its own database user with rights on its exact database names only, two Redis database numbers, a state file `storage/app/worktree/state.json`, and the values in its `.env`. Names that could equal another worktree's, a template's or the main database are refused.
+- **Template databases**, named by a hash of the main checkout's migrations, seeders and seed command, built under a lock as a temporary user with rights on the template only. `worktree:template [--prune] [--name]`.
+- **`worktree:create --from-main`**: copies the main database in place of the template, only where `shared.database.allow_from_main` is true.
+- **PostgreSQL** for shared services (`shared.database.driver = pgsql`): native template copies, one role per worktree without the right to create databases, every database (parallel test databases too) created in advance and owned by the role, `CONNECT` revoked from `PUBLIC`, and a clear stop for `--recreate-databases`.
+- **Safe delete with shared services:** `worktree:delete` checks the state file before it stops anything (a missing or bad one stops the delete with nothing changed), stops the containers, drops only the worktree's own databases and user (each name checked against its state file, the main database and the templates) and empties its Redis numbers (`shared.redis.container` or host and port), then removes the folder. It fails when the folder or the worktree entry stays behind, and reports a remaining branch (`--delete-branch` deletes a merged one). Closes #4.
+- **Shared services app container:** starts the shared stack when the database server does not answer (`shared.stack.start_command`), writes `shared.app.compose_file` as `COMPOSE_FILE`, copies `vendor` and `node_modules` from the main checkout with copy-on-write when the lock files match, builds the bundle in the container, removes a stale `public/hot`, and writes the queue worker mode and queue list to `.env`. `worktree:create --horizon`. `worktree:create` prints step times and the URL.
+- **`worktree:setup <path> [--name]`**: sets up a git worktree that another tool created, at any path. `worktree:setup` and `worktree:create` can run again and complete a partial setup without copying a database again; existing config files are kept. Steps are logged to `storage/logs/worktree-setup.log`.
+- **`worktree:worker <worktree> [listen|horizon]`**: shows or switches the queue worker and recreates the app container.
+- **`worktree:convert [name] [--all]`**: moves Sail worktrees and the main checkout to shared services, keeping their data from the old volume; **`worktree:volumes [--remove=NAME]`** lists the old volumes with their size and removes only named ones. With a PostgreSQL server, `worktree:convert` stops when an old MariaDB volume exists.
+- Integration tests against a real MariaDB and PostgreSQL 17 (`tests/Integration`, CI job `integration`).
+
 - **`Contracts\BootstrapStrategy` interface** — abstracts how bootstrap
   steps run for a worktree (composer install, node install, migrate,
   build, bring-up, tear-down).
@@ -25,6 +36,9 @@
 - **`WorktreeManager::tearDown(string $name, ?Closure $output)`** —
   delegates to the bootstrap strategy. `WorktreeDeleteCommand` calls it
   before `git worktree remove`.
+- **`worktree:bootstrap <name> --status|--resume`**: reports the checkout and its bootstrap record as JSON, or resumes a failed setup. Stages are recorded in `storage/worktree-bootstrap.json`; resume skips completed stages, keeps copied config and edits, refuses a branch change and holds a lock.
+- **Explicit branch resolution**: `worktree:create --branch X` uses a local `X`, else `origin/X`, else creates `X` from `--base`. `--issue` with several linked branches asks for `--branch`.
+- **Laravel 13** support (illuminate 13, Testbench 11). CI tests Laravel 12 and 13 on PHP 8.3 and 8.4, also for pull requests to other branches than `master`.
 
 ### Changed
 
@@ -38,6 +52,13 @@
   (`installDependencies`, `buildFrontendAssets`, `runDatabaseMigrations`)
   are removed from `WorktreeManager` — their logic moved into
   `NativeBootstrapStrategy`.
+
+### Fixed
+
+- `worktree:delete` and `worktree:bootstrap --resume` print the error and exit non-zero instead of a stack trace when the folder is not a registered worktree or a step fails.
+- `worktree:delete` and `worktree:cleanup` refuse a folder that git does not register; a failed teardown keeps the checkout.
+- Cleanup runs its `gh` calls from the project directory.
+- `APP_NAME` and `env_overrides` values with `$1` or `\0` are written literally.
 
 ## v0.1.4
 
