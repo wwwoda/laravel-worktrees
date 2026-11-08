@@ -66,7 +66,7 @@ final readonly class MariaDbServer implements DatabaseServer
         // definer of the source (the template builder, the main app's user) has no
         // rights on the copy.
         $definers = $owner === null ? '' : sprintf(' && sed -E %s "$f" > "$f.d" && mv "$f.d" "$f"',
-            escapeshellarg('s/DEFINER=`[^`]*`@`[^`]*`/DEFINER=`'.Identifier::check($owner).'`@`%`/g'));
+            escapeshellarg(self::definerRewrite($owner)));
         $script = sprintf(
             // umask 077: the dump and its rewritten copy hold the data; no other local user may read them.
             'umask 077 && f=$(mktemp) && %s %s --single-transaction --routines --triggers --events %s > "$f"%s && %s %s %s < "$f"; s=$?; rm -f "$f" "$f.d"; exit $s',
@@ -188,6 +188,19 @@ final readonly class MariaDbServer implements DatabaseServer
     private function account(string $user): string
     {
         return "'".Identifier::check($user)."'@'%'";
+    }
+
+    /**
+     * The `sed -E` script that gives the definer clauses of a dump to the owner.
+     * The dump clients write each clause at the start of a line: `CREATE DEFINER=`
+     * for routines, a versioned comment for views, and a versioned `CREATE` comment
+     * followed by one for the definer for triggers and events. Rows of data start
+     * with `INSERT` or `(`, so text values that look like a clause stay unchanged.
+     */
+    private static function definerRewrite(string $owner): string
+    {
+        return 's#^((/\*![0-9]+ )?CREATE(\*/ /\*![0-9]+)? |/\*![0-9]+ )DEFINER=`[^`]*`@`[^`]*`#\1DEFINER=`'
+            .Identifier::check($owner).'`@`%`#';
     }
 
     private function hostFlags(): string

@@ -138,3 +138,38 @@ test('an import gives the definers of the dump to the owner', function () {
 
     expect($this->server->runAs($names->user, $password, "SELECT id FROM `{$names->app}`.`item_ids`")->output)->toContain('5');
 });
+
+test('a copy gives every object of a retired definer to the new owner and keeps text values', function () {
+    $builder = $this->prefix.'_vb';
+    $this->server->grantUser($builder, str_repeat('b', 32), [$this->template]);
+    $clause = "DEFINER=`{$builder}`@`%`";
+    $values = ["'{$clause}'", "'/*!50013 {$clause} SQL SECURITY DEFINER */'", "'/*!50003 CREATE*/ /*!50017 {$clause}*/'"];
+    foreach ([
+        'CREATE TABLE snippets (id INT PRIMARY KEY, body TEXT)',
+        'INSERT INTO snippets VALUES (1, '.$values[0].'), (2, '.$values[1].'), (3, '.$values[2].')',
+        'CREATE VIEW snippet_bodies AS SELECT body FROM snippets',
+        'CREATE TRIGGER snippets_keep BEFORE UPDATE ON snippets FOR EACH ROW SET NEW.body = NEW.body',
+        "CREATE PROCEDURE snippet_clause() SELECT '{$clause}'",
+        'CREATE EVENT snippets_tick ON SCHEDULE EVERY 1 DAY DO SELECT 1',
+    ] as $sql) {
+        expect($this->server->runAs($builder, str_repeat('b', 32), $sql, $this->template)->successful)->toBeTrue();
+    }
+    $this->server->retireUser($builder);
+    $names = WorktreeNames::for('t9', $this->prefix, 2);
+    $password = bin2hex(random_bytes(16));
+    $this->server->grantUser($names->user, $password, $names->databases());
+
+    $this->server->copyDatabase($this->template, $names->app, $names->user);
+
+    $root = fn (string $sql) => $this->server->runAs('root', (string) getenv('LW_TEST_MARIADB_PASSWORD'), $sql)->output;
+    $schema = "'{$names->app}'";
+    expect($root("SELECT body FROM `{$names->app}`.`snippets` ORDER BY id"))
+        ->toContain($clause)->toContain("/*!50013 {$clause} SQL SECURITY DEFINER */")->toContain("/*!50003 CREATE*/ /*!50017 {$clause}*/")
+        ->and($root("SELECT DEFINER FROM information_schema.VIEWS WHERE TABLE_SCHEMA = {$schema}"
+            ." UNION ALL SELECT DEFINER FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = {$schema}"
+            ." UNION ALL SELECT DEFINER FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = {$schema}"
+            ." UNION ALL SELECT DEFINER FROM information_schema.EVENTS WHERE EVENT_SCHEMA = {$schema}"))
+        ->toBe(str_repeat("{$names->user}@%\n", 4))
+        ->and($this->server->runAs($names->user, $password, 'CALL snippet_clause()', $names->app)->output)->toContain($clause);
+    $this->server->dropUser($builder);
+});
