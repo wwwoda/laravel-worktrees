@@ -64,15 +64,17 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        $lent = $this->lendBuildContexts($worktreePath);
+        $config = $this->composeConfig($worktreePath);
+        $this->assertOwnComposeProject($worktreePath, $config);
+        $lent = $this->lendVendorPaths($worktreePath, $config);
         try {
             $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
                 'docker compose up -d',
                 $output,
             );
         } finally {
-            foreach ($lent as $directory) {
-                File::deleteDirectory($directory);
+            foreach ($lent as $created) {
+                is_dir($created) ? File::deleteDirectory($created) : File::delete($created);
             }
         }
 
@@ -86,35 +88,97 @@ class SailBootstrapStrategy implements BootstrapStrategy
     }
 
     /**
-     * Sail's compose file builds the app image from `vendor/laravel/sail/runtimes/...`,
-     * but a fresh worktree has no `vendor` before Composer runs in that container.
-     * Copy each missing build context under `vendor` from the checkout that runs
-     * artisan (it has `vendor`); the caller removes the copies after `compose up`,
-     * so the Composer stage still sees the worktree as it was.
+     * The worktree's compose configuration as `docker compose config` resolves it; null when compose cannot read it.
      *
-     * @return list<string> the directories created here
+     * @return array<mixed>|null
      */
-    private function lendBuildContexts(string $worktreePath): array
+    private function composeConfig(string $path): ?array
     {
-        $result = $this->compose($worktreePath, 60)->run('docker compose config --format json');
+        $result = $this->compose($path, 60)->run('docker compose config --format json');
         $config = $result->successful() ? json_decode($result->output(), true) : null;
-        $services = is_array($config) && is_array($config['services'] ?? null) ? $config['services'] : [];
-        $lent = [];
+
+        return is_array($config) ? $config : null;
+    }
+
+    /**
+     * `up` and `down -v` act on the worktree's compose project. A `.env` copied with
+     * an unchanged COMPOSE_PROJECT_NAME gives it the project of the checkout it came
+     * from; then they would act on that checkout's containers and volumes.
+     *
+     * @param  array<mixed>|null  $config
+     */
+    private function assertOwnComposeProject(string $worktreePath, ?array $config): void
+    {
+        $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
+        if ($ours === null) {
+            return;
+        }
+        $self = realpath($worktreePath) ?: $worktreePath;
+        foreach (array_unique($this->protectedCheckouts()) as $checkout) {
+            if ((realpath($checkout) ?: $checkout) === $self) {
+                continue;
+            }
+            $theirs = $this->composeConfig($checkout)['name'] ?? null;
+            if ($theirs === $ours) {
+                throw new RuntimeException("The worktree has the same compose project as {$checkout} ('{$ours}'): starting or stopping it would act on that checkout's containers and volumes. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
+            }
+        }
+    }
+
+    /**
+     * Checkouts whose compose project a worktree must not share.
+     *
+     * @return list<string>
+     */
+    protected function protectedCheckouts(): array
+    {
+        return [base_path()];
+    }
+
+    /**
+     * Sail's compose file builds the app image from `vendor/laravel/sail/runtimes/...`
+     * and bind-mounts files from `vendor` (the MySQL testing-database script), but a
+     * fresh worktree has no `vendor` before Composer runs in that container. Copy
+     * each missing build context and bind source under `vendor` from the checkout
+     * that runs artisan (it has `vendor`); the caller removes the copies after
+     * `compose up` (a bind mount keeps the copied file), so the Composer stage still
+     * sees the worktree as it was.
+     *
+     * @param  array<mixed>|null  $config
+     * @return list<string> the files and directories created here
+     */
+    private function lendVendorPaths(string $worktreePath, ?array $config): array
+    {
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $paths = [];
         foreach ($services as $service) {
-            $context = is_array($service) && is_array($service['build'] ?? null) ? ($service['build']['context'] ?? null) : null;
+            if (! is_array($service)) {
+                continue;
+            }
+            if (is_array($service['build'] ?? null) && is_string($service['build']['context'] ?? null)) {
+                $paths[] = $service['build']['context'];
+            }
+            foreach (is_array($service['volumes'] ?? null) ? $service['volumes'] : [] as $volume) {
+                if (is_array($volume) && ($volume['type'] ?? null) === 'bind' && is_string($volume['source'] ?? null)) {
+                    $paths[] = $volume['source'];
+                }
+            }
+        }
+        $lent = [];
+        foreach ($paths as $path) {
             // Compose prints the path as given or resolved; accept both spellings of the worktree.
             $root = null;
             foreach (array_unique([rtrim($worktreePath, '/'), realpath($worktreePath) ?: $worktreePath]) as $candidate) {
-                if (is_string($context) && str_starts_with($context, $candidate.'/vendor/')) {
+                if (str_starts_with($path, $candidate.'/vendor/')) {
                     $root = $candidate;
                 }
             }
-            if ($root === null || ! is_string($context) || is_dir($context)) {
+            if ($root === null || file_exists($path)) {
                 continue;
             }
-            $relative = substr($context, strlen($root) + 1);
+            $relative = substr($path, strlen($root) + 1);
             $source = $this->buildContextSource().'/'.$relative;
-            if (! is_dir($source)) {
+            if (! file_exists($source)) {
                 continue;
             }
             // Remember the top-most directory created here; that is what goes again.
@@ -125,7 +189,12 @@ class SailBootstrapStrategy implements BootstrapStrategy
                     break;
                 }
             }
-            File::copyDirectory($source, $context);
+            if (is_dir($source)) {
+                File::copyDirectory($source, $path);
+            } else {
+                File::ensureDirectoryExists(dirname($path));
+                File::copy($source, $path);
+            }
             $lent[] = $created;
         }
 
@@ -133,7 +202,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
     }
 
     /**
-     * Where missing build contexts are copied from: the checkout that runs artisan.
+     * Where missing build contexts and bind sources are copied from: the checkout that runs artisan.
      */
     protected function buildContextSource(): string
     {
@@ -199,6 +268,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
 
     private function down(string $worktreePath, bool $keepVolumes, ?Closure $output): void
     {
+        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
         $result = $this->compose($worktreePath, 120)->run(
             'docker compose --profile "*" down'.($keepVolumes ? '' : ' -v'), $output,
         );
