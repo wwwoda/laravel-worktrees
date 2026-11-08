@@ -17,7 +17,13 @@ class WorktreeConvertCommand extends Command
 
     public function handle(SailConverter $converter): int
     {
-        $candidates = $converter->candidates();
+        try {
+            $candidates = $converter->candidates();
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return self::FAILURE;
+        }
         $this->table(
             ['Worktree', 'Branch', 'Last commit', 'Merged', 'Status'],
             array_map(static fn (array $c): array => [

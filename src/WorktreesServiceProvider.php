@@ -231,6 +231,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 image: $config->string('convert.image', 'mariadb:10.11'),
                 volumePattern: $config->string('convert.volume', '{compose_project}_sail-mariadb'),
                 baseBranch: is_string($base = config('worktrees.base_branch')) ? $base : 'master',
+                keepContainers: array_filter([$config->nullableString('database.container')]),
             );
         });
     }

@@ -31,6 +31,8 @@ class SailConverter
         private readonly string $image,
         private readonly string $volumePattern,
         private readonly string $baseBranch,
+        /** @var list<string> containers of the shared stack, never removed here */
+        private readonly array $keepContainers = [],
     ) {}
 
     /**
@@ -118,7 +120,24 @@ class SailConverter
             return false;
         }
 
-        return ! Process::timeout(30)->run(['docker', 'volume', 'inspect', $volume])->successful();
+        return ! $this->volumeExists($volume);
+    }
+
+    /**
+     * Only Docker's "no such volume" means absent; any other failure (daemon down,
+     * permissions) stops, so a worktree never looks converted by mistake.
+     */
+    private function volumeExists(string $volume): bool
+    {
+        $result = Process::timeout(30)->run(['docker', 'volume', 'inspect', $volume]);
+        if ($result->successful()) {
+            return true;
+        }
+        if (str_contains(strtolower($result->errorOutput()), 'no such volume')) {
+            return false;
+        }
+
+        throw new RuntimeException("Cannot inspect Docker volume '{$volume}': {$result->errorOutput()}");
     }
 
     /**
@@ -134,8 +153,8 @@ class SailConverter
             throw new RuntimeException('worktree:convert needs the shared bootstrap strategy (worktrees.bootstrap.strategy = shared); nothing was changed.');
         }
         // The first run records the old names: a later run finds `.env` rewritten.
-        [$project, $oldDatabase] = $this->markConverting($path);
-        $volumeExists = Process::timeout(30)->run(['docker', 'volume', 'inspect', $this->volumeName($project)])->successful();
+        [$project, $oldDatabase] = $this->markConverting($path, $candidate['main'] ? null : $this->provisioner->appDatabase($candidate['name']));
+        $volumeExists = $this->volumeExists($this->volumeName($project));
         if ($volumeExists && ($oldDatabase === null || ! self::validOldDatabase($oldDatabase))) {
             throw new RuntimeException(sprintf("The old volume '%s' exists, but the old .env names %s. Fix DB_DATABASE (or old_database in %s) and run the conversion again; nothing was changed.",
                 $this->volumeName($project), $oldDatabase === null ? 'no database' : "an unsupported database name '{$oldDatabase}'", WorktreeState::RELATIVE_PATH));
@@ -253,9 +272,15 @@ class SailConverter
     /**
      * @return array{string, string|null}
      */
-    private function markConverting(string $path): array
+    private function markConverting(string $path, ?string $sharedDatabase): array
     {
         $state = WorktreeState::load($path) ?? new WorktreeState([]);
+        // A shared setup before the conversion rewrote .env: its DB_DATABASE is the new
+        // name, and the old one cannot be read from it any more.
+        $envDatabase = EnvFile::get($path.'/.env', 'DB_DATABASE');
+        if (! isset($state->data['old_database']) && $sharedDatabase !== null && $envDatabase !== null && strtolower($envDatabase) === strtolower($sharedDatabase)) {
+            throw new RuntimeException("The .env already names the shared database '{$sharedDatabase}': the old Sail database name is unknown. Write it as old_database (and the old compose project as old_project) into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
+        }
         $state->data['converting'] = true;
         $state->data['old_project'] ??= $this->oldComposeProject($path);
         $state->data['old_database'] ??= EnvFile::get($path.'/.env', 'DB_DATABASE');
@@ -269,11 +294,18 @@ class SailConverter
      */
     private function removeOldContainers(string $project, ?Closure $output): void
     {
-        $ids = Process::timeout(30)->run(['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project='.$project]);
+        $ids = Process::timeout(30)->run(['docker', 'ps', '-a', '--filter', 'label=com.docker.compose.project='.$project, '--format', '{{.ID}} {{.Names}}']);
         if (! $ids->successful()) {
             throw new RuntimeException("Cannot list the old containers: {$ids->errorOutput()}");
         }
-        $list = array_values(array_filter(array_map(trim(...), explode("\n", $ids->output()))));
+        // The shared stack may run in the same compose project as the main checkout: keep it.
+        $list = [];
+        foreach (array_filter(array_map(trim(...), explode("\n", $ids->output()))) as $line) {
+            [$id, $containerName] = array_pad(explode(' ', $line, 2), 2, '');
+            if (! in_array($containerName, $this->keepContainers, true)) {
+                $list[] = $id;
+            }
+        }
         if ($list === []) {
             return;
         }
@@ -293,7 +325,7 @@ class SailConverter
     private function dumpOldVolume(string $project, ?string $database, Closure $step, ?Closure $output): ?string
     {
         $volume = $this->volumeName($project);
-        if (! Process::timeout(30)->run(['docker', 'volume', 'inspect', $volume])->successful()) {
+        if (! $this->volumeExists($volume)) {
             $step("No old volume '{$volume}': the worktree starts from the template.");
 
             return null;
@@ -303,7 +335,9 @@ class SailConverter
         }
         $container = 'worktree-convert-'.substr(md5($volume), 0, 10);
         $step("Starting a temporary database from volume '{$volume}'...");
-        $started = Process::timeout(120)->run(['docker', 'run', '-d', '--rm', '--name', $container, '-v', $volume.':/var/lib/mysql', $this->image, '--skip-grant-tables'], $output);
+        // No network: with --skip-grant-tables the server takes any login, so only
+        // docker exec (the local socket) may reach it.
+        $started = Process::timeout(120)->run(['docker', 'run', '-d', '--rm', '--network', 'none', '--name', $container, '-v', $volume.':/var/lib/mysql', $this->image, '--skip-grant-tables'], $output);
         if (! $started->successful()) {
             throw new RuntimeException("Starting a database from volume '{$volume}' failed: {$started->errorOutput()}");
         }

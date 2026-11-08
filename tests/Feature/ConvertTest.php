@@ -86,7 +86,8 @@ beforeEach(function () {
                 return $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result();
             },
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
-            "'docker' 'ps' '-aq' *" => fn (PendingProcess $p) => Process::result(implode("\n", $this->containers[substr(end($p->command), strlen('label=com.docker.compose.project='))] ?? [])),
+            "'docker' 'ps' '-a' '--filter' *" => fn (PendingProcess $p) => Process::result(implode("\n", array_map(fn (string $name) => "{$name} {$name}",
+                $this->containers[substr($p->command[4], strlen('label=com.docker.compose.project='))] ?? []))),
             "'docker' 'rm' '-f' 'worktree-convert-*" => Process::result(),
             "'docker' 'rm' '-f' *" => function (PendingProcess $p) {
                 $this->removed[] = implode(' ', $p->command);
@@ -94,7 +95,9 @@ beforeEach(function () {
 
                 return Process::result();
             },
-            "'docker' 'volume' 'inspect' *" => fn (PendingProcess $p) => Process::result(exitCode: array_key_exists(end($p->command), $this->volumes) ? 0 : 1),
+            "'docker' 'volume' 'inspect' *" => fn (PendingProcess $p) => ($this->inspectBroken ?? false)
+                ? Process::result(errorOutput: 'Cannot connect to the Docker daemon', exitCode: 1)
+                : (array_key_exists(end($p->command), $this->volumes) ? Process::result('[{}]') : Process::result('[]', 'Error response from daemon: get '.end($p->command).': no such volume', 1)),
             "'docker' 'run' *" => function (PendingProcess $p) {
                 $volume = $p->command[array_search('-v', $p->command, true) + 1];
                 $this->runningVolume = explode(':', $volume)[0];
@@ -441,4 +444,44 @@ test('an existing shared database stops the conversion when the old volume holds
     unset($this->server->databases['hp_old1']);
     $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
     expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});
+
+test('a failed volume inspect stops convert instead of reading as no volume', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    (new WorktreeState(['source' => 'template', 'name' => 'old1']))->save($path);
+    $this->inspectBroken = true;
+
+    $this->artisan('worktree:convert', ['--all' => true])
+        ->expectsOutputToContain('Cannot inspect')
+        ->assertFailed();
+});
+
+test('a worktree whose .env already names its shared database is not converted with guessed old names', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', "APP_NAME=App\nCOMPOSE_PROJECT_NAME=hungryport-old1\nDB_DATABASE=hp_old1\n");
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('old Sail database name is unknown')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([]);
+});
+
+test('the main conversion keeps the shared database container', function () {
+    config()->set('worktrees.shared.database.container', 'main-db');
+    app()->forgetInstance(SailConverter::class);
+    $this->containers['hungryport'] = ['main-app', 'main-db'];
+
+    $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
+
+    expect(implode(' ', $this->removed))->toContain('main-app')->not->toContain('main-db');
+});
+
+test('the temporary database runs without a network', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && $p->command[1] === 'run' && in_array('--network', $p->command, true)
+        && $p->command[array_search('--network', $p->command, true) + 1] === 'none');
 });
