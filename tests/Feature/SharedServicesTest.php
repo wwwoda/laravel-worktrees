@@ -483,6 +483,25 @@ test('Redis numbers of a worktree that lost its state file stay taken', function
     expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
 });
 
+test('a worktree that lost its state file keeps its names and Redis numbers also when .env holds them inside URLs', function () {
+    config()->set('worktrees.shared.env', [
+        'DATABASE_URL' => 'mysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_app}?charset=utf8mb4',
+        'REDIS_URL' => 'redis://redis:6379/{redis_default}',
+        'REDIS_CACHE_URL' => 'redis://redis:6379/{redis_cache}',
+    ]);
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::delete(WorktreeState::path(($this->path)('t9')));
+    expect(File::get(($this->path)('t9').'/.env'))->toContain('REDIS_URL=redis://redis:6379/2');
+
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+
+    $this->artisan('worktree:create', ['name' => 't10'])->assertSuccessful();
+    expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
+});
+
 test('an incomplete state file of another worktree does not hide its names', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     File::put(WorktreeState::path(($this->path)('t9')), json_encode(['schema' => WorktreeState::SCHEMA]));
