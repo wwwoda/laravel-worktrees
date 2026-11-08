@@ -196,7 +196,7 @@ $this->app->bind(ProcessManager::class, MyProcessManager::class);
 
 ## Requirements
 
-- PHP 8.2+
+- PHP 8.2+ (Laravel 13 needs 8.3+)
 - Laravel 11, 12 or 13
 - Shared services: the `mariadb`/`mariadb-dump` (or `mysql`/`mysqldump`) clients, inside the server's container (`shared.database.container`) or on the host
 
