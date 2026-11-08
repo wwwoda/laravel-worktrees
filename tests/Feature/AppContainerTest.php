@@ -78,6 +78,7 @@ beforeEach(function () {
                 return Process::result();
             },
             'docker compose config --format json' => Process::result(),
+            'docker compose up -d' => fn () => isset($this->onUp) ? ($this->onUp)() : Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -279,4 +280,42 @@ test('a worktree whose compose project is the main checkout\'s is neither starte
 
     expect(fn () => app(BootstrapStrategy::class)->tearDown(($this->path)('t9')))->toThrow(RuntimeException::class, 'same compose project');
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'down'));
+});
+
+test('the dev server probe counts only a successful answer', function () {
+    $router = $this->base.'/router.php';
+    File::put($router, '<?php http_response_code(str_contains($_SERVER["REQUEST_URI"], "/ok/") ? 200 : 404); echo "x";');
+    $port = 20000 + random_int(0, 9999);
+    $server = proc_open([PHP_BINARY, '-S', "127.0.0.1:{$port}", $router], [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+    $deadline = microtime(true) + 5;
+    while (! @fsockopen('127.0.0.1', $port) && microtime(true) < $deadline) {
+        usleep(50_000);
+    }
+
+    try {
+        expect(SharedServicesBootstrapStrategy::devServerAnswers("http://127.0.0.1:{$port}/ok"))->toBeTrue()
+            ->and(SharedServicesBootstrapStrategy::devServerAnswers("http://127.0.0.1:{$port}/missing"))->toBeFalse()
+            ->and(SharedServicesBootstrapStrategy::devServerAnswers('http://127.0.0.1:1'))->toBeFalse();
+    } finally {
+        proc_terminate($server);
+        proc_close($server);
+    }
+});
+
+test('missing Sail build contexts are lent from the main checkout', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    File::ensureDirectoryExists($this->main.'/vendor/laravel/sail/runtimes/8.4');
+    File::put($this->main.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
+    $seen = null;
+    Process::fake(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
+    $this->onUp = function () use ($worktree, &$seen) {
+        $seen = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+
+        return Process::result();
+    };
+
+    app(BootstrapStrategy::class)->bringUp($worktree);
+
+    expect($seen)->toBeTrue();
 });
