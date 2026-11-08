@@ -7,6 +7,7 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\ArtisanTemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
@@ -504,4 +505,49 @@ test('a run without --resume starts its stage record anew, so a failed provision
 
     $record = json_decode(File::get(($this->path)('t9').'/storage/worktree-bootstrap.json'), true);
     expect($record['completed'])->not->toContain('database');
+});
+
+test('a stale ready marker is removed before the template is built again', function () {
+    $templates = app(TemplateManager::class);
+    $name = $templates->name();
+    $marker = base_path("storage/app/worktrees/templates/{$name}.ready");
+    File::ensureDirectoryExists(dirname($marker));
+    File::put($marker, 'old');
+    $readyDuringBuild = null;
+    app()->instance(TemplateRecipe::class, new class($this->server, $templates, $name, $readyDuringBuild) implements TemplateRecipe
+    {
+        public function __construct(private FakeDatabaseServer $server, private TemplateManager $templates, private string $name, private ?bool &$seen) {}
+
+        public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
+        {
+            $this->seen = $this->templates->isReady($this->name);
+            $this->server->databases[$database] = ['migrated'];
+        }
+    });
+    app()->forgetInstance(TemplateManager::class);
+
+    app(TemplateManager::class)->ensure();
+
+    expect($readyDuringBuild)->toBeFalse()
+        ->and(File::exists($marker))->toBeTrue();
+});
+
+test('the host template runner connects through the admin host and port', function () {
+    config()->set('worktrees.shared.database.template.runner', 'host');
+    config()->set('worktrees.shared.database.host', '127.0.0.1');
+    config()->set('worktrees.shared.database.port', 3307);
+    app()->forgetInstance(TemplateRecipe::class);
+
+    $recipe = app(TemplateRecipe::class);
+
+    expect((new ReflectionProperty($recipe, 'databaseHost'))->getValue($recipe))->toBe('127.0.0.1')
+        ->and((new ReflectionProperty($recipe, 'databasePort'))->getValue($recipe))->toBe(3307);
+});
+
+test('.env values with CRLF line endings are read without the carriage return', function () {
+    $file = $this->base.'/crlf.env';
+    File::put($file, "APP_NAME=App\r\nDB_DATABASE=wt_main\r\nDB_PASSWORD=\"secret\"\r\n");
+
+    expect(EnvFile::get($file, 'DB_DATABASE'))->toBe('wt_main')
+        ->and(EnvFile::get($file, 'DB_PASSWORD'))->toBe('secret');
 });

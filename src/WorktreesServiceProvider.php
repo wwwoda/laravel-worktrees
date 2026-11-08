@@ -151,11 +151,16 @@ class WorktreesServiceProvider extends ServiceProvider
         $this->app->bindIf(TemplateRecipe::class, function (): TemplateRecipe {
             $config = new SharedConfig;
 
+            $mode = $config->string('database.template.runner', 'container');
+            // On the host, artisan reaches the server like the package's admin connection;
+            // in the app container, like the app (the compose service name).
+            $onHost = $mode === 'host';
+
             return new ArtisanTemplateRecipe(
-                mode: $config->string('database.template.runner', 'container'),
+                mode: $mode,
                 appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
-                databaseHost: $config->string('database.app_host', 'mariadb'),
-                databasePort: $config->int('database.app_port', 3306),
+                databaseHost: $onHost ? $config->string('database.host', '127.0.0.1') : $config->string('database.app_host', 'mariadb'),
+                databasePort: $onHost ? $config->int('database.port', 3306) : $config->int('database.app_port', 3306),
                 extraEnv: $config->stringMap('database.template.env'),
             );
         });
