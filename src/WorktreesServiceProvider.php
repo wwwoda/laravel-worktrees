@@ -179,7 +179,7 @@ class WorktreesServiceProvider extends ServiceProvider
                     registry: $app->make(WorktreeRegistry::class),
                     databases: $config->int('redis.databases', 256),
                     reserved: $config->intList('redis.reserved'),
-                    envKeys: array_keys(array_filter($config->stringMap('env'), static fn (string $value): bool => preg_match('/\{redis_(default|cache)\}/', $value) === 1)),
+                    envMap: array_filter($config->stringMap('env'), static fn (string $value): bool => preg_match('/\{redis_(default|cache)\}/', $value) === 1),
                 ),
                 registry: $app->make(WorktreeRegistry::class),
                 prefix: $config->string('database.prefix', 'wt'),
