@@ -148,6 +148,22 @@ test('a changed migration gives a new template; an unchanged tree reuses it', fu
         ->and($this->server->databaseExists($second))->toBeTrue();
 });
 
+test('each template keeps its own builder, and pruning a template drops its builder', function () {
+    $templates = app(TemplateManager::class);
+    $first = $templates->ensure();
+    File::put(base_path($this->migrations.'/2026_01_01_000000_create_items.php'), '<?php // v2');
+    $second = $templates->ensure();
+
+    expect($this->server->users[$templates->builder($first)]['databases'])->toBe([$first])
+        ->and($this->server->users[$templates->builder($second)]['databases'])->toBe([$second])
+        ->and($templates->builder($first))->not->toBe($templates->builder($second));
+
+    $templates->prune();
+
+    expect($this->server->users)->not->toHaveKey($templates->builder($first))
+        ->toHaveKey($templates->builder($second));
+});
+
 test('a second setup waits for a running template build and does not build twice', function () {
     $templates = app(TemplateManager::class);
     $name = $templates->name();
