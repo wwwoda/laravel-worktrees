@@ -98,7 +98,7 @@ final readonly class PostgresServer implements DatabaseServer
         $this->admin('DROP DATABASE IF EXISTS "'.Identifier::check($database).'" WITH (FORCE)');
     }
 
-    public function importFile(string $database, string $file, ?Closure $output = null): void
+    public function importFile(string $database, string $file, ?Closure $output = null, ?string $owner = null): void
     {
         $result = Process::env(['PGPASSWORD' => $this->adminPassword])->timeout(1800)->run(
             $this->wrap(sprintf('%s -X -q -v ON_ERROR_STOP=1 -U %s%s -d %s < %s', $this->client, escapeshellarg($this->adminUser),
@@ -107,6 +107,10 @@ final readonly class PostgresServer implements DatabaseServer
         );
         if (! $result->successful()) {
             throw new RuntimeException("Importing into '{$database}' failed: {$result->errorOutput()}");
+        }
+        if ($owner !== null) {
+            // The admin ran the dump: its objects belong to the admin until handed over.
+            $this->takeOwnership($database, $owner);
         }
     }
 

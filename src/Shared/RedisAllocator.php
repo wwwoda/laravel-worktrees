@@ -26,6 +26,14 @@ final readonly class RedisAllocator
     /**
      * @return list<int>
      */
+    public function reserved(): array
+    {
+        return $this->reserved;
+    }
+
+    /**
+     * @return list<int>
+     */
     public function allocate(string $worktreePath): array
     {
         $used = [...$this->reserved, ...$this->usedByOthers($worktreePath)];

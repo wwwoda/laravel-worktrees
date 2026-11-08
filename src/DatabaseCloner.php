@@ -42,6 +42,20 @@ class DatabaseCloner
         };
     }
 
+    /**
+     * True when the worktree's database exists already; a setup must keep it.
+     */
+    public function targetExists(string $worktreePath, string $suffix): bool
+    {
+        return match ($this->resolveStrategy()) {
+            'sqlite' => File::exists($worktreePath.'/database/database.sqlite'),
+            // A failed listing must not read as "absent": the setup would then mark and later drop an existing database.
+            'mysql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listMysqlClones(strict: true), true),
+            'pgsql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listPgsqlClones(strict: true), true),
+            default => false,
+        };
+    }
+
     public function drop(string $suffix): void
     {
         $this->ensureDockerRunning();
@@ -217,19 +231,25 @@ class DatabaseCloner
         $targetPath = $targetDir.'/database.sqlite';
         File::copy($sourcePath, $targetPath);
 
-        // Point .env at the copy with a path relative to the app: Laravel resolves it
-        // against base_path(), which works on the host and inside a Sail container
-        // (where the host's absolute path does not exist).
+        $this->pointEnvAtWorktreeDatabase($worktreePath);
+    }
+
+    /**
+     * Point the worktree's `.env` at its own SQLite file (a copied `.env`
+     * names the main checkout's). Other drivers get their name from the
+     * standard rewrites.
+     */
+    public function pointEnvAtWorktreeDatabase(string $worktreePath): void
+    {
+        $targetPath = $worktreePath.'/database/database.sqlite';
         $envPath = $worktreePath.'/.env';
-        if (File::exists($envPath)) {
-            $envContent = File::get($envPath);
-            $envContent = (string) preg_replace(
-                '/^DB_DATABASE=.*/m',
-                'DB_DATABASE=database/database.sqlite',
-                $envContent,
-            );
-            File::put($envPath, $envContent);
+        if ($this->resolveStrategy() !== 'sqlite' || ! File::exists($envPath) || ! File::exists($targetPath)) {
+            return;
         }
+        // A path relative to the app: Laravel resolves it against base_path(), which
+        // works on the host and inside a Sail container (where the host's absolute
+        // path does not exist).
+        File::put($envPath, Shared\EnvFile::upsertLine(File::get($envPath), 'DB_DATABASE', 'DB_DATABASE=database/database.sqlite'));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -306,7 +326,7 @@ class DatabaseCloner
     /**
      * @return list<string>
      */
-    private function listMysqlClones(): array
+    private function listMysqlClones(bool $strict = false): array
     {
         $cfg = $this->connectionConfig();
         $sourceDb = $cfg['database'];
@@ -319,7 +339,7 @@ class DatabaseCloner
         $result = Process::env($env)->timeout(10)->run($cmd);
 
         if (! $result->successful()) {
-            return [];
+            return $strict ? throw new RuntimeException("Cannot list the databases: {$result->errorOutput()}") : [];
         }
 
         return array_values(array_filter(array_map(trim(...), explode("\n", $result->output()))));
@@ -434,7 +454,7 @@ class DatabaseCloner
     /**
      * @return list<string>
      */
-    private function listPgsqlClones(): array
+    private function listPgsqlClones(bool $strict = false): array
     {
         $cfg = $this->connectionConfig();
         $sourceDb = $cfg['database'];
@@ -448,7 +468,7 @@ class DatabaseCloner
         $result = $this->pgsqlAdminExec($cmd, 10);
 
         if (! $result->successful()) {
-            return [];
+            return $strict ? throw new RuntimeException("Cannot list the databases: {$result->errorOutput()}") : [];
         }
 
         return array_values(array_filter(array_map(trim(...), explode("\n", $result->output()))));
