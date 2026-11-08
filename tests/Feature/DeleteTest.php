@@ -84,6 +84,9 @@ beforeEach(function () {
                 if (end($p->command) === 'PING') {
                     return $this->redisDown ? Process::result(errorOutput: 'Connection refused', exitCode: 1) : Process::result('PONG');
                 }
+                if ($this->flushFails ?? false) {
+                    return Process::result(errorOutput: 'NOPERM this user has no permissions to run the flushdb command', exitCode: 1);
+                }
                 $this->flushed[] = (int) $p->command[array_search('-n', $p->command, true) + 1];
 
                 return Process::result('OK');
@@ -261,4 +264,31 @@ test('a Redis password travels in REDISCLI_AUTH, not on the command line', funct
         expect($call['command'])->toContain('REDISCLI_AUTH')->not->toContain('redis-secret')
             ->and($call['env']['REDISCLI_AUTH'] ?? null)->toBe('redis-secret');
     }
+});
+
+test('a state without its user stops the delete before any drop', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $state = WorktreeState::load(($this->path)('t9'));
+    unset($state->data['user']);
+    $state->save(($this->path)('t9'));
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain('names no user')
+        ->assertFailed();
+
+    expect($this->server->databases)->toHaveKey('hp_t9')
+        ->and($this->server->users)->toHaveKey('hp_t9');
+});
+
+test('a Redis that refuses the flush stops the delete before any database is dropped', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $this->flushFails = true;
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain('NOPERM')
+        ->assertFailed();
+
+    expect($this->server->databases)->toHaveKey('hp_t9')
+        ->and($this->server->users)->toHaveKey('hp_t9')
+        ->and(is_dir(($this->path)('t9')))->toBeTrue();
 });

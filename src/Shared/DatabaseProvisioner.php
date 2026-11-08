@@ -179,7 +179,10 @@ class DatabaseProvisioner
             }
         }
         $user = $state->string('user');
-        if ($user !== null && $user !== $names->user) {
+        if ($user === null) {
+            throw new RuntimeException("The state file of '{$name}' names no user; it is incomplete. Nothing was dropped.");
+        }
+        if ($user !== $names->user) {
             throw new RuntimeException("Refusing to drop user '{$user}': it is not the worktree's own user. Nothing was dropped.");
         }
 
@@ -189,12 +192,20 @@ class DatabaseProvisioner
         }
 
         // Reach Redis before anything is dropped, so a Redis problem leaves the
-        // worktree whole instead of half deleted.
+        // worktree whole instead of half deleted. The flush itself comes first too:
+        // a Redis that answers PING may still refuse FLUSHDB (ACL).
         if ($numbers !== [] && $this->redisServer !== null) {
             $this->redisServer->ping();
         }
-
         $removed = [];
+        foreach ($numbers as $number) {
+            if ($this->redisServer === null) {
+                continue;
+            }
+            $this->redisServer->flush($number);
+            $removed[] = "Redis database {$number}";
+        }
+
         foreach ($databases as $database) {
             if ($this->server->databaseExists($database)) {
                 $step("Dropping database {$database}...");
@@ -202,16 +213,9 @@ class DatabaseProvisioner
                 $removed[] = "database {$database}";
             }
         }
-        if ($user !== null && $this->server->userExists($user)) {
+        if ($this->server->userExists($user)) {
             $this->server->dropUser($user);
             $removed[] = "user {$user}";
-        }
-        foreach ($numbers as $number) {
-            if ($this->redisServer === null) {
-                continue;
-            }
-            $this->redisServer->flush($number);
-            $removed[] = "Redis database {$number}";
         }
 
         return $removed;
