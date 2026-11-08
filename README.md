@@ -65,7 +65,7 @@ php artisan worktree:create --branch=existing # From existing branch
 php artisan worktree:create                   # Interactive mode
 ```
 
-Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main` (shared services)
+Options: `--branch`, `--base`, `--issue`, `--pr`, `--skip-deps`, `--skip-build`, `--skip-db` (with shared services only on a resume, once the worktree has its own databases), `--from-main` (shared services)
 
 `--branch` attaches an existing local branch, or a remote `origin/<branch>`, before creating a new
 branch from `--base`. `--issue` fails when the issue has several linked branches; pass `--branch`.

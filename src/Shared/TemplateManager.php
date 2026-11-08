@@ -136,9 +136,10 @@ class TemplateManager
         }
         $builder = $this->prefix().'builder';
         $password = bin2hex(random_bytes(16));
-        $this->server->createDatabase($name, $builder);
-        $this->server->grantUser($builder, $password, [$name]);
+        // Account and database setup sit inside the cleanup: a failed grant must not leave the builder behind.
         try {
+            $this->server->createDatabase($name, $builder);
+            $this->server->grantUser($builder, $password, [$name]);
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
         } catch (\Throwable $error) {
             $this->server->dropDatabase($name);

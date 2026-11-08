@@ -225,10 +225,14 @@ class WorktreeManager
 
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
-            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
-            $state = File::exists($statePath)
+            $decoded = File::exists($statePath)
                 ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
                 : ['completed' => []];
+            if (! $this->isBootstrapRecord($decoded)) {
+                throw new RuntimeException('storage/worktree-bootstrap.json does not have the shape of a bootstrap record. Review or remove it, then resume.');
+            }
+            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
+            $state = $decoded;
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
@@ -237,6 +241,11 @@ class WorktreeManager
             $resume = ! empty($options['resume']);
             if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
                 throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
+            }
+            $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
+            // Without its own databases, the copied .env still names the main database and its account.
+            if ($provisions && ! empty($options['skip_db']) && ! in_array('database', $state['completed'], true)) {
+                throw new RuntimeException('--skip-db is not possible before the worktree has its own databases on the shared server: its .env would still name the main database. Run without --skip-db.');
             }
             $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
@@ -261,8 +270,7 @@ class WorktreeManager
             });
             // Shared services: the databases exist and `.env` names them before the
             // app container starts, so its worker and scheduler start with them.
-            $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
-            if ($provisions && empty($options['skip_db'])) {
+            if ($this->bootstrapStrategy instanceof ProvisionsDatabases && empty($options['skip_db'])) {
                 $run('database', fn () => $this->bootstrapStrategy->provisionDatabases($name, $path, [
                     'from_main' => ! empty($options['from_main']),
                     'branch' => $identity['branch'],
@@ -297,22 +305,56 @@ class WorktreeManager
         }
     }
 
+    /**
+     * A decoded bootstrap record that bootstrap() can work with: completed stages as
+     * a list of strings, and text (or null for the branch) in the other known keys.
+     */
+    private function isBootstrapRecord(mixed $record): bool
+    {
+        if (! is_array($record) || ! is_array($record['completed'] ?? null) || ! array_is_list($record['completed'])) {
+            return false;
+        }
+        foreach ($record['completed'] as $stage) {
+            if (! is_string($stage)) {
+                return false;
+            }
+        }
+        foreach (['stage', 'status', 'initial_head'] as $key) {
+            if (array_key_exists($key, $record) && ! is_string($record[$key])) {
+                return false;
+            }
+        }
+
+        return ! array_key_exists('branch', $record) || $record['branch'] === null || is_string($record['branch']);
+    }
+
     /** @return array{path: string, branch: string|null, head: string, bootstrap: mixed} */
     public function describe(string $name): array
     {
         $path = $this->pathFor($name);
+        $worktree = $this->registeredEntry($path);
+        $statePath = $path.'/storage/worktree-bootstrap.json';
+
+        return [
+            'path' => $path,
+            'branch' => is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null,
+            'head' => is_string($worktree['head'] ?? null) ? $worktree['head'] : '',
+            'bootstrap' => File::exists($statePath)
+                ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR) : null,
+        ];
+    }
+
+    /**
+     * The `git worktree list` entry of a path; fails when Git does not know the path as a worktree.
+     *
+     * @return array<string, mixed>
+     */
+    private function registeredEntry(string $path): array
+    {
         foreach ($this->list() as $worktree) {
             $registeredPath = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
             if ((realpath($registeredPath) ?: $registeredPath) === (realpath($path) ?: $path)) {
-                $statePath = $path.'/storage/worktree-bootstrap.json';
-
-                return [
-                    'path' => $path,
-                    'branch' => is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null,
-                    'head' => is_string($worktree['head'] ?? null) ? $worktree['head'] : '',
-                    'bootstrap' => File::exists($statePath)
-                        ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR) : null,
-                ];
+                return $worktree;
             }
         }
 
@@ -332,6 +374,8 @@ class WorktreeManager
         if (! $this->exists($name)) {
             return;
         }
+        // Only a registered worktree's stack is torn down; a look-alike directory may hold another project.
+        $this->registeredEntry($path);
 
         if ($keepDatabase && $this->bootstrapStrategy instanceof SailBootstrapStrategy) {
             $this->bootstrapStrategy->tearDownKeepingVolumes($path, $output);

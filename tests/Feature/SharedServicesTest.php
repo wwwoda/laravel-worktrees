@@ -169,6 +169,26 @@ test('a second setup waits for a running template build and does not build twice
     proc_close($builder);
 });
 
+test('a template build that fails while it sets up its builder leaves no builder account', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function grantUser(string $user, string $password, array $databases): void
+        {
+            parent::grantUser($user, $password, $databases);
+
+            throw new RuntimeException('grant failed');
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'grant failed');
+
+    expect($failing->users)->toBe([])
+        ->and($failing->databaseExists($templates->name()))->toBeFalse();
+});
+
 test('--from-main copies the main database where config allows it', function () {
     config()->set('worktrees.shared.database.allow_from_main', true);
 
@@ -207,6 +227,47 @@ test('names that could equal another worktree, a template or the main database a
     'main database' => ['main', 'hp_main', 'main database'],
 ]);
 
+test('on MySQL a name whose user would exceed 32 characters is refused before the server is touched', function () {
+    $mysql = new class extends FakeDatabaseServer
+    {
+        public function driver(): string
+        {
+            return 'mysql';
+        }
+    };
+    $mysql->databases = ['hungryport' => []];
+    app()->instance(DatabaseServer::class, $mysql);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($mysql));
+    $name = 'a-long-worktree-name-for-mysql';
+
+    $this->artisan('worktree:create', ['name' => $name])
+        ->expectsOutputToContain('more than 32 characters')
+        ->assertFailed();
+
+    expect($mysql->log)->toBe([]);
+});
+
+test('on MariaDB the same name is accepted', function () {
+    $this->artisan('worktree:create', ['name' => 'a-long-worktree-name-for-mysql'])->assertSuccessful();
+
+    expect($this->server->users)->toHaveKey('hp_a_long_worktree_name_for_mysql');
+});
+
+test('--skip-db is refused before the worktree has its own databases', function () {
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])
+        ->expectsOutputToContain('--skip-db')
+        ->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'docker compose up'));
+    expect($this->server->users)->toBe([]);
+});
+
+test('--skip-db is accepted on a resume once the databases exist', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true, '--skip-db' => true])->assertSuccessful();
+});
+
 test('a name another worktree already uses is refused', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $this->worktrees['other'] = $this->base.'/elsewhere/T9';
@@ -215,6 +276,18 @@ test('a name another worktree already uses is refused', function () {
     expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
         ->toThrow(RuntimeException::class, 'already uses the database names');
 });
+
+test('a name another worktree uses is refused also when that worktree lost its state file', function (string $stateContent) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $stateContent === '' ? File::delete(WorktreeState::path(($this->path)('t9'))) : File::put(WorktreeState::path(($this->path)('t9')), $stateContent);
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+    $password = $this->server->users['hp_t9']['password'];
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+    expect($this->server->users['hp_t9']['password'])->toBe($password);
+})->with(['missing' => [''], 'broken' => ['{broken']]);
 
 test('a broken state file is rebuilt and keeps the password of .env', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();

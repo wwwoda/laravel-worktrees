@@ -37,18 +37,25 @@ class WorktreeRegistry
      */
     public function otherStates(string $exceptPath): array
     {
+        return array_filter($this->otherWorktrees($exceptPath));
+    }
+
+    /**
+     * All worktrees except `$exceptPath`, with their state; null when the
+     * state file is missing or cannot be read.
+     *
+     * @return array<string, WorktreeState|null>
+     */
+    public function otherWorktrees(string $exceptPath): array
+    {
         $except = realpath($exceptPath) ?: $exceptPath;
-        $states = [];
+        $worktrees = [];
         foreach ($this->paths() as $path) {
-            if ((realpath($path) ?: $path) === $except) {
-                continue;
-            }
-            $state = WorktreeState::load($path);
-            if ($state !== null) {
-                $states[$path] = $state;
+            if ((realpath($path) ?: $path) !== $except) {
+                $worktrees[$path] = WorktreeState::load($path);
             }
         }
 
-        return $states;
+        return $worktrees;
     }
 }
