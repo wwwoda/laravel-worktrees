@@ -253,6 +253,21 @@ test('on MariaDB the same name is accepted', function () {
     expect($this->server->users)->toHaveKey('hp_a_long_worktree_name_for_mysql');
 });
 
+test('--skip-db is refused before the worktree has its own databases', function () {
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])
+        ->expectsOutputToContain('--skip-db')
+        ->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'docker compose up'));
+    expect($this->server->users)->toBe([]);
+});
+
+test('--skip-db is accepted on a resume once the databases exist', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true, '--skip-db' => true])->assertSuccessful();
+});
+
 test('a name another worktree already uses is refused', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $this->worktrees['other'] = $this->base.'/elsewhere/T9';
