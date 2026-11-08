@@ -51,21 +51,27 @@ test('teardown of an unregistered directory runs no command in it', function () 
     Process::assertNotRan(fn (PendingProcess $process) => $process->path === $path);
 });
 
-test('a Sail build context under a missing vendor is lent from the running checkout while compose starts', function () {
+test('Sail build contexts and bind-mount files under a missing vendor are lent from the running checkout while compose starts', function () {
     $worktree = $this->base.'/wt';
     $source = $this->base.'/main';
     File::ensureDirectoryExists($worktree);
     File::ensureDirectoryExists($source.'/vendor/laravel/sail/runtimes/8.4');
     File::put($source.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
+    File::ensureDirectoryExists($source.'/vendor/laravel/sail/database/mysql');
+    File::put($source.'/vendor/laravel/sail/database/mysql/create-testing-database.sh', '#!/bin/sh');
     $config = json_encode(['services' => [
         'laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']],
-        'mariadb' => ['image' => 'mariadb:10.11'],
+        'mysql' => ['image' => 'mysql:8.4', 'volumes' => [
+            ['type' => 'bind', 'source' => $worktree.'/vendor/laravel/sail/database/mysql/create-testing-database.sh', 'target' => '/docker-entrypoint-initdb.d/10-create-testing-database.sh'],
+            ['type' => 'volume', 'source' => 'sail-mysql', 'target' => '/var/lib/mysql'],
+        ]],
     ]]);
     $seenAtUp = null;
     Process::fake([
         'docker compose config --format json' => Process::result($config),
         'docker compose up -d' => function () use ($worktree, &$seenAtUp) {
-            $seenAtUp = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+            $seenAtUp = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile')
+                && is_file($worktree.'/vendor/laravel/sail/database/mysql/create-testing-database.sh');
 
             return Process::result();
         },
@@ -148,4 +154,34 @@ test('compose runs without any inherited COMPOSE_ variable', function () {
     Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, 'down')
         && $process->environment['COMPOSE_DISABLE_ENV_FILE'] === false
         && $process->environment['COMPOSE_ENV_FILES'] === false);
+});
+
+test('a worktree with the compose project of the checkout it came from is neither started nor torn down', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    Process::fake([
+        'docker compose config --format json' => Process::result(json_encode(['name' => 'app', 'services' => []])),
+        '*' => Process::result(),
+    ]);
+    $strategy = new SailBootstrapStrategy('laravel.test', 'pnpm', false);
+
+    expect(fn () => $strategy->bringUp($worktree))->toThrow(RuntimeException::class, 'same compose project')
+        ->and(fn () => $strategy->tearDown($worktree))->toThrow(RuntimeException::class, 'same compose project')
+        ->and(fn () => $strategy->tearDownKeepingVolumes($worktree))->toThrow(RuntimeException::class, 'same compose project');
+    Process::assertNotRan(fn (PendingProcess $process) => str_contains((string) $process->command, ' up ')
+        || str_contains((string) $process->command, ' down'));
+});
+
+test('a worktree with its own compose project is started', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    Process::fake([
+        'docker compose config --format json' => fn (PendingProcess $process) => Process::result(json_encode(['name' => $process->path === $worktree ? 'app-wt' : 'app', 'services' => []])),
+        "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
+        '*' => Process::result(),
+    ]);
+
+    (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->bringUp($worktree);
+
+    Process::assertRan('docker compose up -d');
 });
