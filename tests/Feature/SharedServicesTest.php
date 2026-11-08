@@ -428,6 +428,37 @@ test('without a configured main database, the main checkout\'s .env names it', f
         ->assertFailed();
 });
 
+test('the main checkout\'s .env is read as dotenv reads it', function (string $line) {
+    config()->set('worktrees.shared.database.main', null);
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    File::put($main.'/.env', "APP_NAME=App\n{$line}\n");
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    $this->artisan('worktree:create', ['name' => 'main'])
+        ->expectsOutputToContain("would use the main database 'hp_main'")
+        ->assertFailed();
+})->with([
+    'inline comment' => ['DB_DATABASE=hp_main # main database'],
+    'quoted with comment' => ['DB_DATABASE="hp_main" # main database'],
+    'export prefix' => ['export DB_DATABASE=hp_main'],
+    'spaces around =' => ['DB_DATABASE = hp_main'],
+]);
+
+test('a main checkout .env that dotenv cannot parse names no main database', function () {
+    config()->set('worktrees.shared.database.main', null);
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    File::put($main.'/.env', "DB_DATABASE=\"hp_main\n");
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    expect(fn () => $this->artisan('worktree:create', ['name' => 't9'])->run())
+        ->toThrow(InvalidArgumentException::class, 'Cannot tell the main database');
+    expect($this->server->users)->toBe([]);
+});
+
 test('a worktree with the main checkout\'s compose project is not started, also when artisan runs elsewhere', function () {
     $main = $this->base.'/main';
     File::ensureDirectoryExists($main.'/.git');
