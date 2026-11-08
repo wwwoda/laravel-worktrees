@@ -411,7 +411,7 @@ class WorktreeManager
      * holds a name by its folder (`<project>-<name>` in the base path) or by its
      * bootstrap record.
      */
-    private function assertNameFree(string $name, string $path): void
+    public function assertNameFree(string $name, string $path): void
     {
         $self = realpath($path) ?: $path;
         foreach ($this->registered() as $index => $worktree) {

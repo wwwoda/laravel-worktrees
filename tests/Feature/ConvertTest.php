@@ -413,9 +413,15 @@ test('a name that several worktrees share is refused; a path picks one', functio
         ->assertFailed();
     expect($this->server->databaseExists('hp_old1'))->toBeFalse();
 
-    $this->artisan('worktree:convert', ['name' => $outside])->assertSuccessful();
-    expect(SailConverter::isConverted($outside))->toBeTrue()
-        ->and(SailConverter::isConverted(($this->path)('old1')))->toBeFalse();
+    // A path picks one. The outside folder would get the same name, and with it the
+    // same databases, as the worktree in the base path: it is refused.
+    $this->artisan('worktree:convert', ['name' => $outside])
+        ->expectsOutputToContain('already uses the name')
+        ->assertFailed();
+    expect(implode(' ', $this->removed))->not->toContain('old1');
+    $this->artisan('worktree:convert', ['name' => ($this->path)('old1')])->assertSuccessful();
+    expect(SailConverter::isConverted(($this->path)('old1')))->toBeTrue()
+        ->and(SailConverter::isConverted($outside))->toBeFalse();
 });
 
 test('a failed delete makes convert fail', function () {

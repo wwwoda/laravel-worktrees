@@ -152,6 +152,10 @@ class SailConverter
         if (! $this->strategy instanceof ProvisionsDatabases) {
             throw new RuntimeException('worktree:convert needs the shared bootstrap strategy (worktrees.bootstrap.strategy = shared); nothing was changed.');
         }
+        // Before any change: a name another worktree holds would share its databases.
+        if (! $candidate['main']) {
+            $this->manager->assertNameFree($candidate['name'], $path);
+        }
         // The first run records the old names: a later run finds `.env` rewritten.
         [$project, $oldDatabase] = $this->markConverting($path, $candidate['main'] ? null : $this->provisioner->appDatabase($candidate['name']));
         $volumeExists = $this->volumeExists($this->volumeName($project));
