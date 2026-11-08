@@ -395,3 +395,14 @@ test('a setup resumed after its database step failed empties the connection URLs
         ->and(EnvFile::get($path.'/.env', 'REDIS_URL'))->toBe('')
         ->and(EnvFile::get($path.'/.env', 'DB_DATABASE'))->toBe('hp_t907');
 });
+
+test('setup run again on a worktree from before the fix empties its connection URLs', function () {
+    $path = frontierWorktree($this, 't908', 'lane');
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+    File::append($path.'/.env', "DB_URL=mysql://app:secret@mariadb:3306/hungryport\n");
+
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+
+    expect(EnvFile::get($path.'/.env', 'DB_URL'))->toBe('')
+        ->and(File::get($path.'/.env'))->not->toContain('secret@mariadb');
+});

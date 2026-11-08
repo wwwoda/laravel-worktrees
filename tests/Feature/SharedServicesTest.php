@@ -723,8 +723,27 @@ test('a connection URL written with export or quotes is emptied as dotenv reads 
 
     $env = ($this->path)('t9').'/.env';
     expect(EnvFile::get($env, 'DB_URL'))->toBe('')
-        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('');
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('')
+        // The lines are replaced, not followed by an empty one: no reader finds the old URL.
+        ->and(File::get($env))->not->toContain('secret@mariadb')->not->toContain('redis://redis:6379/0');
 });
+
+test('a worktree whose database step is complete gets its connection URLs emptied on the next run', function (array $options) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $env = ($this->path)('t9').'/.env';
+    // A worktree set up before the URLs were emptied.
+    File::append($env, "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true, ...$options])->assertSuccessful();
+
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('')
+        ->and(File::get($env))->not->toContain('secret@mariadb')
+        ->and(EnvFile::get($env, 'DB_DATABASE'))->toBe('hp_t9');
+})->with([
+    'resume' => [[]],
+    'resume with --skip-db' => [['--skip-db' => true]],
+]);
 
 test('a connection URL that the main checkout does not have is not added', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();

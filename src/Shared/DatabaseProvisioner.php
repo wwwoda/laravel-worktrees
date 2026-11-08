@@ -486,15 +486,28 @@ class DatabaseProvisioner
             '{redis_cache}' => (string) $redis[1],
             '{name}' => (string) $state->string('name'),
         ];
+        EnvFile::upsert($path.'/.env', array_map(static fn (string $value): string => strtr($value, $values), $this->envMap));
+        $this->clearConnectionUrls($path);
+    }
+
+    /**
+     * Empty the connection URL keys that have a value in the worktree's `.env`:
+     * Laravel would use a URL copied from the main checkout before the DB_* and
+     * REDIS_* values. A key of the `.env` map keeps its value; a missing key
+     * stays missing. Safe to run on every setup.
+     */
+    public function clearConnectionUrls(string $path): void
+    {
         $envPath = $path.'/.env';
         $cleared = [];
         foreach (array_diff($this->clearEnv, array_keys($this->envMap)) as $key) {
-            // Only a key that has a value: a missing key stays missing.
             if (! in_array(EnvFile::get($envPath, $key), [null, ''], true)) {
                 $cleared[$key] = '';
             }
         }
-        EnvFile::upsert($envPath, [...$cleared, ...array_map(static fn (string $value): string => strtr($value, $values), $this->envMap)]);
+        if ($cleared !== []) {
+            EnvFile::upsert($envPath, $cleared);
+        }
     }
 
     /**
