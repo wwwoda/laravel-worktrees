@@ -132,8 +132,8 @@ class WorktreesServiceProvider extends ServiceProvider
                     port: $config->int('database.port', 3306),
                     adminUser: $config->string('database.admin_username', 'root'),
                     adminPassword: $config->string('database.admin_password', ''),
-                    client: $config->string('database.client', $driver === 'mysql' ? 'mysql' : 'mariadb'),
-                    dumpClient: $config->string('database.dump_client', $driver === 'mysql' ? 'mysqldump' : 'mariadb-dump'),
+                    client: $config->nullableString('database.client') ?? ($driver === 'mysql' ? 'mysql' : 'mariadb'),
+                    dumpClient: $config->nullableString('database.dump_client') ?? ($driver === 'mysql' ? 'mysqldump' : 'mariadb-dump'),
                 ),
                 default => throw new InvalidArgumentException("Unknown shared database driver '{$driver}'."),
             };
@@ -186,6 +186,7 @@ class WorktreesServiceProvider extends ServiceProvider
                     registry: $app->make(WorktreeRegistry::class),
                     databases: $config->int('redis.databases', 256),
                     reserved: $config->intList('redis.reserved'),
+                    envKeys: array_keys(array_filter($config->stringMap('env'), static fn (string $value): bool => preg_match('/\{redis_(default|cache)\}/', $value) === 1)),
                 ),
                 registry: $app->make(WorktreeRegistry::class),
                 prefix: $config->string('database.prefix', 'wt'),
