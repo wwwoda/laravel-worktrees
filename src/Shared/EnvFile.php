@@ -59,4 +59,35 @@ final class EnvFile
 
         return $value;
     }
+
+    /**
+     * The values the placeholders of a `.env` map value (`{db_app}`,
+     * `{redis_default}`) have in a value rendered from it, by placeholder name.
+     * Empty when the value no longer has the form of the map value.
+     *
+     * @return array<string, string>
+     */
+    public static function placeholderValues(string $template, string $value): array
+    {
+        $parts = preg_split('/\{([a-z_]+)\}/', $template, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
+        $pattern = '';
+        $names = [];
+        foreach ($parts as $index => $part) {
+            if ($index % 2 === 1) {
+                $names[] = $part;
+                $pattern .= '(.*?)';
+            } else {
+                $pattern .= preg_quote($part, '/');
+            }
+        }
+        if (! preg_match('/^'.$pattern.'$/s', $value, $match)) {
+            return [];
+        }
+        $values = [];
+        foreach ($names as $index => $name) {
+            $values[$name] = $match[$index + 1];
+        }
+
+        return $values;
+    }
 }

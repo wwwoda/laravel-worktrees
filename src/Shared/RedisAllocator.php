@@ -13,14 +13,14 @@ final readonly class RedisAllocator
 {
     /**
      * @param  list<int>  $reserved
-     * @param  list<string>  $envKeys  `.env` keys that hold a worktree's Redis numbers
+     * @param  array<string, string>  $envMap  `.env` keys that hold a worktree's Redis numbers, with their map values
      */
     public function __construct(
         private WorktreeRegistry $registry,
         private int $databases,
         private array $reserved,
         private int $perWorktree = 2,
-        private array $envKeys = [],
+        private array $envMap = [],
     ) {}
 
     /**
@@ -96,10 +96,13 @@ final readonly class RedisAllocator
         $used = [];
         foreach ($this->registry->otherWorktrees($worktreePath) as $path => $state) {
             $used = [...$used, ...($state?->redis() ?? [])];
-            foreach ($this->envKeys as $key) {
+            // The number may sit inside a longer value, such as redis://redis:6379/{redis_default}.
+            foreach ($this->envMap as $key => $template) {
                 $value = EnvFile::get($path.'/.env', $key);
-                if ($value !== null && ctype_digit($value)) {
-                    $used[] = (int) $value;
+                foreach ($value === null ? [] : EnvFile::placeholderValues($template, $value) as $name => $number) {
+                    if (in_array($name, ['redis_default', 'redis_cache'], true) && ctype_digit($number)) {
+                        $used[] = (int) $number;
+                    }
                 }
             }
         }
