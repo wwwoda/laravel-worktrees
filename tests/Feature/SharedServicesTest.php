@@ -148,6 +148,22 @@ test('a changed migration gives a new template; an unchanged tree reuses it', fu
         ->and($this->server->databaseExists($second))->toBeTrue();
 });
 
+test('each template keeps its own builder, and pruning a template drops its builder', function () {
+    $templates = app(TemplateManager::class);
+    $first = $templates->ensure();
+    File::put(base_path($this->migrations.'/2026_01_01_000000_create_items.php'), '<?php // v2');
+    $second = $templates->ensure();
+
+    expect($this->server->users[$templates->builder($first)]['databases'])->toBe([$first])
+        ->and($this->server->users[$templates->builder($second)]['databases'])->toBe([$second])
+        ->and($templates->builder($first))->not->toBe($templates->builder($second));
+
+    $templates->prune();
+
+    expect($this->server->users)->not->toHaveKey($templates->builder($first))
+        ->toHaveKey($templates->builder($second));
+});
+
 test('a second setup waits for a running template build and does not build twice', function () {
     $templates = app(TemplateManager::class);
     $name = $templates->name();
@@ -410,6 +426,37 @@ test('without a configured main database, the main checkout\'s .env names it', f
     $this->artisan('worktree:create', ['name' => 'main'])
         ->expectsOutputToContain("would use the main database 'hp_main'")
         ->assertFailed();
+});
+
+test('the main checkout\'s .env is read as dotenv reads it', function (string $line) {
+    config()->set('worktrees.shared.database.main', null);
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    File::put($main.'/.env', "APP_NAME=App\n{$line}\n");
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    $this->artisan('worktree:create', ['name' => 'main'])
+        ->expectsOutputToContain("would use the main database 'hp_main'")
+        ->assertFailed();
+})->with([
+    'inline comment' => ['DB_DATABASE=hp_main # main database'],
+    'quoted with comment' => ['DB_DATABASE="hp_main" # main database'],
+    'export prefix' => ['export DB_DATABASE=hp_main'],
+    'spaces around =' => ['DB_DATABASE = hp_main'],
+]);
+
+test('a main checkout .env that dotenv cannot parse names no main database', function () {
+    config()->set('worktrees.shared.database.main', null);
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    File::put($main.'/.env', "DB_DATABASE=\"hp_main\n");
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+
+    expect(fn () => $this->artisan('worktree:create', ['name' => 't9'])->run())
+        ->toThrow(InvalidArgumentException::class, 'Cannot tell the main database');
+    expect($this->server->users)->toBe([]);
 });
 
 test('a worktree with the main checkout\'s compose project is not started, also when artisan runs elsewhere', function () {
