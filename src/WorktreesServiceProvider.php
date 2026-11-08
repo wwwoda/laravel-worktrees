@@ -240,6 +240,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 envMap: $config->stringMap('env'),
                 redisServer: $app->make(RedisServer::class),
                 clearEnv: self::clearEnv(),
+                worktreeEnvKeys: self::envOverrideKeys(),
             );
         });
     }
@@ -272,20 +273,26 @@ class WorktreesServiceProvider extends ServiceProvider
     }
 
     /**
-     * The connection URL keys to empty in a worktree's `.env`. A config published
-     * before the key existed has no `clear_env`: then the defaults apply. A key that
-     * env_overrides sets keeps the value written there.
+     * The connection URL keys to empty in a `.env`. A config published before the
+     * key existed has no `clear_env`: then the defaults apply.
      *
      * @return list<string>
      */
     private static function clearEnv(): array
     {
-        $keys = config('worktrees.shared.clear_env') === null
+        return config('worktrees.shared.clear_env') === null
             ? DatabaseProvisioner::CLEAR_ENV
             : (new SharedConfig)->stringList('clear_env');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function envOverrideKeys(): array
+    {
         $overrides = config('worktrees.env_overrides');
 
-        return array_values(array_diff($keys, is_array($overrides) ? array_keys($overrides) : []));
+        return is_array($overrides) ? array_values(array_filter(array_keys($overrides), is_string(...))) : [];
     }
 
     private static function defaultAppHost(): string

@@ -26,6 +26,7 @@ class DatabaseProvisioner
      * @param  list<string>  $copyFromTemplate  which of app, test, e2e start as a template copy
      * @param  array<string, string>  $envMap  `.env` key => value with {placeholders}
      * @param  list<string>  $clearEnv  `.env` keys emptied when they hold a value, unless $envMap sets them
+     * @param  list<string>  $worktreeEnvKeys  keys that env_overrides writes to each worktree (not to the main checkout): not emptied there
      */
     public function __construct(
         private readonly DatabaseServer $server,
@@ -43,6 +44,7 @@ class DatabaseProvisioner
         private readonly array $envMap,
         private readonly ?RedisServer $redisServer = null,
         private readonly array $clearEnv = self::CLEAR_ENV,
+        private readonly array $worktreeEnvKeys = [],
     ) {}
 
     public function names(string $name): WorktreeNames
@@ -291,7 +293,7 @@ class DatabaseProvisioner
             'created_at' => $state->string('created_at') ?? date(DATE_ATOM),
         ];
         $state->save($path);
-        $this->writeEnv($path, $state);
+        $this->writeEnv($path, $state, main: true);
 
         return $state;
     }
@@ -469,7 +471,7 @@ class DatabaseProvisioner
         return bin2hex(random_bytes(16));
     }
 
-    private function writeEnv(string $path, WorktreeState $state): void
+    private function writeEnv(string $path, WorktreeState $state, bool $main = false): void
     {
         /** @var array{app: string, test: string, e2e: string} $databases */
         $databases = $state->data['databases'];
@@ -487,20 +489,22 @@ class DatabaseProvisioner
             '{name}' => (string) $state->string('name'),
         ];
         EnvFile::upsert($path.'/.env', array_map(static fn (string $value): string => strtr($value, $values), $this->envMap));
-        $this->clearConnectionUrls($path);
+        $this->clearConnectionUrls($path, $main);
     }
 
     /**
      * Empty the connection URL keys that have a value in the worktree's `.env`:
      * Laravel would use a URL copied from the main checkout before the DB_* and
-     * REDIS_* values. A key of the `.env` map keeps its value; a missing key
-     * stays missing. Safe to run on every setup.
+     * REDIS_* values. A key of the `.env` map keeps its value, and in a worktree
+     * also a key of env_overrides (written to worktrees only); a missing key stays
+     * missing. Safe to run on every setup.
      */
-    public function clearConnectionUrls(string $path): void
+    public function clearConnectionUrls(string $path, bool $main = false): void
     {
         $envPath = $path.'/.env';
         $cleared = [];
-        foreach (array_diff($this->clearEnv, array_keys($this->envMap)) as $key) {
+        $kept = [...array_keys($this->envMap), ...($main ? [] : $this->worktreeEnvKeys)];
+        foreach (array_diff($this->clearEnv, $kept) as $key) {
             if (! in_array(EnvFile::get($envPath, $key), [null, ''], true)) {
                 $cleared[$key] = '';
             }

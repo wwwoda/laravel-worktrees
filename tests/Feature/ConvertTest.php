@@ -770,7 +770,8 @@ test('converting empties the connection URLs of the old Sail layout', function (
         ->and(EnvFile::get($env, 'DB_USERNAME'))->toBe('hp_old1');
 });
 
-test('converting the main checkout empties its connection URLs', function () {
+test('converting the main checkout empties its connection URLs, also a key that env_overrides sets for worktrees', function () {
+    config()->set('worktrees.env_overrides.DB_URL', 'mysql://{name}');
     unset($this->server->databases['hungryport']);
     $this->volumes['hungryport_mariadb'] = ['main_users'];
     File::append($this->main.'/.env', "DB_URL=mysql://sail:password@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
