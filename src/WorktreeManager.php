@@ -241,8 +241,9 @@ class WorktreeManager
             }
             $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
             // Without its own databases, the copied .env still names the main database and its account.
-            if ($provisions && ! empty($options['skip_db']) && ! in_array('database', $state['completed'], true)) {
-                throw new RuntimeException('--skip-db is not possible before the worktree has its own databases on the shared server: its .env would still name the main database. Run without --skip-db.');
+            // Without --resume the config stage copies the main .env again, and only provisioning would restore the worktree's values.
+            if ($provisions && ! empty($options['skip_db']) && (! $resume || ! in_array('database', $state['completed'], true))) {
+                throw new RuntimeException('--skip-db works with shared services only on a resume, once the worktree has its own databases: otherwise its .env names the main database. Run without --skip-db.');
             }
             $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
