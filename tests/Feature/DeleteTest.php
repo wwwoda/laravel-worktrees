@@ -333,4 +333,7 @@ test('a state with a bad Redis allocation or database list stops the delete befo
     'databases not a list of names' => [function (WorktreeState $s) {
         $s->data['databases'] = ['app' => 5];
     }, 'database list'],
+    'parallel list missing' => [function (WorktreeState $s) {
+        unset($s->data['databases']['parallel']);
+    }, 'database list'],
 ]);

@@ -174,7 +174,8 @@ class DatabaseProvisioner
         // The state's lists must have their full shape: a part that does not parse
         // would read as "nothing to drop" and leave data behind half deleted.
         $recorded = $state->data['databases'] ?? null;
-        $parallel = is_array($recorded) ? ($recorded['parallel'] ?? []) : null;
+        // Provisioning always writes the parallel list (empty with no workers): a missing one is incomplete.
+        $parallel = is_array($recorded) ? ($recorded['parallel'] ?? null) : null;
         if (! is_array($recorded) || ! is_string($recorded['app'] ?? null) || ! is_string($recorded['test'] ?? null) || ! is_string($recorded['e2e'] ?? null)
             || ! is_array($parallel) || ! array_is_list($parallel) || array_filter($parallel, static fn (mixed $value): bool => ! is_string($value)) !== []) {
             throw new RuntimeException("The database list in the state file of '{$name}' is incomplete. Nothing was dropped.");
