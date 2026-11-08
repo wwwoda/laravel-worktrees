@@ -40,7 +40,7 @@ beforeEach(function () {
 
         public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
         {
-            $result = $this->server->runAs($user, $password, 'CREATE TABLE users (email VARCHAR(100)); INSERT INTO users VALUES (\'test@example.com\');', $database);
+            $result = $this->server->runAs($user, $password, 'CREATE TABLE users (email VARCHAR(100)); INSERT INTO users VALUES (\'test@example.com\'); CREATE VIEW user_emails AS SELECT email FROM users;', $database);
             if (! $result->successful) {
                 throw new RuntimeException($result->error);
             }
@@ -73,8 +73,11 @@ afterEach(function () {
     foreach ($this->server->databasesStartingWith($this->prefix.'_') as $database) {
         $this->server->dropDatabase($database);
     }
-    foreach (['t9', 't9_1', 'tpl_builder'] as $user) {
+    foreach (['t9', 't9_1', 't8'] as $user) {
         $this->server->dropUser($this->prefix.'_'.$user);
+    }
+    foreach ($this->templates ?? [] as $template) {
+        $this->server->dropUser(app(TemplateManager::class)->builder($template));
     }
     File::deleteDirectory($this->base);
     File::deleteDirectory(base_path('storage/app/worktrees'));
@@ -84,6 +87,7 @@ test('provisioning copies the template and gives each worktree its own guarded u
     $t9 = ($this->provision)('t9');
     $t91 = ($this->provision)('t9-1');
     $template = app(TemplateManager::class)->name();
+    $this->templates = [$template];
     $query = fn (WorktreeState $state, string $sql) => $this->server->runAs((string) $state->string('user'), (string) $state->string('password'), $sql);
 
     expect($query($t9, "SELECT email FROM `{$this->prefix}_t9`.users")->output)->toContain('test@example.com')
@@ -93,7 +97,25 @@ test('provisioning copies the template and gives each worktree its own guarded u
         ->and($query($t91, "SELECT 1 FROM `{$this->prefix}_main`.users")->successful)->toBeFalse()
         ->and($t9->redis())->not->toBe($t91->redis())
         // The builder stays as the definer of template views, but cannot log in.
-        ->and($this->server->runAs('root', (string) getenv('LW_TEST_MARIADB_PASSWORD'), "SHOW CREATE USER '{$this->prefix}_tpl_builder'@'%'")->output)->toContain('ACCOUNT LOCK');
+        ->and($this->server->runAs('root', $this->rootPassword, "SHOW CREATE USER '".app(TemplateManager::class)->builder($template)."'@'%'")->output)->toContain('ACCOUNT LOCK');
+});
+
+test('an older template still copies after a newer one was built', function () {
+    $templates = app(TemplateManager::class);
+    ($this->provision)('t9');
+    $first = $templates->name();
+    config()->set('worktrees.shared.database.template.seed_command', 'seed '.$this->prefix.' v2');
+    ($this->provision)('t9-1');
+    $second = app(TemplateManager::class)->name();
+    $this->templates = [$first, $second];
+    config()->set('worktrees.shared.database.template.seed_command', 'seed '.$this->prefix);
+
+    $t8 = ($this->provision)('t8');
+
+    expect($second)->not->toBe($first)
+        ->and(app(TemplateManager::class)->name())->toBe($first)
+        ->and($this->server->runAs((string) $t8->string('user'), (string) $t8->string('password'), "SELECT email FROM `{$this->prefix}_t8`.user_emails")->output)
+        ->toContain('test@example.com');
 });
 
 test('provisioning again keeps the data of an existing database', function () {
