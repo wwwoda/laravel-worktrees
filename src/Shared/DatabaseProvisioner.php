@@ -38,6 +38,10 @@ class DatabaseProvisioner
     {
         $names = WorktreeNames::for($name, $this->prefix, $this->parallelWorkers);
         $names->assertSafe($this->mainDatabase, $this->templates->prefix());
+        // MySQL account names have at most 32 characters (MariaDB 80, PostgreSQL 63 like the databases).
+        if ($this->server->driver() === 'mysql' && strlen($names->user) > 32) {
+            throw new RuntimeException("The worktree name '{$name}' is too long for MySQL: the user name '{$names->user}' has more than 32 characters.");
+        }
 
         return $names;
     }
@@ -180,12 +184,27 @@ class DatabaseProvisioner
 
     private function assertNoOtherWorktreeUses(WorktreeNames $names, string $path): void
     {
-        foreach ($this->registry->otherStates($path) as $otherPath => $state) {
-            $shared = array_intersect(array_map(strtolower(...), $names->databases()), array_map(strtolower(...), $state->databases()));
-            if ($shared !== [] || strtolower((string) $state->string('user')) === strtolower($names->user)) {
+        $ours = array_map(strtolower(...), [...$names->databases(), $names->user]);
+        foreach ($this->registry->otherWorktrees($path) as $otherPath => $state) {
+            // A worktree that lost its state file (or has an incomplete one) still names
+            // its databases and user in its .env: count both.
+            $theirs = [...$this->envNames($otherPath), ...($state?->databases() ?? []), (string) $state?->string('user')];
+            if (array_intersect($ours, array_map(strtolower(...), $theirs)) !== []) {
                 throw new RuntimeException("The worktree at {$otherPath} already uses the database names of '{$names->worktree}'. Choose another name.");
             }
         }
+    }
+
+    /**
+     * The values a worktree's .env holds for the configured database keys.
+     *
+     * @return list<string>
+     */
+    private function envNames(string $path): array
+    {
+        $keys = array_keys(array_filter($this->envMap, static fn (string $value): bool => preg_match('/\{db_(app|test|e2e|user)\}/', $value) === 1));
+
+        return array_values(array_filter(array_map(static fn (string $key): ?string => EnvFile::get($path.'/.env', $key), $keys), is_string(...)));
     }
 
     private function password(WorktreeState $state, WorktreeNames $names, string $path): string

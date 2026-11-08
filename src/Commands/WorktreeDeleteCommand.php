@@ -51,39 +51,19 @@ class WorktreeDeleteCommand extends Command
             );
         }
 
-        if (! $worktreeManager->exists($name)) {
-            $this->components->error("Worktree '{$name}' does not exist.");
+        try {
+            if (! $worktreeManager->exists($name)) {
+                $this->components->error("Worktree '{$name}' does not exist.");
 
-            return self::FAILURE;
-        }
-
-        // Safety checks
-        if (! $this->option('force')) {
-            $safety = $worktreeManager->safetyCheck($name);
-
-            if (! $safety['clean']) {
-                $this->components->warn("Worktree '{$name}' has uncommitted changes.");
-                if (! confirm('Continue anyway?', false)) {
-                    return self::SUCCESS;
-                }
+                return self::FAILURE;
             }
 
-            if ($safety['unpushed']) {
-                $this->components->warn("Worktree '{$name}' has unpushed commits.");
-                if (! confirm('Continue anyway?', false)) {
-                    return self::SUCCESS;
-                }
-            }
+            // Registration first: the safety checks run git in the folder, and a look-alike folder is not ours.
+            $worktreeManager->describe($name);
 
-            if (! confirm("Delete worktree '{$name}'?")) {
-                $this->components->info('Cancelled.');
-
+            if (! $this->option('force') && ! $this->confirmDelete($worktreeManager, $name)) {
                 return self::SUCCESS;
             }
-        }
-
-        try {
-            $worktreeManager->describe($name);
 
             if ($processManager->isRunning($name)) {
                 $this->components->info("Terminating running process for '{$name}'...");
@@ -105,6 +85,10 @@ class WorktreeDeleteCommand extends Command
                 $suffix = str_replace('-', '_', $name);
                 $databaseCloner->drop($suffix);
             }
+        } catch (\JsonException $e) {
+            $this->components->error('storage/worktree-bootstrap.json is not valid JSON: '.$e->getMessage());
+
+            return self::FAILURE;
         } catch (\RuntimeException $e) {
             $this->components->error($e->getMessage());
 
@@ -114,5 +98,35 @@ class WorktreeDeleteCommand extends Command
         $this->components->info("Worktree '{$name}' deleted.");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Safety checks and the final question; false when the user stops.
+     */
+    private function confirmDelete(WorktreeManager $worktreeManager, string $name): bool
+    {
+        $safety = $worktreeManager->safetyCheck($name);
+
+        if (! $safety['clean']) {
+            $this->components->warn("Worktree '{$name}' has uncommitted changes.");
+            if (! confirm('Continue anyway?', false)) {
+                return false;
+            }
+        }
+
+        if ($safety['unpushed']) {
+            $this->components->warn("Worktree '{$name}' has unpushed commits.");
+            if (! confirm('Continue anyway?', false)) {
+                return false;
+            }
+        }
+
+        if (! confirm("Delete worktree '{$name}'?")) {
+            $this->components->info('Cancelled.');
+
+            return false;
+        }
+
+        return true;
     }
 }
