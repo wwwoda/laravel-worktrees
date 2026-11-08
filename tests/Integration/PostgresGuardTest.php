@@ -118,7 +118,7 @@ test('the template builder can no longer log in, and a second provisioning keeps
 test('--from-main copies a main database that has open connections', function () {
     config()->set('worktrees.shared.database.allow_from_main', true);
     // Hold a connection to the main database while copying.
-    $holder = proc_open(['psql', '-h', (string) getenv('LW_TEST_PGSQL_HOST'), '-U', 'postgres', '-d', $this->prefix.'_main', '-c', 'SELECT pg_sleep(6)'],
+    $holder = proc_open(['psql', '-h', (string) getenv('LW_TEST_PGSQL_HOST'), '-p', (string) (getenv('LW_TEST_PGSQL_PORT') ?: 5432), '-U', 'postgres', '-d', $this->prefix.'_main', '-c', 'SELECT pg_sleep(6)'],
         [], $pipes, null, ['PGPASSWORD' => $this->rootPassword, 'PATH' => (string) getenv('PATH')]);
     usleep(800_000);
 
@@ -163,7 +163,7 @@ test('a failed later template build keeps its error and retires the builder', fu
 test('--from-main of a main database in use with a superuser extension restores it', function () {
     config()->set('worktrees.shared.database.allow_from_main', true);
     $this->server->runAs('postgres', $this->rootPassword, 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;', $this->prefix.'_main');
-    $holder = proc_open(['psql', '-h', (string) getenv('LW_TEST_PGSQL_HOST'), '-U', 'postgres', '-d', $this->prefix.'_main', '-c', 'SELECT pg_sleep(6)'],
+    $holder = proc_open(['psql', '-h', (string) getenv('LW_TEST_PGSQL_HOST'), '-p', (string) (getenv('LW_TEST_PGSQL_PORT') ?: 5432), '-U', 'postgres', '-d', $this->prefix.'_main', '-c', 'SELECT pg_sleep(6)'],
         [], $pipes, null, ['PGPASSWORD' => $this->rootPassword, 'PATH' => (string) getenv('PATH')]);
     usleep(800_000);
 
@@ -172,4 +172,19 @@ test('--from-main of a main database in use with a superuser extension restores 
 
     expect(($this->as)($state, 'SELECT id FROM items', "{$this->prefix}_t9")->output)->toContain('1')
         ->and($this->server->runAs('postgres', $this->rootPassword, "SELECT extname FROM pg_extension WHERE extname = 'pg_stat_statements'", "{$this->prefix}_t9")->output)->toContain('pg_stat_statements');
+});
+
+test('--from-main hands over composite and range types too', function () {
+    config()->set('worktrees.shared.database.allow_from_main', true);
+    $p = $this->prefix;
+    $this->server->runAs('postgres', $this->rootPassword, 'CREATE TYPE money_pair AS (amount INT, currency TEXT); CREATE TYPE int_span AS RANGE (subtype = int4);', "{$p}_main");
+
+    $state = ($this->provision)('t9', true);
+    $owners = $this->server->runAs('postgres', $this->rootPassword,
+        "SELECT t.typname || '=' || pg_get_userbyid(t.typowner) FROM pg_type t WHERE t.typname IN ('money_pair', 'int_span', 'int_span_multirange') ORDER BY 1", "{$p}_t9");
+
+    expect($owners->output)->toContain("int_span={$p}_t9")
+        ->and($owners->output)->toContain("int_span_multirange={$p}_t9")
+        ->and($owners->output)->toContain("money_pair={$p}_t9")
+        ->and(($this->as)($state, 'ALTER TYPE money_pair ADD ATTRIBUTE note TEXT', "{$p}_t9")->successful)->toBeTrue();
 });
