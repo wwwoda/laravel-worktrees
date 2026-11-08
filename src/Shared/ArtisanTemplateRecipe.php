@@ -39,6 +39,11 @@ final readonly class ArtisanTemplateRecipe implements TemplateRecipe
             'DB_DATABASE' => $database,
             'DB_USERNAME' => $user,
             'DB_PASSWORD' => $password,
+            // A connection URL wins over the values above: an empty one is ignored,
+            // and Laravel does not read it from the main checkout's .env any more.
+            // DATABASE_URL is the name in configs from before Laravel 11.
+            'DB_URL' => '',
+            'DATABASE_URL' => '',
             // A config cache of the main checkout would ignore these values and point
             // the build at the main database: read the config fresh instead.
             'APP_CONFIG_CACHE' => '/tmp/worktree-template-'.bin2hex(random_bytes(6)).'-config.php',
