@@ -89,9 +89,10 @@ return [
             'port' => (int) env('WORKTREE_SHARED_DB_ADMIN_PORT', 3306),
             'admin_username' => env('WORKTREE_SHARED_DB_ADMIN_USERNAME', 'root'),
             'admin_password' => env('WORKTREE_SHARED_DB_ADMIN_PASSWORD', ''),
-            // Client commands, with options if needed (e.g. 'mariadb --skip-ssl').
-            'client' => env('WORKTREE_SHARED_DB_CLIENT', 'mariadb'),
-            'dump_client' => env('WORKTREE_SHARED_DB_DUMP_CLIENT', 'mariadb-dump'),
+            // Client commands, with options if needed (e.g. 'mariadb --skip-ssl'). Empty: mariadb and
+            // mariadb-dump, or mysql and mysqldump with driver mysql.
+            'client' => env('WORKTREE_SHARED_DB_CLIENT'),
+            'dump_client' => env('WORKTREE_SHARED_DB_DUMP_CLIENT'),
 
             // How the app containers reach the server (written to `.env`).
             'app_host' => env('WORKTREE_SHARED_DB_HOST', 'mariadb'),
