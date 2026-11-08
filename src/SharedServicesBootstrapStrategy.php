@@ -6,6 +6,7 @@ use Closure;
 use RuntimeException;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
+use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\WorktreeState;
 
 /**
@@ -27,6 +28,15 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements P
         int $bringUpTimeout = 600,
     ) {
         parent::__construct($appService, $nodePackageManager, $buildFrontend, $bringUpTimeout);
+    }
+
+    /**
+     * The shared stack runs in the main checkout's compose project: a worktree
+     * must not share it, also when artisan runs in a linked worktree.
+     */
+    protected function protectedCheckouts(): array
+    {
+        return [...parent::protectedCheckouts(), MainCheckout::path()];
     }
 
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void

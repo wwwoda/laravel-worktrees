@@ -63,6 +63,7 @@ beforeEach(function () {
             ))),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
+            'docker compose config --format json' => Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -406,4 +407,19 @@ test('without a configured main database, the main checkout\'s .env names it', f
     $this->artisan('worktree:create', ['name' => 'main'])
         ->expectsOutputToContain("would use the main database 'hp_main'")
         ->assertFailed();
+});
+
+test('a worktree with the main checkout\'s compose project is not started, also when artisan runs elsewhere', function () {
+    $main = $this->base.'/main';
+    File::ensureDirectoryExists($main.'/.git');
+    $this->commonDir = $main.'/.git';
+    MainCheckout::forget();
+    Process::fake(['docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode(['name' => $p->path === base_path() ? 'elsewhere' : 'app']))]);
+
+    $this->artisan('worktree:create', ['name' => 't9'])
+        ->expectsOutputToContain('same compose project')
+        ->assertFailed();
+
+    Process::assertNotRan('docker compose up -d');
+    MainCheckout::forget();
 });
