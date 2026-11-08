@@ -77,6 +77,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
+            'docker compose config --format json' => Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -295,4 +296,50 @@ test('a database stage that stopped before its clone started keeps the existing 
     } finally {
         File::delete(base_path('database/database.sqlite'));
     }
+});
+
+test('setup refuses the main checkout before it writes its log there', function () {
+    $this->worktrees = [];
+    File::delete(base_path('storage/logs/worktree-setup.log'));
+
+    $this->artisan('worktree:setup', ['path' => base_path()])->assertFailed();
+
+    expect(File::exists(base_path('storage/logs/worktree-setup.log')))->toBeFalse();
+});
+
+test('the worker switch refuses a worktree with the main checkout\'s compose project', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $env = File::get(($this->path)('t9').'/.env');
+    Process::fake(['docker compose config --format json' => Process::result(json_encode(['name' => 'app']))]);
+
+    $this->artisan('worktree:worker', ['worktree' => 't9', 'mode' => 'horizon'])
+        ->expectsOutputToContain('same compose project')
+        ->assertFailed();
+
+    expect(File::get(($this->path)('t9').'/.env'))->toBe($env);
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, '--force-recreate'));
+});
+
+test('a setup run again keeps the name of the first run', function () {
+    $path = frontierWorktree($this, 't907', 'lane');
+    $this->upFails = 1;
+    $this->artisan('worktree:setup', ['path' => $path, '--name' => 'lane7'])->assertFailed();
+
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+    expect(WorktreeState::load($path)?->string('name'))->toBe('lane7');
+
+    $this->artisan('worktree:setup', ['path' => $path, '--name' => 'other'])
+        ->expectsOutputToContain("'lane7'")
+        ->assertFailed();
+});
+
+test('create run again after its .env was copied, but before the config stage was recorded, completes', function () {
+    $this->upFails = 1;
+    $this->artisan('worktree:create', ['name' => 't9'])->assertFailed();
+    $record = ($this->path)('t9').'/storage/worktree-bootstrap.json';
+    $state = json_decode(File::get($record), true);
+    $state['completed'] = [];
+    File::put($record, json_encode($state));
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 });
