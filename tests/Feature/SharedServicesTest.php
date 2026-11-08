@@ -9,6 +9,7 @@ use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
@@ -550,4 +551,13 @@ test('.env values with CRLF line endings are read without the carriage return', 
 
     expect(EnvFile::get($file, 'DB_DATABASE'))->toBe('wt_main')
         ->and(EnvFile::get($file, 'DB_PASSWORD'))->toBe('secret');
+});
+
+test('the copy keeps its dump files private', function () {
+    Process::fake(['*' => Process::result()]);
+    $server = new MariaDbServer('mariadb', null, '127.0.0.1', 3306, 'root', '');
+
+    $server->copyDatabase('hp_tpl_abc', 'hp_t9', 'hp_t9');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'mariadb-dump') && str_contains((string) $p->command, 'umask 077'));
 });
