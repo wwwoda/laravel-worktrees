@@ -668,3 +668,42 @@ test('a worktree with another worktree\'s compose project is not converted', fun
     expect($this->removed)->toBe([])
         ->and($this->server->databaseExists('hp_old2'))->toBeFalse();
 });
+
+test('the main checkout\'s shared stack starts only after the old volume is dumped, with the shared layout', function () {
+    // A start command that reads the main checkout's .env would start the old layout before.
+    config()->set('worktrees.shared.stack.start_command', 'docker compose up -d');
+    config()->set('worktrees.shared.app.compose_file', 'compose.worktree.yml');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(SailConverter::class);
+    app()->forgetInstance(DatabaseProvisioner::class);
+    $this->volumes['hungryport_mariadb'] = ['users'];
+    unset($this->server->databases['hungryport']);
+    $steps = [];
+    Process::fake([
+        "'docker' 'run' *" => function () use (&$steps) {
+            $this->runningVolume = 'hungryport_mariadb';
+            $steps[] = 'temporary database';
+
+            return Process::result('cid');
+        },
+        'docker exec *mariadb-dump*' => function (PendingProcess $p) use (&$steps) {
+            preg_match("/> '([^']+)'$/", (string) $p->command, $m);
+            File::put($m[1], 'users');
+            $steps[] = 'dump';
+
+            return Process::result();
+        },
+        'docker compose up -d' => function (PendingProcess $p) use (&$steps) {
+            $this->ups[] = $p->path;
+            if ($p->path === $this->main) {
+                $steps[] = str_contains(File::get($this->main.'/.env'), 'COMPOSE_FILE=compose.worktree.yml') ? 'start with shared layout' : 'start with old layout';
+            }
+
+            return Process::result();
+        },
+    ]);
+
+    $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
+
+    expect(array_slice($steps, 0, 3))->toBe(['temporary database', 'dump', 'start with shared layout']);
+});

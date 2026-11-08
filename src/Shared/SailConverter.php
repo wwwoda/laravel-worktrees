@@ -174,14 +174,29 @@ class SailConverter
         }
         $step("Removing the old containers of compose project '{$project}'...");
         $this->removeOldContainers($project, $output);
+
+        $dump = $this->dumpOldVolume($project, $oldDatabase, $step, $output);
         if ($candidate['main']) {
             // The shared stack may run in the main checkout's compose project; only its
             // database container is known by name. Its start command brings back any
-            // other shared container (Redis) that the removal took.
-            $this->provisioner->restartServer($step, $output);
-        }
+            // other shared container (Redis) that the removal took. Only now, with the
+            // old volume read and its temporary server gone, and with the shared layout
+            // first: a start command that reads the main checkout's .env would otherwise
+            // start the old database on the volume.
+            try {
+                if ($this->strategy instanceof ConfiguresWorktreeEnvironment) {
+                    $this->strategy->configureEnvironment($path, []);
+                }
+                $this->provisioner->restartServer($step, $output);
+            } catch (\Throwable $error) {
+                // The dump holds a full copy of the data: never leave it behind.
+                if ($dump !== null) {
+                    File::delete($dump);
+                }
 
-        $dump = $this->dumpOldVolume($project, $oldDatabase, $step, $output);
+                throw $error;
+            }
+        }
         // Provisioning keeps an existing database and fills only a new one. When the
         // target exists without a recorded import, the old data would be dropped
         // silently and the template (or older) data would stay in use.
@@ -226,12 +241,9 @@ class SailConverter
 
         try {
             if ($candidate['main']) {
-                // The shared layout first (COMPOSE_FILE, queue worker), then the new app
-                // container: the template build runs in it. After the databases are set
-                // up, recreate it so it starts with the new database settings.
-                if ($this->strategy instanceof ConfiguresWorktreeEnvironment) {
-                    $this->strategy->configureEnvironment($path, []);
-                }
+                // The shared layout is in place (above); now the new app container: the
+                // template build runs in it. After the databases are set up, recreate it
+                // so it starts with the new database settings.
                 $step('Starting the main checkout\'s app container...');
                 $this->compose($path, 'docker compose up -d', $output);
                 $this->provisioner->provisionMain($path, $fill, $output, $step);
