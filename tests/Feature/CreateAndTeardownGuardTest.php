@@ -90,3 +90,43 @@ test('a Sail build context under a missing vendor is lent from the running check
     expect($seenAtUp)->toBeTrue()
         ->and(file_exists($worktree.'/vendor'))->toBeFalse();
 });
+
+test('a failed fetch or a branch that is nowhere stops create before it makes a branch', function (array $options, Closure $fakes) {
+    Process::fake([...$fakes(), '*' => Process::result()]);
+
+    $this->artisan('worktree:create', $options)->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $process) => str_contains((string) $process->command, 'worktree add'));
+})->with([
+    'issue, fetch fails' => [['--issue' => '7'], fn () => [
+        'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
+        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+    ]],
+    'issue, branch not on origin' => [['--issue' => '7'], fn () => [
+        'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
+        'git show-ref *' => Process::result(exitCode: 1),
+    ]],
+    'pr, fetch fails' => [['--pr' => '5'], fn () => [
+        'gh pr view 5 *' => Process::result('{"headRefName":"feature","isCrossRepository":false}'),
+        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+    ]],
+]);
+
+test('a pull request from a fork is checked out from its pull ref', function () {
+    $path = $this->base.'/'.basename(base_path()).'-pr-5';
+    Process::fake([
+        'gh pr view 5 *' => Process::result('{"headRefName":"master","isCrossRepository":true}'),
+        'git show-ref *' => Process::result(),
+        'git worktree add *' => function () use ($path) {
+            File::ensureDirectoryExists($path);
+
+            return Process::result();
+        },
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:create', ['--pr' => '5', '--skip-deps' => true, '--skip-build' => true, '--skip-db' => true]);
+
+    Process::assertRan(fn (PendingProcess $process) => $process->command === "git fetch origin 'pull/5/head:refs/heads/pr-5'");
+    Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, "worktree add '{$path}' 'pr-5'"));
+});
