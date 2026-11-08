@@ -96,3 +96,14 @@ test('a failed copy leaves no partial target behind', function () {
     expect(fn () => $this->server->copyDatabase($this->prefix.'_missing', $this->prefix.'_target'))->toThrow(RuntimeException::class)
         ->and($this->server->databaseExists($this->prefix.'_target'))->toBeFalse();
 });
+
+test('granting an existing user again removes rights it had before', function () {
+    [$names, $password] = ($this->worktree)('t9');
+    $admin = new ReflectionMethod($this->server, 'admin');
+    $admin->invoke($this->server, "GRANT SELECT ON `{$this->main}`.* TO '{$names->user}'@'%'");
+
+    $this->server->grantUser($names->user, $password, $names->databases());
+
+    expect($this->server->runAs($names->user, $password, "SELECT id FROM `{$this->main}`.`items`")->successful)->toBeFalse()
+        ->and($this->server->runAs($names->user, $password, "SELECT id FROM `{$names->app}`.`items`")->successful)->toBeTrue();
+});

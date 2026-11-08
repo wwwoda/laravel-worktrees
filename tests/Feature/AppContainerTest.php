@@ -77,6 +77,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
+            'docker compose config --format json' => Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -224,4 +225,58 @@ test('create prints the time of each step and the URL', function () {
         ->expectsOutputToContain('total')
         ->expectsOutputToContain('https://app-t9.test')
         ->assertSuccessful();
+});
+
+test('Horizon in require-dev also gives the queue list of its config', function () {
+    $dir = $this->base.'/horizon-dev';
+    File::ensureDirectoryExists($dir.'/config');
+    File::put($dir.'/composer.json', json_encode(['require-dev' => ['laravel/horizon' => '^5.0']]));
+    File::put($dir.'/config/horizon.php', "<?php return ['defaults' => ['supervisor-1' => ['queue' => ['default', 'mail']]]];");
+
+    expect(QueueList::for($dir))->toBe(['default', 'mail']);
+});
+
+test('the bundle build in the container installs with the lock file of each package manager', function (string $pm, string $install) {
+    config()->set('worktrees.bootstrap.build_frontend', true);
+    config()->set('worktrees.bootstrap.node_package_manager', $pm);
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T 'laravel.test' sh -c '{$install} && {$pm} run build'");
+})->with([
+    'pnpm' => ['pnpm', 'pnpm install --frozen-lockfile'],
+    'npm' => ['npm', 'npm ci'],
+    'yarn' => ['yarn', 'yarn install --frozen-lockfile'],
+    'bun' => ['bun', 'bun install --frozen-lockfile'],
+]);
+
+test('the shared stack starts without the per-worktree variables of this process', function () {
+    config()->set('worktrees.shared.stack.start_command', 'docker compose -f shared.yml up -d');
+    $this->server->up = false;
+    putenv('COMPOSE_PROJECT_NAME=app-lane');
+
+    try {
+        $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    } finally {
+        putenv('COMPOSE_PROJECT_NAME');
+    }
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose -f shared.yml up -d' && $p->path === $this->main
+        && ($p->environment['COMPOSE_PROJECT_NAME'] ?? null) === false
+        && ($p->environment['DB_DATABASE'] ?? null) === false);
+});
+
+test('a worktree whose compose project is the main checkout\'s is neither started nor torn down', function () {
+    // Both folders answer with the project name `app`: the worktree's .env kept the main checkout's name.
+    Process::fake(['docker compose config --format json' => Process::result(json_encode(['name' => 'app', 'services' => []]))]);
+
+    $this->artisan('worktree:create', ['name' => 't9'])
+        ->expectsOutputToContain('same compose project')
+        ->assertFailed();
+    Process::assertNotRan('docker compose up -d');
+
+    expect(fn () => app(BootstrapStrategy::class)->tearDown(($this->path)('t9')))->toThrow(RuntimeException::class, 'same compose project');
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'down'));
 });

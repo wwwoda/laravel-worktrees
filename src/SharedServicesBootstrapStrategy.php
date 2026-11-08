@@ -94,6 +94,15 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         return EnvFile::get($worktreePath.'/.env', $this->queueEnvKeys['mode']);
     }
 
+    /**
+     * The shared stack runs in the main checkout's compose project: a worktree
+     * must not share it, also when artisan runs in a linked worktree.
+     */
+    protected function protectedCheckouts(): array
+    {
+        return [...parent::protectedCheckouts(), MainCheckout::path()];
+    }
+
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void
     {
         $this->provisioner->provision(
@@ -142,8 +151,10 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
             return;
         }
         $pm = $this->nodePackageManager;
+        // Install exactly the lock file: npm has its own command for that.
+        $install = $pm === 'npm' ? 'npm ci' : "{$pm} install --frozen-lockfile";
         $result = $this->compose($worktreePath, 900)->run(
-            $this->execCommand("{$pm} install --frozen-lockfile && {$pm} run build"),
+            $this->execCommand("{$install} && {$pm} run build"),
             $output,
         );
         if (! $result->successful()) {

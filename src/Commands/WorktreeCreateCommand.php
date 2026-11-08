@@ -49,7 +49,11 @@ class WorktreeCreateCommand extends Command
 
         // Interactive mode: no name, no branch/issue/pr options
         if ($name === null && ! $branch && ! $issue && ! $pr) {
-            [$name, $branch] = $this->interactive();
+            $chosen = $this->interactive();
+            if ($chosen === null) {
+                return self::FAILURE;
+            }
+            [$name, $branch] = $chosen;
         }
 
         // Non-interactive --issue
@@ -126,18 +130,24 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * @return array{string, string|null}
+     * Null when the chosen source could not be resolved; the error is already printed.
+     *
+     * @return array{string, string|null}|null
      */
-    private function interactive(): array
+    private function interactive(): ?array
     {
         $mode = $this->promptMode();
 
-        [$defaultName, $branch] = match ($mode) {
+        $chosen = match ($mode) {
             'issue' => $this->promptIssue(),
             'pr' => $this->promptPullRequest(),
             'branch' => $this->promptBranch(),
             'fresh' => ['', null],
         };
+        if ($chosen === null) {
+            return null;
+        }
+        [$defaultName, $branch] = $chosen;
 
         $name = $this->promptName($defaultName);
 
@@ -162,16 +172,16 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptIssue(): array
+    private function promptIssue(): ?array
     {
         $result = Process::path(base_path())->run('gh issue list --state open --limit 100 --json number,title');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch issues: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
         /** @var list<array{number: int, title: string}> $issues */
@@ -199,26 +209,29 @@ class WorktreeCreateCommand extends Command
             scroll: 10,
         );
 
+        // An unresolved issue (several linked branches, gh failed) stops; it must not fall back to a fresh branch.
         $branch = $this->resolveIssueBranch($issueNumber);
-        $defaultName = (string) $issueNumber;
+        if ($branch === null) {
+            return null;
+        }
 
-        return [$defaultName, $branch];
+        return [(string) $issueNumber, $branch];
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptPullRequest(): array
+    private function promptPullRequest(): ?array
     {
-        $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title,headRefName');
+        $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch PRs: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
-        /** @var list<array{number: int, title: string, headRefName: string}> $prs */
+        /** @var list<array{number: int, title: string}> $prs */
         $prs = json_decode($result->output(), true) ?: [];
 
         if ($prs === []) {
@@ -228,10 +241,8 @@ class WorktreeCreateCommand extends Command
         }
 
         $options = [];
-        $prData = [];
         foreach ($prs as $pr) {
             $options[$pr['number']] = "#{$pr['number']} {$pr['title']}";
-            $prData[$pr['number']] = $pr['headRefName'];
         }
 
         /** @var int $prNumber */
@@ -245,23 +256,25 @@ class WorktreeCreateCommand extends Command
             scroll: 10,
         );
 
-        $branch = $prData[$prNumber];
-        $defaultName = "pr-{$prNumber}";
+        $branch = $this->resolvePrBranch($prNumber);
+        if ($branch === null) {
+            return null;
+        }
 
-        return [$defaultName, $branch];
+        return ["pr-{$prNumber}", $branch];
     }
 
     /**
-     * @return array{string, string|null}
+     * @return array{string, string|null}|null
      */
-    private function promptBranch(): array
+    private function promptBranch(): ?array
     {
         $result = Process::path(base_path())->run(['git', 'branch', '-a', '--format=%(refname:short)']);
 
         if (! $result->successful()) {
             $this->components->error('Failed to list branches: '.$result->errorOutput());
 
-            return ['', null];
+            return null;
         }
 
         $checkedOut = $this->branchesCheckedOutByWorktrees();
@@ -342,10 +355,7 @@ class WorktreeCreateCommand extends Command
             $branch = $branches[0];
             $this->components->info("Found linked branch: {$branch}");
 
-            // Ensure we have the remote branch locally
-            Process::path(base_path())->timeout(30)->run('git fetch origin');
-
-            return $branch;
+            return $this->fetchBranch($branch) ? $branch : null;
         }
 
         // No linked branch — create one via gh issue develop
@@ -374,16 +384,13 @@ class WorktreeCreateCommand extends Command
 
         $this->components->info("Created linked branch: {$branch}");
 
-        // Fetch so the branch is available locally
-        Process::path(base_path())->timeout(30)->run('git fetch origin');
-
-        return $branch;
+        return $this->fetchBranch($branch) ? $branch : null;
     }
 
     private function resolvePrBranch(int $prNumber): ?string
     {
         $result = Process::path(base_path())->run(
-            sprintf('gh pr view %d --json headRefName', $prNumber),
+            sprintf('gh pr view %d --json headRefName,isCrossRepository', $prNumber),
         );
 
         if (! $result->successful()) {
@@ -392,7 +399,7 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        /** @var array{headRefName: string}|null $data */
+        /** @var array{headRefName: string, isCrossRepository?: bool}|null $data */
         $data = json_decode($result->output(), true);
 
         if (! $data || empty($data['headRefName'])) {
@@ -401,13 +408,49 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
+        if (! empty($data['isCrossRepository'])) {
+            // A fork's branch is not on origin, and its name may equal a local one
+            // (often `master`): take GitHub's pull ref into its own local branch.
+            $branch = "pr-{$prNumber}";
+            $fetch = Process::path(base_path())->timeout(60)->run(
+                sprintf('git fetch origin %s', escapeshellarg("pull/{$prNumber}/head:refs/heads/{$branch}")),
+            );
+            if (! $fetch->successful()) {
+                $this->components->error("Fetching PR #{$prNumber} from its fork failed: ".$fetch->errorOutput());
+
+                return null;
+            }
+            $this->components->info("PR #{$prNumber} is from a fork; its head is in branch {$branch}");
+
+            return $branch;
+        }
+
         $branch = $data['headRefName'];
         $this->components->info("PR #{$prNumber} branch: {$branch}");
 
-        // Ensure we have the remote branch locally
-        Process::path(base_path())->timeout(30)->run('git fetch origin');
+        return $this->fetchBranch($branch) ? $branch : null;
+    }
 
-        return $branch;
+    /**
+     * Fetch origin and check that the branch is now local or on origin. Without
+     * this, create would cut a new branch with that name from the base.
+     */
+    private function fetchBranch(string $branch): bool
+    {
+        $fetch = Process::path(base_path())->timeout(30)->run('git fetch origin');
+        if (! $fetch->successful()) {
+            $this->components->error('git fetch origin failed: '.$fetch->errorOutput());
+
+            return false;
+        }
+        foreach (['refs/heads/'.$branch, 'refs/remotes/origin/'.$branch] as $ref) {
+            if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg($ref))->successful()) {
+                return true;
+            }
+        }
+        $this->components->error("Branch {$branch} is neither local nor on origin after the fetch.");
+
+        return false;
     }
 
     /**

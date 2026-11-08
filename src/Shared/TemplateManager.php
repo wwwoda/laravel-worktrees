@@ -113,13 +113,20 @@ class TemplateManager
     {
         $current = $this->name();
         $dropped = [];
-        foreach ($this->server->databasesStartingWith($this->prefix()) as $database) {
-            if ($database === $current || ! preg_match('/^'.preg_quote($this->prefix(), '/').'[0-9a-f]{12}$/', $database)) {
-                continue;
+        // Under the build lock: a running build must not lose its database half way.
+        $lock = $this->lock(null);
+        try {
+            foreach ($this->server->databasesStartingWith($this->prefix()) as $database) {
+                if ($database === $current || ! preg_match('/^'.preg_quote($this->prefix(), '/').'[0-9a-f]{12}$/', $database)) {
+                    continue;
+                }
+                $this->server->dropDatabase($database);
+                File::delete($this->markerPath($database));
+                $dropped[] = $database;
             }
-            $this->server->dropDatabase($database);
-            File::delete($this->markerPath($database));
-            $dropped[] = $database;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
 
         return $dropped;
@@ -136,9 +143,10 @@ class TemplateManager
         }
         $builder = $this->prefix().'builder';
         $password = bin2hex(random_bytes(16));
-        $this->server->createDatabase($name, $builder);
-        $this->server->grantUser($builder, $password, [$name]);
+        // Account and database setup sit inside the cleanup: a failed grant must not leave the builder behind.
         try {
+            $this->server->createDatabase($name, $builder);
+            $this->server->grantUser($builder, $password, [$name]);
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
         } catch (\Throwable $error) {
             $this->server->dropDatabase($name);
