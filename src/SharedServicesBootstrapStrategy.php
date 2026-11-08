@@ -25,9 +25,8 @@ use Woda\Worktrees\Shared\WorktreeState;
  *
  * Dependencies: `vendor` and the host `node_modules` are copied from the main
  * checkout with copy-on-write when the lock files are equal (APFS `cp -c` on
- * macOS, `cp --reflink=always` elsewhere). `composer install` then runs in the
- * container in any case (fast after a copy); the node install runs on the host
- * when no copy was possible.
+ * macOS, `cp --reflink=always` elsewhere). `composer install` (in the container)
+ * and the node install (on the host) then run in any case, fast after a copy.
  * The bundle is built inside the container, whose `node_modules` is the
  * project's own Docker volume (native packages install for one platform).
  */
@@ -115,9 +114,9 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
     public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
     {
         // The host copy serves the IDE and edit hooks; the container has its own.
-        if ($this->copyFromMain($worktreePath, 'node_modules', self::NODE_LOCK_FILES, $output)) {
-            return;
-        }
+        // The install still runs after a copy: the main checkout may have been
+        // installed without dev packages (npm ci --omit=dev, pnpm install --prod).
+        $this->copyFromMain($worktreePath, 'node_modules', self::NODE_LOCK_FILES, $output);
         parent::installNodeDependencies($worktreePath, $output);
     }
 
