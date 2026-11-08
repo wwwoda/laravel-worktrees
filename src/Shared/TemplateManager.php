@@ -137,6 +137,9 @@ class TemplateManager
      */
     private function build(string $name, ?Closure $output): void
     {
+        // A marker without its database (dropped outside) must not make the new,
+        // half-built database look ready to another caller.
+        File::delete($this->markerPath($name));
         // A database without a marker is a stopped build: start again.
         if ($this->server->databaseExists($name)) {
             $this->server->dropDatabase($name);
@@ -150,11 +153,13 @@ class TemplateManager
             $this->recipe->build($name, $builder, $password, $this->seedCommand, $output);
         } catch (\Throwable $error) {
             $this->server->dropDatabase($name);
+            $this->server->dropUser($builder);
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
-        } finally {
-            $this->server->dropUser($builder);
         }
+        // Retired, not dropped: views and routines of the template name the builder
+        // as definer, and a dump of them needs that account to exist.
+        $this->server->retireUser($builder);
         File::ensureDirectoryExists(dirname($this->markerPath($name)));
         File::put($this->markerPath($name), date(DATE_ATOM)."\n");
     }

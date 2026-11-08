@@ -152,7 +152,8 @@ return [
                 'hash_paths' => ['database/migrations', 'database/seeders'],
                 // Runs after `php artisan migrate --force` to fill the template.
                 'seed_command' => env('WORKTREE_TEMPLATE_SEED_COMMAND', 'php artisan db:seed --force'),
-                // 'container': in the main checkout's app container; 'host': on this machine.
+                // 'container': in the main checkout's app container (connects to app_host and app_port);
+                // 'host': on this machine (connects to host and port, like the admin connection).
                 'runner' => env('WORKTREE_TEMPLATE_RUNNER', 'container'),
                 // Extra environment for the template build, e.g. ['QUEUE_CONNECTION' => 'sync'].
                 'env' => [],

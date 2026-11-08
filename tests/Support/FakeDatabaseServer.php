@@ -85,6 +85,14 @@ class FakeDatabaseServer implements DatabaseServer
         unset($this->users[$user]);
     }
 
+    public function retireUser(string $user): void
+    {
+        $this->log[] = "retire user {$user}";
+        if (isset($this->users[$user])) {
+            $this->users[$user]['databases'] = [];
+        }
+    }
+
     public function runAs(string $user, string $password, string $sql, ?string $database = null): ServerResult
     {
         return new ServerResult(false, '', 'not supported by the fake');
