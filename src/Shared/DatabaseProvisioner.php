@@ -16,8 +16,16 @@ use RuntimeException;
 class DatabaseProvisioner
 {
     /**
+     * `.env` keys that Laravel's default config reads as a connection URL. A URL
+     * wins over the separate DB_* and REDIS_* values, so a URL that a worktree's
+     * `.env` took over from the main checkout would connect to the main database.
+     */
+    public const CLEAR_ENV = ['DB_URL', 'DATABASE_URL', 'REDIS_URL'];
+
+    /**
      * @param  list<string>  $copyFromTemplate  which of app, test, e2e start as a template copy
      * @param  array<string, string>  $envMap  `.env` key => value with {placeholders}
+     * @param  list<string>  $clearEnv  `.env` keys emptied when they hold a value, unless $envMap sets them
      */
     public function __construct(
         private readonly DatabaseServer $server,
@@ -34,6 +42,7 @@ class DatabaseProvisioner
         private readonly int $appPort,
         private readonly array $envMap,
         private readonly ?RedisServer $redisServer = null,
+        private readonly array $clearEnv = self::CLEAR_ENV,
     ) {}
 
     public function names(string $name): WorktreeNames
@@ -477,7 +486,15 @@ class DatabaseProvisioner
             '{redis_cache}' => (string) $redis[1],
             '{name}' => (string) $state->string('name'),
         ];
-        EnvFile::upsert($path.'/.env', array_map(static fn (string $value): string => strtr($value, $values), $this->envMap));
+        $envPath = $path.'/.env';
+        $cleared = [];
+        foreach (array_diff($this->clearEnv, array_keys($this->envMap)) as $key) {
+            // Only a key that has a value: a missing key stays missing.
+            if (! in_array(EnvFile::get($envPath, $key), [null, ''], true)) {
+                $cleared[$key] = '';
+            }
+        }
+        EnvFile::upsert($envPath, [...$cleared, ...array_map(static fn (string $value): string => strtr($value, $values), $this->envMap)]);
     }
 
     /**

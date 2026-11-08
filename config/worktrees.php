@@ -204,6 +204,12 @@ return [
             'REDIS_DB' => '{redis_default}',
             'REDIS_CACHE_DB' => '{redis_cache}',
         ],
+
+        // Connection URLs that a worktree's `.env` took over from the main
+        // checkout. Laravel gives a URL precedence over DB_* and REDIS_*, so
+        // each key that has a value is emptied, unless 'env' above or
+        // 'env_overrides' sets it. Empty list: nothing is emptied.
+        'clear_env' => ['DB_URL', 'DATABASE_URL', 'REDIS_URL'],
     ],
 
     /*

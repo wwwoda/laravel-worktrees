@@ -239,6 +239,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 appPort: $config->int('database.app_port', self::defaultPort()),
                 envMap: $config->stringMap('env'),
                 redisServer: $app->make(RedisServer::class),
+                clearEnv: self::clearEnv(),
             );
         });
     }
@@ -268,6 +269,23 @@ class WorktreesServiceProvider extends ServiceProvider
     private static function defaultPort(): int
     {
         return self::sharedDriver() === 'pgsql' ? 5432 : 3306;
+    }
+
+    /**
+     * The connection URL keys to empty in a worktree's `.env`. A config published
+     * before the key existed has no `clear_env`: then the defaults apply. A key that
+     * env_overrides sets keeps the value written there.
+     *
+     * @return list<string>
+     */
+    private static function clearEnv(): array
+    {
+        $keys = config('worktrees.shared.clear_env') === null
+            ? DatabaseProvisioner::CLEAR_ENV
+            : (new SharedConfig)->stringList('clear_env');
+        $overrides = config('worktrees.env_overrides');
+
+        return array_values(array_diff($keys, is_array($overrides) ? array_keys($overrides) : []));
     }
 
     private static function defaultAppHost(): string

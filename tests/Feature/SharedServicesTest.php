@@ -700,3 +700,72 @@ test('the copy keeps its dump files private', function () {
 
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'mariadb-dump') && str_contains((string) $p->command, 'umask 077'));
 });
+
+test('a new worktree empties the connection URLs that its .env took over from the main checkout', function () {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nDATABASE_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $env = ($this->path)('t9').'/.env';
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DATABASE_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DB_DATABASE'))->toBe('hp_t9')
+        ->and(EnvFile::get($env, 'DB_USERNAME'))->toBe('hp_t9')
+        ->and(EnvFile::get($env, 'REDIS_DB'))->toBe('2')
+        ->and(File::get(base_path('.env')))->toContain('DB_URL=mysql://app:secret@mariadb:3306/hungryport');
+});
+
+test('a connection URL written with export or quotes is emptied as dotenv reads it', function () {
+    File::append(base_path('.env'), "export DB_URL=\"mysql://app:secret@mariadb:3306/hungryport\"\nREDIS_URL = 'redis://redis:6379/0'\n");
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $env = ($this->path)('t9').'/.env';
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('');
+});
+
+test('a connection URL that the main checkout does not have is not added', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    expect(File::get(($this->path)('t9').'/.env'))->not->toContain('DB_URL')->not->toContain('DATABASE_URL')->not->toContain('REDIS_URL');
+});
+
+test('a connection URL that the project sets in shared.env or env_overrides keeps its value', function () {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nDATABASE_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+    config()->set('worktrees.shared.env.DATABASE_URL', 'mysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_app}');
+    config()->set('worktrees.env_overrides.REDIS_URL', 'redis://redis-{name}:6379');
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $env = ($this->path)('t9').'/.env';
+    $password = $this->server->users['hp_t9']['password'];
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DATABASE_URL'))->toBe("mysql://hp_t9:{$password}@mariadb:3306/hp_t9")
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('redis://redis-t9:6379');
+});
+
+test('the keys to empty are configurable', function () {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\nQUEUE_REDIS_URL=redis://redis:6379/0\n");
+    config()->set('worktrees.shared.clear_env', ['DB_URL', 'QUEUE_REDIS_URL']);
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    $env = ($this->path)('t9').'/.env';
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'QUEUE_REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('redis://redis:6379/0');
+});
+
+test('a config published before clear_env existed empties the default keys; an empty list empties none', function (mixed $clearEnv, string $expected) {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\n");
+    config()->set('worktrees.shared.clear_env', $clearEnv);
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    expect(EnvFile::get(($this->path)('t9').'/.env', 'DB_URL'))->toBe($expected);
+})->with([
+    'not set' => [null, ''],
+    'empty list' => [[], 'mysql://app:secret@mariadb:3306/hungryport'],
+]);
