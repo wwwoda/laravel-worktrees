@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\File;
 use Woda\Worktrees\DatabaseCloner;
 
 test('resolveStrategy returns sqlite for auto strategy when DB is sqlite', function () {
@@ -90,4 +91,27 @@ test('drop does nothing for none strategy', function () {
     // Should not throw
     $cloner->drop('test');
     expect(true)->toBeTrue();
+});
+
+test('a SQLite clone points .env at a path that works on the host and in a container', function () {
+    $source = database_path('database.sqlite');
+    $existed = file_exists($source);
+    if (! $existed) {
+        file_put_contents($source, '');
+    }
+    $worktree = sys_get_temp_dir().'/worktrees-sqlite-'.uniqid();
+    mkdir($worktree);
+    file_put_contents($worktree.'/.env', "DB_CONNECTION=sqlite\nDB_DATABASE=/old/host/path.sqlite\n");
+    $cloner = new DatabaseCloner(strategy: 'sqlite', sqliteCopy: true, mysqlDockerContainer: null, pgsqlDockerContainer: null, dockerHost: '127.0.0.1');
+
+    try {
+        $cloner->clone($worktree, 'lane');
+        expect(file_get_contents($worktree.'/.env'))->toContain("DB_DATABASE=database/database.sqlite\n")
+            ->and(file_exists($worktree.'/database/database.sqlite'))->toBeTrue();
+    } finally {
+        if (! $existed) {
+            unlink($source);
+        }
+        File::deleteDirectory($worktree);
+    }
 });

@@ -217,14 +217,15 @@ class DatabaseCloner
         $targetPath = $targetDir.'/database.sqlite';
         File::copy($sourcePath, $targetPath);
 
-        // Update .env in worktree to point to the copied database
+        // Point .env at the copy with a path relative to the app: Laravel resolves it
+        // against base_path(), which works on the host and inside a Sail container
+        // (where the host's absolute path does not exist).
         $envPath = $worktreePath.'/.env';
         if (File::exists($envPath)) {
             $envContent = File::get($envPath);
-            $absoluteTarget = realpath($targetPath) ?: $targetPath;
             $envContent = (string) preg_replace(
                 '/^DB_DATABASE=.*/m',
-                'DB_DATABASE='.$absoluteTarget,
+                'DB_DATABASE=database/database.sqlite',
                 $envContent,
             );
             File::put($envPath, $envContent);

@@ -67,8 +67,8 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
     }
 
     /**
-     * The shared stack runs in the main checkout's compose project: a worktree
-     * must not share it, also when artisan runs in a linked worktree.
+     * The main checkout's compose project holds its app (and may hold the shared
+     * stack): a worktree must not share it, also when artisan runs in a linked worktree.
      */
     protected function protectedCheckouts(): array
     {

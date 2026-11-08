@@ -184,6 +184,10 @@ WORKTREE_VITE_PORT_BASE=5200
 
 Port replacement only applies when the key already exists in your `.env` file — it won't inject ports you haven't defined.
 
+### Databases with the Sail strategy
+
+The MySQL and PostgreSQL clone strategies copy the database on the main checkout's server. When each Sail worktree runs its own database service (the usual Sail compose file), the worktree does not use that server: set `WORKTREE_DB_STRATEGY=none` and let the worktree's migrations fill its own service. Keep `mysql` or `pgsql` only when the worktrees' `DB_HOST` points at the main checkout's server. The SQLite strategy works with Sail: the worktree's `.env` gets the relative path `database/database.sqlite`, which resolves on the host and in the container.
+
 ## ProcessManager Contract
 
 The package binds a `NullProcessManager` by default. To integrate with a process manager (e.g. screen sessions, tmux), implement `Woda\Worktrees\Contracts\ProcessManager`:
