@@ -69,7 +69,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
      *
      * @return array<mixed>|null
      */
-    private function composeConfig(string $path): ?array
+    protected function composeConfig(string $path): ?array
     {
         $result = $this->compose($path, 60)->run('docker compose config --format json');
         $config = $result->successful() ? json_decode($result->output(), true) : null;
@@ -84,7 +84,7 @@ class SailBootstrapStrategy implements BootstrapStrategy
      *
      * @param  array<mixed>|null  $config
      */
-    private function assertOwnComposeProject(string $worktreePath, ?array $config): void
+    protected function assertOwnComposeProject(string $worktreePath, ?array $config): void
     {
         $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
         if ($ours === null) {

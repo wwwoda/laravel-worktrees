@@ -82,6 +82,29 @@ php artisan worktree:bootstrap my-feature --status   # JSON: path, branch, head,
 php artisan worktree:bootstrap my-feature --resume
 ```
 
+### `worktree:setup`
+
+Set up a git worktree that another tool created (for example frontier), at any path, with the same steps as `worktree:create` except creating the git worktree. The folder must be a registered worktree of this repository.
+
+```bash
+php artisan worktree:setup ../lanes/t901             # name from the folder: t901
+php artisan worktree:setup /tmp/lane --name=t902
+```
+
+Options: `--name`, `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main`, `--horizon`.
+
+`worktree:setup` and `worktree:create` can run again on the same worktree: each step checks what is already done and does only what is missing. A database that exists is never dropped, recreated or migrated fresh; existing config files are kept. Every step is also written to `storage/logs/worktree-setup.log` in the worktree, so a run in the background can be followed.
+
+### `worktree:worker`
+
+Show or switch the queue worker of a shared-services worktree, and restart its app container.
+
+```bash
+php artisan worktree:worker t9             # prints listen or horizon
+php artisan worktree:worker t9 horizon
+php artisan worktree:worker ../lanes/t901 listen
+```
+
 ### `worktree:list`
 
 ```bash
@@ -160,6 +183,23 @@ php artisan worktree:template           # build the current template when it is 
 php artisan worktree:template --prune   # also drop older templates
 php artisan worktree:template --name    # print the current template name
 ```
+
+### App container, dependencies and queue worker
+
+- **Shared stack:** when the database server does not answer, `shared.stack.start_command` runs in the main checkout, and the setup waits until the server answers. Worktree commands never stop, reset or upgrade the shared stack.
+- **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. `shared.app.compose_file` is written to the worktree's `.env` as `COMPOSE_FILE`, so compose uses the project's app-only file.
+- **Dependencies:** when `composer.lock` (or the node lock file) equals the main checkout's, `vendor` (or the host `node_modules`) is copied from the main checkout with copy-on-write: `cp -c` on macOS (APFS), `cp --reflink=always` elsewhere. When the filesystem cannot do that (for example ext4), or the lock files differ, `composer install` runs in the container and the node install on the host.
+- **Frontend:** the bundle is built in the container (`pnpm install --frozen-lockfile && pnpm run build`). Give the container its own `node_modules` volume in your compose file, because native packages install for one platform only. A `public/hot` whose dev server does not answer is removed.
+- **Queue worker:** `WORKTREE_QUEUE_WORKER=listen|horizon` and `WORKTREE_QUEUES=<list>` are written to `.env` for your container to read. The list holds every queue that `config/horizon.php` names when the project requires `laravel/horizon`, else `default`. `worktree:create --horizon` picks Horizon.
+- `worktree:create` prints the time of each step and the worktree's URL.
+
+### Moving Sail worktrees: `worktree:convert` and `worktree:volumes`
+
+`worktree:convert` lists every worktree and the main checkout with its branch, last commit date, whether the branch is merged into the base branch, and whether it is converted. It asks per worktree: convert, delete (suggested when merged), or skip. `--all` converts everything without asking; a name (or a folder path, when several worktrees have the same name) converts one. The main checkout converts first. Converted worktrees are skipped on the next run.
+
+For each worktree it removes the old containers (found by their compose project label, so the old compose file is not needed), starts a temporary database container (`shared.convert.image`) straight from the old volume (`shared.convert.volume`, default `{compose_project}_sail-mariadb`) with `--skip-grant-tables`, dumps the old database, imports it into the worktree's new app database on the shared server, and sets up the rest like `worktree:setup`. An empty or missing old volume means a template copy, with a message. The main checkout's data goes into the main database; its user has the main database's name and its Redis numbers are the reserved ones. A conversion that stops can run again: it uses the old names that the first run recorded.
+
+The old volumes stay as backup. `worktree:volumes` lists the volumes that match `shared.convert.backup_volumes` with their size; `--remove=NAME` (repeatable) removes only volumes from that list.
 
 ### Production-like data
 

@@ -201,6 +201,7 @@ test('the resume hint after a failed create keeps the skip options', function ()
     ]);
 
     $this->artisan('worktree:create', ['name' => 'lane', '--skip-db' => true, '--skip-build' => true])
-        ->expectsOutputToContain('worktree:bootstrap lane --resume --skip-build --skip-db')
+        // On this branch, create run again completes the setup.
+        ->expectsOutputToContain('worktree:create lane --skip-build --skip-db')
         ->assertFailed();
 });

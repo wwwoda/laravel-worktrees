@@ -21,6 +21,7 @@ class DatabaseProvisioner
      */
     public function __construct(
         private readonly DatabaseServer $server,
+        private readonly SharedStack $stack,
         private readonly TemplateManager $templates,
         private readonly RedisAllocator $redis,
         private readonly WorktreeRegistry $registry,
@@ -51,8 +52,9 @@ class DatabaseProvisioner
      * @param  array{branch?: string|null, base?: string|null}  $context
      * @param  (Closure(string, string): void)|null  $output
      * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string): void)|null  $fillApp  fills a new, empty app database (worktree:convert); null: template or main copy
      */
-    public function provision(string $name, string $path, array $context = [], bool $fromMain = false, ?Closure $output = null, ?Closure $onStep = null): WorktreeState
+    public function provision(string $name, string $path, array $context = [], bool $fromMain = false, ?Closure $output = null, ?Closure $onStep = null, ?Closure $fillApp = null): WorktreeState
     {
         $step = $onStep ?? static fn (string $message) => null;
         // A run that was asked for --from-main and stopped before the app copy
@@ -62,9 +64,7 @@ class DatabaseProvisioner
             throw new RuntimeException('--from-main is not allowed on this machine: production-like data stays on machines where config worktrees.shared.database.allow_from_main is true.');
         }
         $names = $this->names($name);
-        if (! $this->server->ping()) {
-            throw new RuntimeException('The shared database server does not answer. Start the shared stack and run the setup again.');
-        }
+        $this->stack->ensureRunning($step, $output);
 
         // Reserve the names under the shared lock before touching the server, so a
         // concurrent setup with a name that maps to the same databases (`T9`, `t9`)
@@ -72,7 +72,7 @@ class DatabaseProvisioner
         [$state, $password] = $this->withAllocationLock(function () use ($names, $path, $context, $fromMain): array {
             $this->assertNoOtherWorktreeUses($names, $path);
             $state = WorktreeState::load($path) ?? new WorktreeState([]);
-            $password = $this->password($state, $names, $path);
+            $password = $this->password($state, $names->user, $path);
             $state->data = [
                 ...$state->data,
                 'name' => $names->worktree,
@@ -105,12 +105,25 @@ class DatabaseProvisioner
             fn (string $database): bool => ! $this->server->databaseExists($database),
         );
         $template = $state->string('template');
-        $needsTemplate = array_intersect(array_keys($missing), array_diff($this->copyFromTemplate, $fromMain ? ['app'] : []));
+        $needsTemplate = array_intersect(array_keys($missing), array_diff($this->copyFromTemplate, $fromMain || $fillApp ? ['app'] : []));
         if ($needsTemplate !== []) {
             $template = $this->templates->ensure($output, $step);
         }
         foreach ($missing as $role => $database) {
-            if ($role === 'app' && $fromMain) {
+            if ($role === 'app' && $fillApp !== null) {
+                $state->data['pending_copies'] = [...$this->pendingCopies($state), $database];
+                $state->save($path);
+                $this->server->createDatabase($database, $names->user);
+                try {
+                    $fillApp($database);
+                } catch (\Throwable $error) {
+                    $this->server->dropDatabase($database);
+
+                    throw $error;
+                }
+                $state->data['pending_copies'] = array_values(array_diff($this->pendingCopies($state), [$database]));
+                $state->save($path);
+            } elseif ($role === 'app' && $fromMain) {
                 if (! $this->server->databaseExists($this->mainDatabase)) {
                     throw new RuntimeException("The main database '{$this->mainDatabase}' does not exist; --from-main has nothing to copy.");
                 }
@@ -128,7 +141,7 @@ class DatabaseProvisioner
         }
         $this->server->grantUser($names->user, $password, $names->databases());
 
-        return $this->withAllocationLock(function () use ($state, $path, $template, $fromMain, $missing): WorktreeState {
+        return $this->withAllocationLock(function () use ($state, $path, $template, $fromMain, $missing, $fillApp): WorktreeState {
             $redis = $state->redis();
             if (count($redis) !== 2 || $this->redis->taken($path, $redis)) {
                 $redis = $this->redis->allocate($path);
@@ -138,7 +151,7 @@ class DatabaseProvisioner
                 'redis' => $redis,
                 'compose_project' => EnvFile::get($path.'/.env', 'COMPOSE_PROJECT_NAME'),
                 'template' => $template,
-                'source' => isset($missing['app']) ? ($fromMain ? 'main' : 'template') : ($state->string('source') ?? 'existing'),
+                'source' => isset($missing['app']) ? ($fillApp !== null ? 'converted' : ($fromMain ? 'main' : 'template')) : ($state->string('source') ?? 'existing'),
             ];
             unset($state->data['from_main_requested']);
             $state->save($path);
@@ -146,6 +159,122 @@ class DatabaseProvisioner
 
             return $state;
         });
+    }
+
+    public function server(): DatabaseServer
+    {
+        return $this->server;
+    }
+
+    /**
+     * Start the shared stack when the database server does not answer.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function ensureServer(?Closure $onStep = null, ?Closure $output = null): void
+    {
+        $this->stack->ensureRunning($onStep, $output);
+    }
+
+    /**
+     * Run the shared stack's start command even when the database answers, so
+     * shared containers that were removed (Redis) come back.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function restartServer(?Closure $onStep = null, ?Closure $output = null): void
+    {
+        $this->stack->restart($onStep, $output);
+    }
+
+    /**
+     * The app database a conversion fills: the main database for the main
+     * checkout, the derived app database for a worktree.
+     */
+    public function appDatabase(?string $worktreeName): string
+    {
+        return $worktreeName === null ? Identifier::check($this->mainDatabase) : $this->names($worktreeName)->app;
+    }
+
+    /**
+     * Give the main checkout its databases on the shared server: the main
+     * database (filled by `$fillMain`, else a template copy), its test and e2e
+     * databases, a user with the main database's name and rights on exactly
+     * these names, and the reserved Redis numbers.
+     *
+     * @param  (Closure(string): void)|null  $fillMain
+     * @param  (Closure(string, string): void)|null  $output
+     * @param  (Closure(string): void)|null  $onStep
+     */
+    public function provisionMain(string $path, ?Closure $fillMain = null, ?Closure $output = null, ?Closure $onStep = null): WorktreeState
+    {
+        $step = $onStep ?? static fn (string $message) => null;
+        $main = Identifier::check($this->mainDatabase);
+        $this->stack->ensureRunning($step, $output);
+        $test = $main.'_test';
+        $parallel = [];
+        for ($token = 1; $token <= $this->parallelWorkers; $token++) {
+            $parallel[] = $test.'_test_'.$token;
+        }
+        $databases = ['app' => $main, 'test' => $test, 'e2e' => $main.'_e2e'];
+        foreach ($databases as $database) {
+            if (str_starts_with($database, $this->templates->prefix())) {
+                throw new RuntimeException("The main database name '{$database}' looks like a template.");
+            }
+        }
+
+        $state = WorktreeState::load($path) ?? new WorktreeState([]);
+        $password = $this->password($state, $main, $path);
+        $template = null;
+        foreach ($databases as $role => $database) {
+            if ($this->server->databaseExists($database) && ! in_array($database, $this->pendingCopies($state), true)) {
+                $step("Database {$database} exists; kept as it is.");
+
+                continue;
+            }
+            if ($this->server->databaseExists($database)) {
+                $this->server->dropDatabase($database);
+            }
+            if ($role === 'app' && $fillMain !== null) {
+                $state->data['pending_copies'] = [...$this->pendingCopies($state), $database];
+                $state->save($path);
+                $this->server->createDatabase($database);
+                try {
+                    $fillMain($database);
+                } catch (\Throwable $error) {
+                    $this->server->dropDatabase($database);
+
+                    throw $error;
+                }
+                $state->data['pending_copies'] = array_values(array_diff($this->pendingCopies($state), [$database]));
+            } elseif (in_array($role, $this->copyFromTemplate, true)) {
+                $template ??= $this->templates->ensure($output, $step);
+                $step("Copying template {$template} into {$database}...");
+                $this->copy($state, $path, $template, $database, $main, $output);
+            } else {
+                $this->server->createDatabase($database);
+            }
+        }
+        $this->server->grantUser($main, $password, [...array_values($databases), ...$parallel]);
+
+        $reserved = $this->redis->reserved();
+        $state->data = [
+            ...$state->data,
+            'name' => 'main',
+            'role' => 'main',
+            'databases' => [...$databases, 'parallel' => $parallel],
+            'user' => $main,
+            'password' => $password,
+            'redis' => [$reserved[0] ?? 0, $reserved[1] ?? 1],
+            'source' => $state->string('source') ?? ($fillMain !== null ? 'converted' : 'template'),
+            'created_at' => $state->string('created_at') ?? date(DATE_ATOM),
+        ];
+        $state->save($path);
+        $this->writeEnv($path, $state);
+
+        return $state;
     }
 
     /**
@@ -292,10 +421,10 @@ class DatabaseProvisioner
         return $names;
     }
 
-    private function password(WorktreeState $state, WorktreeNames $names, string $path): string
+    private function password(WorktreeState $state, string $user, string $path): string
     {
         $candidates = [$state->string('password')];
-        if (EnvFile::get($path.'/.env', 'DB_USERNAME') === $names->user) {
+        if (EnvFile::get($path.'/.env', 'DB_USERNAME') === $user) {
             $candidates[] = EnvFile::get($path.'/.env', 'DB_PASSWORD');
         }
         foreach ($candidates as $candidate) {

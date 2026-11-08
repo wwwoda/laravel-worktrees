@@ -5,6 +5,7 @@ namespace Woda\Worktrees\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Woda\Worktrees\Commands\Concerns\RunsBootstrap;
 use Woda\Worktrees\WorktreeManager;
 
 use function Laravel\Prompts\search;
@@ -13,6 +14,8 @@ use function Laravel\Prompts\text;
 
 class WorktreeCreateCommand extends Command
 {
+    use RunsBootstrap;
+
     protected $signature = 'worktree:create
         {name? : Worktree name (interactive if omitted)}
         {--branch= : Branch name (default: agent/{name})}
@@ -22,7 +25,8 @@ class WorktreeCreateCommand extends Command
         {--skip-deps : Skip dependency installation}
         {--skip-build : Skip frontend build}
         {--skip-db : Skip database cloning}
-        {--from-main : Shared services: copy the main checkout\'s database instead of the template (only where config allows it)}';
+        {--from-main : Shared services: copy the main checkout\'s database instead of the template (only where config allows it)}
+        {--horizon : Shared services: run Horizon as the queue worker instead of queue:listen}';
 
     protected $description = 'Create a git worktree with full environment isolation';
 
@@ -84,14 +88,35 @@ class WorktreeCreateCommand extends Command
             return self::FAILURE;
         }
 
-        if ($worktreeManager->exists($name)) {
-            $this->components->error("Worktree '{$name}' already exists.");
-
-            return self::FAILURE;
-        }
-
         /** @var string|null $baseBranch */
         $baseBranch = $this->option('base');
+        $options = [
+            'skip_deps' => (bool) $this->option('skip-deps'),
+            'skip_build' => (bool) $this->option('skip-build'),
+            'skip_db' => (bool) $this->option('skip-db'),
+            'from_main' => (bool) $this->option('from-main'),
+            'horizon' => (bool) $this->option('horizon'),
+            'base' => $baseBranch,
+        ];
+
+        if ($worktreeManager->exists($name)) {
+            // Running create again completes what is missing; it never starts over.
+            try {
+                $path = $worktreeManager->describe($name)['path'];
+            } catch (\JsonException $e) {
+                $this->components->error('storage/worktree-bootstrap.json is not valid JSON: '.$e->getMessage());
+
+                return self::FAILURE;
+            } catch (\RuntimeException) {
+                $this->components->error("Folder for '{$name}' exists but is not a registered worktree.");
+
+                return self::FAILURE;
+            }
+            $this->components->info("Worktree '{$name}' exists; completing its setup...");
+
+            // Setup mode: a .env from the stopped run is kept, also when its config stage was not recorded.
+            return $this->runBootstrap($worktreeManager, $name, $path, [...$options, 'resume' => true, 'setup' => true], "php artisan worktree:create {$name}");
+        }
 
         $this->components->info("Creating worktree '{$name}'...");
 
@@ -104,42 +129,9 @@ class WorktreeCreateCommand extends Command
         }
 
         $this->components->info("Worktree created at {$path}");
-
         $this->components->info('Bootstrapping...');
 
-        $verbose = $this->output->isVerbose();
-
-        $onStep = $verbose
-            ? fn (string $msg) => $this->components->info($msg)
-            : null;
-
-        $processOutput = $verbose
-            ? fn (string $type, string $buffer) => $this->output->write($buffer)
-            : null;
-
-        try {
-            $worktreeManager->bootstrap($name, [
-                'skip_deps' => (bool) $this->option('skip-deps'),
-                'skip_build' => (bool) $this->option('skip-build'),
-                'skip_db' => (bool) $this->option('skip-db'),
-                'from_main' => (bool) $this->option('from-main'),
-                'base' => $baseBranch,
-            ], $onStep, $processOutput);
-        } catch (\RuntimeException $e) {
-            $this->components->error($e->getMessage());
-            // Skipped stages are not recorded: the resume needs the same skip options.
-            $skips = implode('', array_map(
-                static fn (string $option): string => " --{$option}",
-                array_filter(['skip-deps', 'skip-build', 'skip-db'], fn (string $option): bool => (bool) $this->option($option)),
-            ));
-            $this->components->warn("The checkout is kept. Continue with: php artisan worktree:bootstrap {$name} --resume{$skips}");
-
-            return self::FAILURE;
-        }
-
-        $this->components->info("Worktree '{$name}' is ready.");
-
-        return self::SUCCESS;
+        return $this->runBootstrap($worktreeManager, $name, $path, $options, "php artisan worktree:create {$name}");
     }
 
     /**

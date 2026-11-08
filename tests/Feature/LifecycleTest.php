@@ -39,7 +39,7 @@ test('bootstrap resumes after a failed stage without rewriting lane configuratio
     $manager = lifecycleManager($directory, $strategy);
     $path = $manager->pathFor('ticket');
     File::ensureDirectoryExists($path);
-    Process::fake(['git worktree list --porcelain' => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/ticket\n\n")]);
+    Process::fake(['git worktree list --porcelain' => Process::result('worktree '.base_path()."\nHEAD 000\nbranch refs/heads/master\n\nworktree {$path}\nHEAD abc\nbranch refs/heads/ticket\n\n")]);
     try {
         expect(fn () => $manager->bootstrap('ticket'))->toThrow(RuntimeException::class, 'install failed');
         File::put($path.'/.env', "LANE_SETTING=preserve\n");
