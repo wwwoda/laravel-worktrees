@@ -216,6 +216,18 @@ test('a name another worktree already uses is refused', function () {
         ->toThrow(RuntimeException::class, 'already uses the database names');
 });
 
+test('a name another worktree uses is refused also when that worktree lost its state file', function (string $stateContent) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $stateContent === '' ? File::delete(WorktreeState::path(($this->path)('t9'))) : File::put(WorktreeState::path(($this->path)('t9')), $stateContent);
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+    $password = $this->server->users['hp_t9']['password'];
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+    expect($this->server->users['hp_t9']['password'])->toBe($password);
+})->with(['missing' => [''], 'broken' => ['{broken']]);
+
 test('a broken state file is rebuilt and keeps the password of .env', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $password = $this->server->users['hp_t9']['password'];
