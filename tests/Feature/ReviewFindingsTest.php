@@ -121,3 +121,23 @@ test('delete and bootstrap print a broken bootstrap record as an error', functio
     'bootstrap --resume' => ['worktree:bootstrap', ['--resume' => true]],
     'bootstrap --status' => ['worktree:bootstrap', ['--status' => true]],
 ]);
+
+test('bootstrap --resume prints a bootstrap record with the wrong shape as an error', function (string $record) {
+    $path = $this->base.'/'.basename(base_path()).'-lane';
+    File::ensureDirectoryExists($path.'/storage');
+    File::put($path.'/storage/worktree-bootstrap.json', $record);
+    Process::fake([
+        'git worktree list --porcelain' => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:bootstrap', ['name' => 'lane', '--resume' => true])
+        ->expectsOutputToContain('worktree-bootstrap.json')
+        ->assertFailed();
+})->with(['null' => ['null'], 'completed is a string' => ['{"completed":"running"}'], 'list' => ['[1]']]);
+
+test('delete of an invalid name fails with a message', function () {
+    $this->artisan('worktree:delete', ['name' => '../lane', '--force' => true])
+        ->expectsOutputToContain('name')
+        ->assertFailed();
+});
