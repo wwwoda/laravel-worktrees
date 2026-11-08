@@ -19,7 +19,7 @@ class WorktreeManager
      * they are untracked in most projects and would make every bootstrapped
      * worktree look dirty to delete and cleanup.
      */
-    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/worktree-bootstrap.clone' ':(exclude)storage/app/worktree'";
+    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/worktree-bootstrap.clone' ':(exclude)storage/app/worktree' ':(exclude)storage/logs/worktree-setup.log'";
 
     private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
 
@@ -250,9 +250,7 @@ class WorktreeManager
         $path = rtrim(realpath($path) ?: $path, '/');
 
         $identity = $this->describePath($path);
-        $registered = $this->registered();
-        $mainPath = is_string($registered[0]['path'] ?? null) ? $registered[0]['path'] : '';
-        if ((realpath($mainPath) ?: $mainPath) === $path) {
+        if ($this->isMainCheckout($path)) {
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
         File::ensureDirectoryExists($path.'/storage');
@@ -394,6 +392,17 @@ class WorktreeManager
     public function describe(string $name): array
     {
         return $this->describePath($this->pathFor($name));
+    }
+
+    /**
+     * True for the repository's main checkout (the first entry of `git worktree list`).
+     */
+    public function isMainCheckout(string $path): bool
+    {
+        $registered = $this->registered();
+        $mainPath = is_string($registered[0]['path'] ?? null) ? $registered[0]['path'] : '';
+
+        return $mainPath !== '' && (realpath($mainPath) ?: $mainPath) === (realpath($path) ?: $path);
     }
 
     /**

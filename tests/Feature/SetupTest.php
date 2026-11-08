@@ -194,6 +194,15 @@ test('the worker switch changes the mode and restarts the worker', function () {
     $this->artisan('worktree:worker', ['worktree' => 't9', 'mode' => 'supervisor'])->assertFailed();
 });
 
+test('the worker switch refuses the main checkout', function () {
+    $this->artisan('worktree:worker', ['worktree' => base_path(), 'mode' => 'horizon'])
+        ->expectsOutputToContain('main checkout')
+        ->assertFailed();
+
+    expect(File::get(base_path('.env')))->not->toContain('WORKTREE_QUEUE_WORKER');
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, '--force-recreate'));
+});
+
 test('every step is logged to a file in the worktree', function () {
     $path = frontierWorktree($this, 't906', 'lane');
 

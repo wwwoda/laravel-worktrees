@@ -79,6 +79,8 @@ test('the package\'s own bootstrap files do not make a worktree dirty', function
     $git(['commit', '--allow-empty', '-m', 'Base']);
     File::put($path.'/storage/worktree-bootstrap.json', '{}');
     File::put($path.'/storage/worktree-bootstrap.lock', '');
+    File::ensureDirectoryExists($path.'/storage/logs');
+    File::put($path.'/storage/logs/worktree-setup.log', 'step');
 
     $manager = app(WorktreeManager::class);
     expect($manager->isDirty('lane'))->toBeFalse()
