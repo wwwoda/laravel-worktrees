@@ -3,6 +3,7 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\WorktreeManager;
 
 beforeEach(function () {
@@ -143,4 +144,13 @@ test('delete of an invalid name fails with a message', function () {
     $this->artisan('worktree:delete', ['name' => '../lane', '--force' => true])
         ->expectsOutputToContain('name')
         ->assertFailed();
+});
+
+test('an upsert replaces a key also in the forms dotenv accepts', function () {
+    $content = "export DB_URL=\"mysql://a\"\nDB_URL_EXTRA=keep\n  REDIS_URL = redis://b\nOTHER_DB_URL=keep\n";
+
+    $content = EnvFile::upsertLine($content, 'DB_URL', 'DB_URL=');
+    $content = EnvFile::upsertLine($content, 'REDIS_URL', 'REDIS_URL=');
+
+    expect($content)->toBe("DB_URL=\nDB_URL_EXTRA=keep\nREDIS_URL=\nOTHER_DB_URL=keep\n");
 });
