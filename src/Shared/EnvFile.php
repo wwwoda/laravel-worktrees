@@ -36,18 +36,30 @@ final class EnvFile
     }
 
     /**
-     * The value as dotenv reads it, without variable expansion. A file that dotenv
-     * cannot parse has no values: a guess could name the wrong database.
+     * The value as dotenv reads it, without variable expansion. When dotenv cannot
+     * parse the whole file, each line is read on its own, so a broken line hides
+     * only its own key: a key whose line is broken has no value, as a guess could
+     * name the wrong database.
      */
     public static function get(string $path, string $key): ?string
     {
         if (! File::exists($path)) {
             return null;
         }
+        $parser = new Parser;
+        $content = File::get($path);
         try {
-            $entries = (new Parser)->parse(File::get($path));
+            $entries = $parser->parse($content);
         } catch (InvalidFileException) {
-            return null;
+            $entries = [];
+            foreach (preg_split('/\r?\n/', $content) ?: [] as $line) {
+                try {
+                    $entries = [...$entries, ...$parser->parse($line)];
+                } catch (InvalidFileException) {
+                    // The broken line itself.
+                    $entries = array_values(array_filter($entries, static fn ($entry): bool => $entry->getName() !== self::lineKey($line)));
+                }
+            }
         }
         $value = null;
         // The last line wins, as in dotenv.
@@ -58,6 +70,11 @@ final class EnvFile
         }
 
         return $value;
+    }
+
+    private static function lineKey(string $line): string
+    {
+        return preg_match('/^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=/', $line, $match) ? $match[1] : '';
     }
 
     /**
