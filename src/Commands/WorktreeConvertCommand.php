@@ -10,7 +10,7 @@ use function Laravel\Prompts\select;
 class WorktreeConvertCommand extends Command
 {
     protected $signature = 'worktree:convert
-        {name? : Convert only this worktree (main for the main checkout)}
+        {name? : Convert only this worktree (main for the main checkout, or its folder path)}
         {--all : Convert every worktree that is not converted yet, without asking}';
 
     protected $description = 'Move Sail worktrees to shared services, keeping their data; the old volumes stay as backup';
@@ -30,9 +30,18 @@ class WorktreeConvertCommand extends Command
         $pending = array_values(array_filter($candidates, static fn (array $c): bool => ! $c['converted']));
         $name = $this->argument('name');
         if (is_string($name) && $name !== '') {
-            $pending = array_values(array_filter($candidates, static fn (array $c): bool => $c['name'] === $name));
+            // A folder path picks exactly one; a name may fit several (folders outside the worktree folder).
+            $folder = is_dir($name) ? (realpath($name) ?: $name) : null;
+            $pending = array_values(array_filter($candidates, static fn (array $c): bool => $folder !== null
+                ? (realpath($c['path']) ?: $c['path']) === $folder
+                : $c['name'] === $name));
             if ($pending === []) {
                 $this->components->error("No worktree named '{$name}'.");
+
+                return self::FAILURE;
+            }
+            if (count($pending) > 1) {
+                $this->components->error("Several worktrees are named '{$name}': ".implode(', ', array_column($pending, 'path')).'. Give the folder path instead.');
 
                 return self::FAILURE;
             }
@@ -70,7 +79,9 @@ class WorktreeConvertCommand extends Command
                 continue;
             }
             if ($action === 'delete') {
-                $this->call('worktree:delete', ['name' => $candidate['name']]);
+                if ($this->call('worktree:delete', ['name' => $candidate['name']]) !== self::SUCCESS) {
+                    $failed[] = $candidate['name'];
+                }
 
                 continue;
             }
@@ -95,7 +106,7 @@ class WorktreeConvertCommand extends Command
         }
 
         if ($failed !== []) {
-            $this->components->error('Not converted: '.implode(', ', $failed).'. Run worktree:convert again to retry.');
+            $this->components->error('Not converted or not deleted: '.implode(', ', $failed).'. Run worktree:convert again to retry.');
 
             return self::FAILURE;
         }

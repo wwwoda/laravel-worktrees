@@ -128,6 +128,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
+            'docker compose --profile "*" down*' => fn () => ($this->downFails ?? false) ? Process::result(errorOutput: 'down failed', exitCode: 1) : Process::result(),
             '*' => Process::result(),
         ]);
     };
@@ -374,4 +375,53 @@ test('an old volume without a usable database name stops before anything is remo
 
     expect($this->removed)->toBe([])
         ->and($this->server->databaseExists('hp_old1'))->toBeFalse();
+});
+
+test('a worktree set up with shared services before conversion still converts while its old volume exists', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    (new WorktreeState(['source' => 'template', 'name' => 'old1']))->save($path);
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users'])
+        ->and(SailConverter::isConverted($path))->toBeTrue();
+});
+
+test('a shared worktree without an old volume counts as converted', function () {
+    $path = sailWorktree($this, 'new1', 'feature-new1', []);
+    (new WorktreeState(['source' => 'template', 'name' => 'new1']))->save($path);
+    $this->containers['hungryport'] = [];
+    (new WorktreeState(['converted_at' => '2026-11-08T00:00:00+00:00']))->save($this->main);
+
+    $this->artisan('worktree:convert', ['--all' => true])
+        ->expectsOutputToContain('Nothing to convert')
+        ->assertSuccessful();
+});
+
+test('a name that several worktrees share is refused; a path picks one', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    $outside = $this->base.'/elsewhere/old1';
+    File::ensureDirectoryExists($outside);
+    File::put($outside.'/.env', "COMPOSE_PROJECT_NAME=other-old1\nDB_DATABASE=hungryport\n");
+    $this->worktrees['feature-old1-b'] = $outside;
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('Several worktrees')
+        ->assertFailed();
+    expect($this->server->databaseExists('hp_old1'))->toBeFalse();
+
+    $this->artisan('worktree:convert', ['name' => $outside])->assertSuccessful();
+    expect(SailConverter::isConverted($outside))->toBeTrue()
+        ->and(SailConverter::isConverted(($this->path)('old1')))->toBeFalse();
+});
+
+test('a failed delete makes convert fail', function () {
+    sailWorktree($this, 'old1', 'merged-branch');
+    $this->downFails = true;
+
+    $this->artisan('worktree:convert')
+        ->expectsChoice('main (master, 2026-11-01)', 'skip', ['convert' => 'Convert', 'skip' => 'Skip'])
+        ->expectsChoice('old1 (merged-branch, 2026-11-01): merged, delete suggested', 'delete', ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'])
+        ->expectsConfirmation("Delete worktree 'old1'?", 'yes')
+        ->assertFailed();
 });
