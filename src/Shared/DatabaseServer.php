@@ -61,6 +61,12 @@ interface DatabaseServer
     public function dropUser(string $user): void;
 
     /**
+     * The account can no longer log in and holds no rights. It stays, because
+     * views and routines it created name it as their definer.
+     */
+    public function retireUser(string $user): void;
+
+    /**
      * Run SQL as the given user (not as admin). For checks and tests.
      */
     public function runAs(string $user, string $password, string $sql, ?string $database = null): ServerResult;

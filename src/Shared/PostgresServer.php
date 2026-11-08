@@ -130,7 +130,12 @@ final readonly class PostgresServer implements DatabaseServer
     {
         // The builder owns the template's objects; copies hand them to the
         // worktree role. It keeps them, but can no longer log in.
-        $this->admin('ALTER ROLE "'.Identifier::check($builder).'" NOLOGIN PASSWORD NULL');
+        $this->retireUser($builder);
+    }
+
+    public function retireUser(string $user): void
+    {
+        $this->admin('ALTER ROLE "'.Identifier::check($user).'" NOLOGIN PASSWORD NULL');
     }
 
     public function userExists(string $user): bool

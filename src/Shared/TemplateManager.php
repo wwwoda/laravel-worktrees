@@ -137,6 +137,9 @@ class TemplateManager
      */
     private function build(string $name, ?Closure $output): void
     {
+        // A marker without its database (dropped outside) must not make the new,
+        // half-built database look ready to another caller.
+        File::delete($this->markerPath($name));
         // A database without a marker is a stopped build: start again.
         if ($this->server->databaseExists($name)) {
             $this->server->dropDatabase($name);

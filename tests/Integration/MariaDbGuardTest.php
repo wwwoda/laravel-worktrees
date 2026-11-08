@@ -107,3 +107,19 @@ test('granting an existing user again removes rights it had before', function ()
     expect($this->server->runAs($names->user, $password, "SELECT id FROM `{$this->main}`.`items`")->successful)->toBeFalse()
         ->and($this->server->runAs($names->user, $password, "SELECT id FROM `{$names->app}`.`items`")->successful)->toBeTrue();
 });
+
+test('a copy gives views of a retired definer to the new owner', function () {
+    $builder = $this->prefix.'_vb';
+    $this->server->grantUser($builder, str_repeat('b', 32), [$this->template]);
+    expect($this->server->runAs($builder, str_repeat('b', 32), 'CREATE VIEW item_ids AS SELECT id FROM items', $this->template)->successful)->toBeTrue();
+    $this->server->retireUser($builder);
+    $names = WorktreeNames::for('t9', $this->prefix, 2);
+    $password = bin2hex(random_bytes(16));
+    $this->server->grantUser($names->user, $password, $names->databases());
+
+    $this->server->copyDatabase($this->template, $names->app, $names->user);
+
+    expect($this->server->runAs($names->user, $password, "SELECT id FROM `{$names->app}`.`item_ids`")->output)->toContain('1')
+        ->and($this->server->runAs($builder, str_repeat('b', 32), 'SELECT 1')->successful)->toBeFalse();
+    $this->server->dropUser($builder);
+});
