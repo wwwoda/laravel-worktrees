@@ -49,7 +49,9 @@ class DatabaseCloner
     {
         return match ($this->resolveStrategy()) {
             'sqlite' => File::exists($worktreePath.'/database/database.sqlite'),
-            'mysql', 'pgsql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listCloned(), true),
+            // A failed listing must not read as "absent": the setup would then mark and later drop an existing database.
+            'mysql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listMysqlClones(strict: true), true),
+            'pgsql' => in_array($this->sourceDatabase().'_'.$suffix, $this->listPgsqlClones(strict: true), true),
             default => false,
         };
     }
@@ -322,7 +324,7 @@ class DatabaseCloner
     /**
      * @return list<string>
      */
-    private function listMysqlClones(): array
+    private function listMysqlClones(bool $strict = false): array
     {
         $cfg = $this->connectionConfig();
         $sourceDb = $cfg['database'];
@@ -335,7 +337,7 @@ class DatabaseCloner
         $result = Process::env($env)->timeout(10)->run($cmd);
 
         if (! $result->successful()) {
-            return [];
+            return $strict ? throw new RuntimeException("Cannot list the databases: {$result->errorOutput()}") : [];
         }
 
         return array_values(array_filter(array_map(trim(...), explode("\n", $result->output()))));
@@ -450,7 +452,7 @@ class DatabaseCloner
     /**
      * @return list<string>
      */
-    private function listPgsqlClones(): array
+    private function listPgsqlClones(bool $strict = false): array
     {
         $cfg = $this->connectionConfig();
         $sourceDb = $cfg['database'];
@@ -464,7 +466,7 @@ class DatabaseCloner
         $result = $this->pgsqlAdminExec($cmd, 10);
 
         if (! $result->successful()) {
-            return [];
+            return $strict ? throw new RuntimeException("Cannot list the databases: {$result->errorOutput()}") : [];
         }
 
         return array_values(array_filter(array_map(trim(...), explode("\n", $result->output()))));
