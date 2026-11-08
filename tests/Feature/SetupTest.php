@@ -7,6 +7,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\DatabaseCloner;
 use Woda\Worktrees\Shared\DatabaseServer;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
@@ -364,3 +365,44 @@ test('create and the worker switch print a broken bootstrap record as an error',
     'create' => ['worktree:create', ['name' => 't9']],
     'worker' => ['worktree:worker', ['worktree' => 't9', 'mode' => 'horizon']],
 ]);
+
+test('setup empties the connection URLs that the folder\'s .env took over from the main checkout', function () {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nDATABASE_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+    $path = frontierWorktree($this, 't906', 'lane');
+
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+
+    $env = $path.'/.env';
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DATABASE_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DB_DATABASE'))->toBe('hp_t906')
+        ->and(EnvFile::get($env, 'REDIS_DB'))->toBe('2');
+});
+
+test('a setup resumed after its database step failed empties the connection URLs', function () {
+    File::append(base_path('.env'), "DB_URL=mysql://app:secret@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+    $path = frontierWorktree($this, 't907', 'lane');
+    $this->server->up = false;
+
+    $this->artisan('worktree:setup', ['path' => $path])->assertFailed();
+    expect(EnvFile::get($path.'/.env', 'DB_URL'))->toBe('mysql://app:secret@mariadb:3306/hungryport');
+
+    $this->server->up = true;
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+
+    expect(EnvFile::get($path.'/.env', 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($path.'/.env', 'REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($path.'/.env', 'DB_DATABASE'))->toBe('hp_t907');
+});
+
+test('setup run again on a worktree from before the fix empties its connection URLs', function () {
+    $path = frontierWorktree($this, 't908', 'lane');
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+    File::append($path.'/.env', "DB_URL=mysql://app:secret@mariadb:3306/hungryport\n");
+
+    $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
+
+    expect(EnvFile::get($path.'/.env', 'DB_URL'))->toBe('')
+        ->and(File::get($path.'/.env'))->not->toContain('secret@mariadb');
+});

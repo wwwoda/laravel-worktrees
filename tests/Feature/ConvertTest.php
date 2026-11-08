@@ -8,6 +8,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\SailConverter;
@@ -53,6 +54,7 @@ beforeEach(function () {
     $this->order = [];
     $this->countFails = false;
     $this->ups = [];
+    $this->envAtUp = [];
     $this->volumes = [];
     $this->volumeRemovals = [];
     $this->runningVolume = null;
@@ -85,6 +87,7 @@ beforeEach(function () {
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'docker compose up -d' => function (PendingProcess $p) {
                 $this->ups[] = $p->path;
+                $this->envAtUp[] = (string) EnvFile::get($p->path.'/.env', 'DB_URL');
 
                 return $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result();
             },
@@ -751,4 +754,33 @@ test('an old MariaDB volume is not converted into a PostgreSQL server', function
     expect($this->removed)->toBe([])
         ->and($this->server->databaseExists('hp_old1'))->toBeFalse()
         ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE=hp_old1');
+});
+
+test('converting empties the connection URLs of the old Sail layout', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::append($path.'/.env', "DB_URL=mysql://sail:password@mariadb:3306/hungryport\nDATABASE_URL=mysql://sail:password@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+
+    $this->artisan('worktree:convert', ['--all' => true])->assertSuccessful();
+
+    $env = $path.'/.env';
+    expect(EnvFile::get($env, 'DB_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DATABASE_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($env, 'DB_DATABASE'))->toBe('hp_old1')
+        ->and(EnvFile::get($env, 'DB_USERNAME'))->toBe('hp_old1');
+});
+
+test('converting the main checkout empties its connection URLs, also a key that env_overrides sets for worktrees', function () {
+    config()->set('worktrees.env_overrides.DB_URL', 'mysql://{name}');
+    unset($this->server->databases['hungryport']);
+    $this->volumes['hungryport_mariadb'] = ['main_users'];
+    File::append($this->main.'/.env', "DB_URL=mysql://sail:password@mariadb:3306/hungryport\nREDIS_URL=redis://redis:6379/0\n");
+
+    $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
+
+    expect(EnvFile::get($this->main.'/.env', 'DB_URL'))->toBe('')
+        // Also the first start of the app container, before the databases are set up.
+        ->and($this->envAtUp)->toBe([''])
+        ->and(EnvFile::get($this->main.'/.env', 'REDIS_URL'))->toBe('')
+        ->and(EnvFile::get($this->main.'/.env', 'DB_USERNAME'))->toBe('hungryport');
 });

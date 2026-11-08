@@ -25,9 +25,13 @@ final class EnvFile
         File::put($path, $content);
     }
 
+    /**
+     * Replace each line that sets `$key` with `$line`, also in the forms dotenv
+     * accepts (`export KEY=`, spaces around `=`), or append `$line`.
+     */
     public static function upsertLine(string $content, string $key, string $line): string
     {
-        $pattern = '/^'.preg_quote($key, '/').'=.*/m';
+        $pattern = '/^[ \t]*(?:export[ \t]+)?'.preg_quote($key, '/').'[ \t]*=.*/m';
         if (preg_match($pattern, $content)) {
             return (string) preg_replace_callback($pattern, static fn (): string => $line, $content);
         }

@@ -1,5 +1,7 @@
 <?php
 
+use Dotenv\Dotenv;
+use Illuminate\Support\ConfigurationUrlParser;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\TemplateRecipe;
@@ -144,4 +146,27 @@ test('deleting worktree t9 leaves t9-1, the main database and the templates unto
         ->and($this->server->databaseExists($this->prefix.'_main'))->toBeTrue()
         ->and($this->server->databaseExists($template))->toBeTrue()
         ->and($this->server->runAs((string) $t91->string('user'), (string) $t91->string('password'), "SELECT email FROM `{$this->prefix}_t9_1`.users")->output)->toContain('test@example.com');
+});
+
+test('a worktree whose .env took over the main checkout\'s DB_URL connects to its own database', function () {
+    $path = $this->base.'/t9';
+    File::ensureDirectoryExists($path);
+    $mainUrl = 'mysql://root:'.rawurlencode($this->rootPassword).'@'.getenv('LW_TEST_MARIADB_HOST').'/'.$this->prefix.'_main';
+    File::put($path.'/.env', "DB_URL={$mainUrl}\nDB_DATABASE={$this->prefix}_main\nDB_USERNAME=root\n");
+
+    ($this->provision)('t9');
+
+    // The connection as Laravel's default mariadb connection resolves it: a URL wins over the separate values.
+    $env = Dotenv::parse(File::get($path.'/.env'));
+    $config = (new ConfigurationUrlParser)->parseConfiguration([
+        'url' => $env['DB_URL'] ?? null,
+        'database' => $env['DB_DATABASE'],
+        'username' => $env['DB_USERNAME'],
+        'password' => $env['DB_PASSWORD'],
+    ]);
+    $result = $this->server->runAs($config['username'], $config['password'], 'SELECT DATABASE()', $config['database']);
+
+    expect($env['DB_URL'])->toBe('')
+        ->and($config['username'])->toBe($this->prefix.'_t9')
+        ->and(trim($result->output))->toBe($this->prefix.'_t9');
 });

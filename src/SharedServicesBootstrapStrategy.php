@@ -139,6 +139,9 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
+        // This stage runs on every setup, also when the database stage is complete
+        // (a worktree set up before the URLs were emptied, or --skip-db).
+        $this->provisioner->clearConnectionUrls($worktreePath);
         parent::bringUp($worktreePath, $output);
         $this->removeStaleHotFile($worktreePath, $output);
     }

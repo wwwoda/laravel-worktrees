@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.1 (2026-11-08)
+
+A fix for the `shared` strategy. No breaking change.
+
+### Fixed
+
+- **Connection URLs in shared worktrees:** `worktree:create`, `worktree:setup` and `worktree:convert` empty `DB_URL`, `DATABASE_URL` and `REDIS_URL` in the worktree's `.env` when it has a value there. Before, a URL copied from the main checkout's `.env` won over the `DB_*` and `REDIS_*` values of `shared.env`, so the worktree connected to the main database and Redis. The new key `shared.clear_env` holds the list. A key that `shared.env` or `env_overrides` sets keeps its value, and a config published before this release uses the default list. Each setup run checks the keys again, so `worktree:setup` fixes a worktree that v0.2.0 set up. The `native` and `sail` strategies are unchanged. ([#21](https://github.com/wwwoda/laravel-worktrees/issues/21))
+- **`.env` writes** replace a key also where the line has the forms that dotenv accepts (`export KEY=value`, spaces around `=`). Before, such a line stayed and a second line was added.
+
 ## v0.2.0 (2026-11-08)
 
 This release adds the `shared` strategy (one database server and one Redis for all worktrees of a machine), Laravel 13 support, and new commands. The default strategy stays `native`, and no config key was renamed or removed. See "Breaking changes" and "Upgrade notes" below.

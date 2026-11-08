@@ -299,6 +299,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `shared.redis.databases` | `WORKTREE_SHARED_REDIS_DATABASES` | Number of Redis databases; must not be more than the server's `databases` setting. [256] |
 | `shared.redis.reserved` | | Redis numbers that no worktree gets (the main checkout's). [`[0, 1]`] |
 | `shared.env` | | `.env` values for each worktree, with placeholders (see [The worktree's .env](#the-worktrees-env)). |
+| `shared.clear_env` | | Connection URL keys that the setup empties in each worktree's `.env` (see [The worktree's .env](#the-worktrees-env)). [`['DB_URL', 'DATABASE_URL', 'REDIS_URL']`] |
 
 ## Native and Sail
 
@@ -377,7 +378,7 @@ For PostgreSQL, add `WORKTREE_SHARED_DB_DRIVER=pgsql` and use the PostgreSQL con
 - **Its own database user** (the name of the app database) with a generated password. See [The database guard](#the-database-guard).
 - **Two Redis database numbers** (default and cache). See [Redis numbers](#redis-numbers).
 - **A state file** (see [The state file](#the-state-file)).
-- **The `.env` values** of `shared.env`.
+- **The `.env` values** of `shared.env`, and empty connection URLs (`shared.clear_env`, see [The worktree's .env](#the-worktrees-env)).
 
 ### The worktree's `.env`
 
@@ -395,7 +396,7 @@ For PostgreSQL, add `WORKTREE_SHARED_DB_DRIVER=pgsql` and use the PostgreSQL con
 ],
 ```
 
-**Connection URLs:** Laravel uses `DB_URL` (or `DATABASE_URL` in older configs) before the `DB_*` values. The default map does not change them. When the main checkout's `.env` sets one of them, add it to the map with an empty value (`'DB_URL' => ''`), or the worktree connects to the URL's database, which is usually the main database.
+**Connection URLs:** Laravel uses `DB_URL` (or `DATABASE_URL` in configs from Laravel 10 and older) before the `DB_*` values, and `REDIS_URL` before the `REDIS_*` values. A worktree's `.env` that is a copy of the main checkout's would then connect to the main database and Redis. So the setup empties each key of `shared.clear_env` that has a value in the worktree's `.env` (default: `DB_URL`, `DATABASE_URL`, `REDIS_URL`). A key that is not in `.env` is not added. A key that `shared.env` or `env_overrides` sets keeps that value, for example `'DATABASE_URL' => 'mysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_app}'`. Add the keys of your own connections that read a URL, or set `'clear_env' => []` to empty nothing. Each run of `worktree:setup`, `worktree:create` or `worktree:bootstrap --resume` checks them again, also when the database step is complete, so a run fixes a worktree that was set up with an older version. `worktree:convert` empties them in the main checkout's `.env` too; there only `shared.env` keeps a key, as `env_overrides` is not written to the main checkout. A config published before v0.2.1 has no `clear_env` key: the default applies. The `native` and `sail` strategies do not change these keys.
 
 Add keys for the test and e2e databases when your project reads them, for example `'DB_TEST_DATABASE' => '{db_test}'`. A placeholder can be part of a longer value, such as `'REDIS_URL' => 'redis://redis:6379/{redis_default}'`. The package also reads these keys from other worktrees' `.env` to find names and numbers that are in use. The setup also writes `COMPOSE_FILE` (from `shared.app.compose_file`) and the queue worker keys.
 

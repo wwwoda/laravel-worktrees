@@ -16,7 +16,7 @@ beforeEach(function () {
     File::ensureDirectoryExists($this->base);
     // The test writes the application's .env; a .env that was there before is put back afterwards.
     $this->envBefore = File::exists(base_path('.env')) ? File::get(base_path('.env')) : null;
-    File::put(base_path('.env'), "APP_NAME=App\nAPP_URL=https://app.hp.test\nCOMPOSE_PROJECT_NAME=hungryport\nWORKTREE_HOST=app.hp.test\n");
+    File::put(base_path('.env'), "APP_NAME=App\nAPP_URL=https://app.hp.test\nCOMPOSE_PROJECT_NAME=hungryport\nWORKTREE_HOST=app.hp.test\nDB_URL=mysql://sail:password@mariadb:3306/hungryport\n");
     config()->set('app.name', 'App');
     config()->set('app.url', 'https://app.hp.test');
     config()->set('worktrees.base_path', $this->base);
@@ -55,7 +55,9 @@ test('worktree:create with the Sail strategy sets up a worktree like HungryPort 
     expect(File::get($path.'/.env'))
         ->toContain('COMPOSE_PROJECT_NAME=hungryport-lane')
         ->toContain('WORKTREE_HOST=app-lane.hp.test')
-        ->toContain('APP_URL=https://app-lane.hp.test');
+        ->toContain('APP_URL=https://app-lane.hp.test')
+        // The worktree's own Sail containers answer at this URL: only the shared strategy empties it.
+        ->toContain('DB_URL=mysql://sail:password@mariadb:3306/hungryport');
     Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d' && $p->path === $path
         && $p->environment['COMPOSE_PROJECT_NAME'] === false);
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'composer install'));
