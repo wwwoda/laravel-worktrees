@@ -350,6 +350,18 @@ test('the template build bypasses a config cache of the main checkout', function
         && str_contains((string) $p->command, 'php artisan migrate --force'));
 });
 
+test('the template build empties a connection URL of the main checkout', function (string $mode) {
+    $recipe = new ArtisanTemplateRecipe($mode, 'laravel.test', 'mariadb', 3306);
+
+    $recipe->build('hp_tpl_abc', 'hp_tpl_builder', str_repeat('a', 32), '');
+
+    // Laravel gives a connection URL precedence over DB_DATABASE and the account.
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'php artisan migrate --force')
+        && ($mode === 'host'
+            ? ($p->environment['DB_URL'] ?? null) === '' && ($p->environment['DATABASE_URL'] ?? null) === ''
+            : str_contains((string) $p->command, "-e 'DB_URL='") && str_contains((string) $p->command, "-e 'DATABASE_URL='")));
+})->with(['container', 'host']);
+
 test('a copy that stopped half way is dropped and copied again', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $path = ($this->path)('t9');
