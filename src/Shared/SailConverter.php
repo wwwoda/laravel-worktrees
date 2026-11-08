@@ -56,7 +56,7 @@ class SailConverter
                 'last_commit' => trim(Process::path($path)->timeout(10)->run('git log -1 --format=%cs')->output()),
                 'merged' => ! $isMain && $branch !== null && $branch !== $this->baseBranch
                     && Process::path($main)->timeout(10)->run(['git', 'merge-base', '--is-ancestor', $branch, $this->baseBranch])->successful(),
-                'converted' => self::isConverted($path),
+                'converted' => $this->converted($path),
                 'main' => $isMain,
             ];
         }
@@ -88,11 +88,37 @@ class SailConverter
         return (bool) preg_match('/^[A-Za-z0-9_$-]{1,64}$/', $database);
     }
 
+    /**
+     * True when a conversion of this folder finished (`converted_at`).
+     */
     public static function isConverted(string $path): bool
     {
         $state = WorktreeState::load($path);
 
-        return $state !== null && empty($state->data['converting']) && $state->string('source') !== null;
+        return $state !== null && empty($state->data['converting']) && $state->string('converted_at') !== null;
+    }
+
+    /**
+     * Converted, or set up with shared services and without an old Sail volume
+     * whose data would still have to move. A worktree that was set up with shared
+     * services while its old volume exists still converts.
+     */
+    private function converted(string $path): bool
+    {
+        if (self::isConverted($path)) {
+            return true;
+        }
+        $state = WorktreeState::load($path);
+        if ($state === null || ! empty($state->data['converting']) || $state->string('source') === null) {
+            return false;
+        }
+        try {
+            $volume = $this->volumeName($this->oldComposeProject($path));
+        } catch (RuntimeException) {
+            return false;
+        }
+
+        return ! Process::timeout(30)->run(['docker', 'volume', 'inspect', $volume])->successful();
     }
 
     /**
