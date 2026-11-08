@@ -81,7 +81,7 @@ final class EnvFile
      * The value as Laravel reads it from this file: `${OTHER}` references are
      * expanded with the values of the same file. The process environment does not
      * count, as it holds the values of the checkout that runs artisan. When dotenv
-     * cannot parse the file, the value without expansion.
+     * cannot parse the file, this returns the value as written (as get() reads it), without expansion.
      */
     public static function resolved(string $path, string $key): ?string
     {
