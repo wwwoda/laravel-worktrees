@@ -645,6 +645,53 @@ test('.env values with CRLF line endings are read without the carriage return', 
         ->and(EnvFile::get($file, 'DB_PASSWORD'))->toBe('secret');
 });
 
+test('a failed template build retires the builder also when dropping its database fails', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function dropDatabase(string $database): void
+        {
+            throw new RuntimeException('drop failed');
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new class implements TemplateRecipe
+    {
+        public function build(string $database, string $user, string $password, string $seedCommand, ?Closure $output = null): void
+        {
+            throw new RuntimeException('migration failed');
+        }
+    });
+
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'migration failed')
+        ->and($failing->log)->toContain('retire user '.$templates->builder($templates->name()));
+});
+
+test('a builder that cannot be retired after the build leaves no ready template', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public int $finishCalls = 0;
+
+        public function finishTemplateBuild(string $builder, string $template): void
+        {
+            if (++$this->finishCalls === 1) {
+                throw new RuntimeException('admin connection lost');
+            }
+            parent::finishTemplateBuild($builder, $template);
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'admin connection lost')
+        ->and($templates->isReady($templates->name()))->toBeFalse()
+        // The cleanup drops the builder with the database; it needs no second retire.
+        ->and($failing->finishCalls)->toBe(1)
+        ->and($failing->users)->toBe([]);
+});
+
 test('the copy keeps its dump files private', function () {
     Process::fake(['*' => Process::result()]);
     $server = new MariaDbServer('mariadb', null, '127.0.0.1', 3306, 'root', '');

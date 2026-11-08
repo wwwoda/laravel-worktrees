@@ -25,6 +25,8 @@ use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
+use Woda\Worktrees\Shared\PostgresServer;
+use Woda\Worktrees\Shared\RecreateDatabasesGuard;
 use Woda\Worktrees\Shared\RedisAllocator;
 use Woda\Worktrees\Shared\RedisServer;
 use Woda\Worktrees\Shared\SailConverter;
@@ -143,11 +145,20 @@ class WorktreesServiceProvider extends ServiceProvider
                     driver: $driver,
                     container: $config->nullableString('database.container'),
                     host: $config->string('database.host', '127.0.0.1'),
-                    port: $config->int('database.port', 3306),
-                    adminUser: $config->string('database.admin_username', 'root'),
+                    port: $config->int('database.port', self::defaultPort()),
+                    adminUser: $config->nullableString('database.admin_username') ?? 'root',
                     adminPassword: $config->string('database.admin_password', ''),
                     client: $config->nullableString('database.client') ?? ($driver === 'mysql' ? 'mysql' : 'mariadb'),
                     dumpClient: $config->nullableString('database.dump_client') ?? ($driver === 'mysql' ? 'mysqldump' : 'mariadb-dump'),
+                ),
+                'pgsql' => new PostgresServer(
+                    container: $config->nullableString('database.container'),
+                    host: $config->string('database.host', '127.0.0.1'),
+                    port: $config->int('database.port', self::defaultPort()),
+                    adminUser: $config->nullableString('database.admin_username') ?? 'postgres',
+                    adminPassword: $config->string('database.admin_password', ''),
+                    client: $config->nullableString('database.client') ?? 'psql',
+                    dumpClient: $config->nullableString('database.dump_client') ?? 'pg_dump',
                 ),
                 default => throw new InvalidArgumentException("Unknown shared database driver '{$driver}'."),
             };
@@ -164,8 +175,8 @@ class WorktreesServiceProvider extends ServiceProvider
             return new ArtisanTemplateRecipe(
                 mode: $mode,
                 appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
-                databaseHost: $onHost ? $config->string('database.host', '127.0.0.1') : $config->string('database.app_host', 'mariadb'),
-                databasePort: $onHost ? $config->int('database.port', 3306) : $config->int('database.app_port', 3306),
+                databaseHost: $onHost ? $config->string('database.host', '127.0.0.1') : ($config->nullableString('database.app_host') ?? self::defaultAppHost()),
+                databasePort: $onHost ? $config->int('database.port', self::defaultPort()) : $config->int('database.app_port', self::defaultPort()),
                 extraEnv: $config->stringMap('database.template.env'),
             );
         });
@@ -224,12 +235,48 @@ class WorktreesServiceProvider extends ServiceProvider
                 parallelWorkers: $config->int('database.parallel_workers', 8),
                 allowFromMain: (bool) config('worktrees.shared.database.allow_from_main', false),
                 copyFromTemplate: $config->stringList('database.copy_from_template'),
-                appHost: $config->string('database.app_host', 'mariadb'),
-                appPort: $config->int('database.app_port', 3306),
+                appHost: $config->nullableString('database.app_host') ?? self::defaultAppHost(),
+                appPort: $config->int('database.app_port', self::defaultPort()),
                 envMap: $config->stringMap('env'),
                 redisServer: $app->make(RedisServer::class),
             );
         });
+    }
+
+    /**
+     * `php artisan test --parallel --recreate-databases` passes the option to
+     * its workers in the environment; the app boots in each worker before
+     * Laravel's database setup runs.
+     */
+    public static function guardRecreateDatabases(): void
+    {
+        $key = 'LARAVEL_PARALLEL_TESTING_RECREATE_DATABASES';
+        $value = $_SERVER[$key] ?? $_ENV[$key] ?? getenv($key);
+        if (! filter_var($value, FILTER_VALIDATE_BOOLEAN)) {
+            return;
+        }
+        $connection = config('database.default');
+        $driver = config('database.connections.'.(is_string($connection) ? $connection : '').'.driver');
+        RecreateDatabasesGuard::check(true, is_string($driver) ? $driver : '', base_path());
+    }
+
+    private static function sharedDriver(): string
+    {
+        return (new SharedConfig)->string('database.driver', 'mariadb');
+    }
+
+    private static function defaultPort(): int
+    {
+        return self::sharedDriver() === 'pgsql' ? 5432 : 3306;
+    }
+
+    private static function defaultAppHost(): string
+    {
+        return match (self::sharedDriver()) {
+            'pgsql' => 'pgsql',
+            'mysql' => 'mysql',
+            default => 'mariadb',
+        };
     }
 
     private function registerConverter(): void
@@ -261,6 +308,10 @@ class WorktreesServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Before any test runs: Laravel's own setup callback would drop the first
+        // parallel database before a later callback could object.
+        self::guardRecreateDatabases();
+
         $this->publishes([
             __DIR__.'/../config/worktrees.php' => config_path('worktrees.php'),
         ], 'worktrees-config');

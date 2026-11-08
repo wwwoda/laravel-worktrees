@@ -29,6 +29,17 @@ final readonly class MariaDbServer implements DatabaseServer
         return $this->driver;
     }
 
+    public function requiresDatabasesInAdvance(): bool
+    {
+        return false;
+    }
+
+    public function finishTemplateBuild(string $builder, string $template): void
+    {
+        // Locked, not dropped: the template's views and routines name it as definer.
+        $this->retireUser($builder);
+    }
+
     public function ping(): bool
     {
         return $this->run($this->adminUser, $this->adminPassword, 'SELECT 1', timeout: 10)->successful;

@@ -16,6 +16,12 @@ interface DatabaseServer
 
     public function ping(): bool;
 
+    /**
+     * True when worktree users cannot create their own databases (PostgreSQL):
+     * the package then creates all of them, the parallel test databases too.
+     */
+    public function requiresDatabasesInAdvance(): bool;
+
     public function databaseExists(string $database): bool;
 
     /**
@@ -52,6 +58,11 @@ interface DatabaseServer
      * @param  list<string>  $databases
      */
     public function grantUser(string $user, string $password, array $databases): void;
+
+    /**
+     * The template is built; retire its builder user.
+     */
+    public function finishTemplateBuild(string $builder, string $template): void;
 
     public function userExists(string $user): bool;
 

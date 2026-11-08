@@ -115,7 +115,7 @@ return [
         ],
 
         'database' => [
-            // mariadb | mysql (pgsql follows)
+            // mariadb | mysql | pgsql
             'driver' => env('WORKTREE_SHARED_DB_DRIVER', 'mariadb'),
 
             // How the package reaches the server as admin. With a container,
@@ -123,17 +123,20 @@ return [
             // on this machine connects to host and port.
             'container' => env('WORKTREE_SHARED_DB_CONTAINER'),
             'host' => env('WORKTREE_SHARED_DB_ADMIN_HOST', '127.0.0.1'),
-            'port' => (int) env('WORKTREE_SHARED_DB_ADMIN_PORT', 3306),
-            'admin_username' => env('WORKTREE_SHARED_DB_ADMIN_USERNAME', 'root'),
+            // Empty: 3306 (MariaDB, MySQL) or 5432 (PostgreSQL).
+            'port' => env('WORKTREE_SHARED_DB_ADMIN_PORT'),
+            // Empty: root (MariaDB, MySQL) or postgres (PostgreSQL).
+            'admin_username' => env('WORKTREE_SHARED_DB_ADMIN_USERNAME'),
             'admin_password' => env('WORKTREE_SHARED_DB_ADMIN_PASSWORD', ''),
-            // Client commands, with options if needed (e.g. 'mariadb --skip-ssl'). Empty: mariadb and
-            // mariadb-dump, or mysql and mysqldump with driver mysql.
+            // Client commands, with options if needed (e.g. 'mariadb --skip-ssl').
+            // Empty: mariadb/mariadb-dump, mysql/mysqldump or psql/pg_dump by driver.
             'client' => env('WORKTREE_SHARED_DB_CLIENT'),
             'dump_client' => env('WORKTREE_SHARED_DB_DUMP_CLIENT'),
 
             // How the app containers reach the server (written to `.env`).
-            'app_host' => env('WORKTREE_SHARED_DB_HOST', 'mariadb'),
-            'app_port' => (int) env('WORKTREE_SHARED_DB_PORT', 3306),
+            // Empty: mariadb, mysql or pgsql (the Sail service names) and the driver's port.
+            'app_host' => env('WORKTREE_SHARED_DB_HOST'),
+            'app_port' => env('WORKTREE_SHARED_DB_PORT'),
 
             // The main checkout's database. Never written by a worktree command.
             // Empty: read DB_DATABASE from the main checkout's `.env` (also when

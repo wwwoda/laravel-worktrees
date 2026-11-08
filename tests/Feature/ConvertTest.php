@@ -739,3 +739,16 @@ test('convert deletes an unconverted Sail worktree and keeps its old volume as b
     expect(is_dir($path))->toBeFalse();
     Process::assertNotRan(fn (PendingProcess $p) => is_string($p->command) && str_contains($p->command, 'down -v'));
 });
+
+test('an old MariaDB volume is not converted into a PostgreSQL server', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1', ['users']);
+    $this->server->driverName = 'pgsql';
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('runs PostgreSQL')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([])
+        ->and($this->server->databaseExists('hp_old1'))->toBeFalse()
+        ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE=hp_old1');
+});

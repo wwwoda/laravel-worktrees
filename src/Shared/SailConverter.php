@@ -168,6 +168,10 @@ class SailConverter
         // The first run records the old names: a later run finds `.env` rewritten.
         [$project, $oldDatabase] = $this->markConverting($path, $candidate['main'] ? null : $this->provisioner->appDatabase($candidate['name']));
         $volumeExists = $this->volumeExists($this->volumeName($project));
+        if ($volumeExists && $this->provisioner->server()->driver() === 'pgsql') {
+            throw new RuntimeException(sprintf("The old volume '%s' holds a MariaDB database, and the shared server runs PostgreSQL: worktree:convert cannot import it. Nothing was changed.",
+                $this->volumeName($project)));
+        }
         if ($volumeExists && ($oldDatabase === null || ! self::validOldDatabase($oldDatabase))) {
             throw new RuntimeException(sprintf("The old volume '%s' exists, but the old .env names %s. Fix DB_DATABASE (or old_database in %s) and run the conversion again; nothing was changed.",
                 $this->volumeName($project), $oldDatabase === null ? 'no database' : "an unsupported database name '{$oldDatabase}'", WorktreeState::RELATIVE_PATH));
