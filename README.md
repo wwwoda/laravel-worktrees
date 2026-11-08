@@ -85,7 +85,7 @@ php artisan worktree:create                            # interactive: issue, PR,
 | `--from-main` | `shared` only: copy the main database in place of the template (see [Production-like data](#production-like-data)). |
 | `--horizon` | `shared` only: run Horizon as the queue worker in place of `queue:listen`. |
 
-When the folder exists already, `worktree:create` completes the setup of that worktree; it never starts again from zero. When a step fails, the checkout stays, and the command prints the command that continues the setup. At the end it prints the time of each step and the worktree's `APP_URL`. Each step is also written to `storage/logs/worktree-setup.log` in the worktree.
+When the folder exists already, `worktree:create` completes the setup of that worktree; it never starts again from zero. When a step fails, the checkout stays, and the command prints the command that continues the setup. At the end it prints the time of each step and the worktree's `APP_URL`, with `${KEY}` references to other keys of the worktree's `.env` expanded. Each step is also written to `storage/logs/worktree-setup.log` in the worktree.
 
 ### `worktree:setup`
 
@@ -312,8 +312,8 @@ Publish `config/worktrees.php` to change values, or set the environment variable
    - With the `mysql` or `pgsql` clone, `DB_DATABASE` becomes `{database}_{name}` (`-` changed to `_`).
    - `APP_PORT` and `VITE_PORT`, only when the key is in `.env` (see [Ports](#ports)).
    - The `env_overrides` values.
-3. `sail`: `docker compose up -d`, then a wait until the app service runs PHP.
-4. Composer install and node install.
+3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP. When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
+4. Composer install, and with `native` the node install after it.
 5. The database: the clone. A database that exists already is kept. A clone that stopped half way is dropped and made again.
 6. The frontend build.
 7. The migrations (not with `--skip-deps`).
@@ -453,7 +453,8 @@ A missing or broken state file does not stop a setup: the setup makes it again f
 
 - **Shared stack:** when the database server does not answer, `shared.stack.start_command` runs in the main checkout, and the setup waits up to `stack.wait_seconds` until the server answers. Without a start command, the setup stops with a message.
 - **Order:** the databases are made and `.env` names them before the app container starts, so the worker and the scheduler start with the right database.
-- **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. A `public/hot` whose dev server does not answer is removed.
+- **Host node install first:** the copy of `node_modules` and the node install on the host run before `docker compose up -d`. On Linux, a host install that replaces the `node_modules` folder (pnpm removes an empty one and makes it again) detaches the volume that a running container mounts there; the container then builds with the host's packages.
+- **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. When the app service declares a named volume that its container does not mount (a container that already ran while `node_modules` was replaced on the host), the app service is restarted once; when the volume is still missing, the setup stops. A `public/hot` whose dev server does not answer is removed.
 - **Dependencies:** when `composer.lock` is the same as in the main checkout, `vendor` is copied from the main checkout with copy-on-write (`cp -c` on macOS with APFS, `cp --reflink=always` on other systems). The same applies to the host `node_modules` and the node lock file (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`, `bun.lockb`). Then `composer install` runs in the container and the node install on the host in all cases; after a copy they are fast. A file system without copy-on-write (for example ext4) skips the copy. Set `shared.dependencies.copy_on_write` to false to never copy.
 - **Frontend:** built in the container: `pnpm install --frozen-lockfile && pnpm run build` (`npm ci && npm run build` for npm).
 - **Migrations:** run in the container for the app, test and e2e databases, with the config read fresh.
