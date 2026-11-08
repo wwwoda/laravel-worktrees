@@ -103,6 +103,10 @@ class WorktreeCreateCommand extends Command
             // Running create again completes what is missing; it never starts over.
             try {
                 $path = $worktreeManager->describe($name)['path'];
+            } catch (\JsonException $e) {
+                $this->components->error('storage/worktree-bootstrap.json is not valid JSON: '.$e->getMessage());
+
+                return self::FAILURE;
             } catch (\RuntimeException) {
                 $this->components->error("Folder for '{$name}' exists but is not a registered worktree.");
 

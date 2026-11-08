@@ -354,3 +354,13 @@ test('setup refuses a name that another registered worktree already uses', funct
 
     expect(File::exists($path.'/.env'))->toBeFalse();
 });
+
+test('create and the worker switch print a broken bootstrap record as an error', function (string $command, array $arguments) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::put(($this->path)('t9').'/storage/worktree-bootstrap.json', '{"completed":');
+
+    $this->artisan($command, $arguments)->assertFailed();
+})->with([
+    'create' => ['worktree:create', ['name' => 't9']],
+    'worker' => ['worktree:worker', ['worktree' => 't9', 'mode' => 'horizon']],
+]);
