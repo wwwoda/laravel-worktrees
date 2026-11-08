@@ -102,7 +102,7 @@ php artisan worktree:setup /srv/lanes/x --name=t902
 | `--name=` | The worktree name for its databases, URL and ports. Default: the name of an earlier run, else the folder name in lower case with other characters changed to `-`. |
 | `--skip-deps`, `--skip-build`, `--skip-db`, `--from-main`, `--horizon` | As in `worktree:create`. |
 
-`worktree:setup` and `worktree:create` are safe to run again. Each step checks what is done and does only what is missing. A database that exists is never dropped, created again or migrated fresh. Configuration files that exist in the worktree are kept. A run with a different name than the first run is refused.
+`worktree:setup` and `worktree:create` are safe to run again. Each step checks what is done and does only what is missing. A database that exists is never dropped, created again or migrated fresh. The one exception is a copy that stopped half way: it is recorded as incomplete, and the next run drops it and copies it again. Configuration files that exist in the worktree are kept. A run with a different name than the first run is refused.
 
 ### `worktree:bootstrap`
 
@@ -150,7 +150,7 @@ php artisan worktree:delete                             # select from the list
 | Option | Meaning |
 |---|---|
 | `--force` | Do not ask, and do not check for uncommitted changes and unpushed commits. |
-| `--keep-db` | Keep the database clone (`native`, `sail`) or the shared databases, user and Redis numbers (`shared`). The compose volumes stay (`docker compose down` without `-v`). |
+| `--keep-db` | Keep the database clone on the server (`mysql`, `pgsql`) or the shared databases, user and Redis numbers (`shared`). The compose volumes stay (`docker compose down` without `-v`). A SQLite clone is in the worktree folder, so it goes with the folder. |
 | `--delete-branch` | Delete the local branch when it is merged into the base branch, without a question. |
 
 The order:
@@ -392,6 +392,8 @@ For PostgreSQL, add `WORKTREE_SHARED_DB_DRIVER=pgsql` and use the PostgreSQL con
     'REDIS_CACHE_DB' => '{redis_cache}',
 ],
 ```
+
+**Connection URLs:** Laravel uses `DB_URL` (or `DATABASE_URL` in older configs) before the `DB_*` values. The default map does not change them. When the main checkout's `.env` sets one of them, add it to the map with an empty value (`'DB_URL' => ''`), or the worktree connects to the URL's database, which is usually the main database.
 
 Add keys for the test and e2e databases when your project reads them, for example `'DB_TEST_DATABASE' => '{db_test}'`. A placeholder can be part of a longer value, such as `'REDIS_URL' => 'redis://redis:6379/{redis_default}'`. The package also reads these keys from other worktrees' `.env` to find names and numbers that are in use. The setup also writes `COMPOSE_FILE` (from `shared.app.compose_file`) and the queue worker keys.
 
