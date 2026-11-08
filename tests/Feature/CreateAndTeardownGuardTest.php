@@ -3,6 +3,7 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\SailBootstrapStrategy;
 use Woda\Worktrees\WorktreeManager;
 
 beforeEach(function () {
@@ -48,4 +49,103 @@ test('teardown of an unregistered directory runs no command in it', function () 
         ->toThrow(RuntimeException::class, 'not a registered worktree');
 
     Process::assertNotRan(fn (PendingProcess $process) => $process->path === $path);
+});
+
+test('a Sail build context under a missing vendor is lent from the running checkout while compose starts', function () {
+    $worktree = $this->base.'/wt';
+    $source = $this->base.'/main';
+    File::ensureDirectoryExists($worktree);
+    File::ensureDirectoryExists($source.'/vendor/laravel/sail/runtimes/8.4');
+    File::put($source.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
+    $config = json_encode(['services' => [
+        'laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']],
+        'mariadb' => ['image' => 'mariadb:10.11'],
+    ]]);
+    $seenAtUp = null;
+    Process::fake([
+        'docker compose config --format json' => Process::result($config),
+        'docker compose up -d' => function () use ($worktree, &$seenAtUp) {
+            $seenAtUp = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+
+            return Process::result();
+        },
+        "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
+        '*' => Process::result(),
+    ]);
+    $strategy = new class('laravel.test', 'pnpm', false, $source) extends SailBootstrapStrategy
+    {
+        public function __construct(string $appService, string $pm, bool $build, private string $source)
+        {
+            parent::__construct($appService, $pm, $build);
+        }
+
+        protected function buildContextSource(): string
+        {
+            return $this->source;
+        }
+    };
+
+    $strategy->bringUp($worktree);
+
+    expect($seenAtUp)->toBeTrue()
+        ->and(file_exists($worktree.'/vendor'))->toBeFalse();
+});
+
+test('a failed fetch or a branch that is nowhere stops create before it makes a branch', function (array $options, Closure $fakes) {
+    Process::fake([...$fakes(), '*' => Process::result()]);
+
+    $this->artisan('worktree:create', $options)->assertFailed();
+
+    Process::assertNotRan(fn (PendingProcess $process) => str_contains((string) $process->command, 'worktree add'));
+})->with([
+    'issue, fetch fails' => [['--issue' => '7'], fn () => [
+        'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
+        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+    ]],
+    'issue, branch not on origin' => [['--issue' => '7'], fn () => [
+        'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
+        'git show-ref *' => Process::result(exitCode: 1),
+    ]],
+    'pr, fetch fails' => [['--pr' => '5'], fn () => [
+        'gh pr view 5 *' => Process::result('{"headRefName":"feature","isCrossRepository":false}'),
+        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+    ]],
+]);
+
+test('a pull request from a fork is checked out from its pull ref', function () {
+    $path = $this->base.'/'.basename(base_path()).'-pr-5';
+    Process::fake([
+        'gh pr view 5 *' => Process::result('{"headRefName":"master","isCrossRepository":true}'),
+        'git show-ref *' => Process::result(),
+        'git worktree add *' => function () use ($path) {
+            File::ensureDirectoryExists($path);
+
+            return Process::result();
+        },
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:create', ['--pr' => '5', '--skip-deps' => true, '--skip-build' => true, '--skip-db' => true]);
+
+    Process::assertRan(fn (PendingProcess $process) => $process->command === "git fetch origin 'pull/5/head:refs/heads/pr-5'");
+    Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, "worktree add '{$path}' 'pr-5'"));
+});
+
+test('compose runs without any inherited COMPOSE_ variable', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    putenv('COMPOSE_DISABLE_ENV_FILE=1');
+    $_ENV['COMPOSE_ENV_FILES'] = '/parent/.env';
+    Process::fake(['*' => Process::result()]);
+
+    try {
+        (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($worktree);
+    } finally {
+        putenv('COMPOSE_DISABLE_ENV_FILE');
+        unset($_ENV['COMPOSE_ENV_FILES']);
+    }
+
+    Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, 'down')
+        && $process->environment['COMPOSE_DISABLE_ENV_FILE'] === false
+        && $process->environment['COMPOSE_ENV_FILES'] === false);
 });

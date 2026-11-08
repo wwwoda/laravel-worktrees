@@ -51,13 +51,13 @@ class WorktreeDeleteCommand extends Command
             );
         }
 
-        if (! $worktreeManager->exists($name)) {
-            $this->components->error("Worktree '{$name}' does not exist.");
-
-            return self::FAILURE;
-        }
-
         try {
+            if (! $worktreeManager->exists($name)) {
+                $this->components->error("Worktree '{$name}' does not exist.");
+
+                return self::FAILURE;
+            }
+
             // Registration first: the safety checks run git in the folder, and a look-alike folder is not ours.
             $worktreeManager->describe($name);
 

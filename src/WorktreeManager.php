@@ -222,10 +222,14 @@ class WorktreeManager
 
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
-            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
-            $state = File::exists($statePath)
+            $decoded = File::exists($statePath)
                 ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
                 : ['completed' => []];
+            if (! $this->isBootstrapRecord($decoded)) {
+                throw new RuntimeException('storage/worktree-bootstrap.json does not have the shape of a bootstrap record. Review or remove it, then resume.');
+            }
+            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
+            $state = $decoded;
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
@@ -291,6 +295,29 @@ class WorktreeManager
             flock($handle, LOCK_UN);
             fclose($handle);
         }
+    }
+
+    /**
+     * A decoded bootstrap record that bootstrap() can work with: completed stages as
+     * a list of strings, and text (or null for the branch) in the other known keys.
+     */
+    private function isBootstrapRecord(mixed $record): bool
+    {
+        if (! is_array($record) || ! is_array($record['completed'] ?? null) || ! array_is_list($record['completed'])) {
+            return false;
+        }
+        foreach ($record['completed'] as $stage) {
+            if (! is_string($stage)) {
+                return false;
+            }
+        }
+        foreach (['stage', 'status', 'initial_head'] as $key) {
+            if (array_key_exists($key, $record) && ! is_string($record[$key])) {
+                return false;
+            }
+        }
+
+        return ! array_key_exists('branch', $record) || $record['branch'] === null || is_string($record['branch']);
     }
 
     /** @return array{path: string, branch: string|null, head: string, bootstrap: mixed} */

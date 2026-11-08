@@ -231,7 +231,7 @@ class WorktreeCreateCommand extends Command
      */
     private function promptPullRequest(): ?array
     {
-        $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title,headRefName');
+        $result = Process::path(base_path())->run('gh pr list --state open --limit 100 --json number,title');
 
         if (! $result->successful()) {
             $this->components->error('Failed to fetch PRs: '.$result->errorOutput());
@@ -239,7 +239,7 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        /** @var list<array{number: int, title: string, headRefName: string}> $prs */
+        /** @var list<array{number: int, title: string}> $prs */
         $prs = json_decode($result->output(), true) ?: [];
 
         if ($prs === []) {
@@ -249,10 +249,8 @@ class WorktreeCreateCommand extends Command
         }
 
         $options = [];
-        $prData = [];
         foreach ($prs as $pr) {
             $options[$pr['number']] = "#{$pr['number']} {$pr['title']}";
-            $prData[$pr['number']] = $pr['headRefName'];
         }
 
         /** @var int $prNumber */
@@ -266,10 +264,12 @@ class WorktreeCreateCommand extends Command
             scroll: 10,
         );
 
-        $branch = $prData[$prNumber];
-        $defaultName = "pr-{$prNumber}";
+        $branch = $this->resolvePrBranch($prNumber);
+        if ($branch === null) {
+            return null;
+        }
 
-        return [$defaultName, $branch];
+        return ["pr-{$prNumber}", $branch];
     }
 
     /**
@@ -363,10 +363,7 @@ class WorktreeCreateCommand extends Command
             $branch = $branches[0];
             $this->components->info("Found linked branch: {$branch}");
 
-            // Ensure we have the remote branch locally
-            Process::path(base_path())->timeout(30)->run('git fetch origin');
-
-            return $branch;
+            return $this->fetchBranch($branch) ? $branch : null;
         }
 
         // No linked branch — create one via gh issue develop
@@ -395,16 +392,13 @@ class WorktreeCreateCommand extends Command
 
         $this->components->info("Created linked branch: {$branch}");
 
-        // Fetch so the branch is available locally
-        Process::path(base_path())->timeout(30)->run('git fetch origin');
-
-        return $branch;
+        return $this->fetchBranch($branch) ? $branch : null;
     }
 
     private function resolvePrBranch(int $prNumber): ?string
     {
         $result = Process::path(base_path())->run(
-            sprintf('gh pr view %d --json headRefName', $prNumber),
+            sprintf('gh pr view %d --json headRefName,isCrossRepository', $prNumber),
         );
 
         if (! $result->successful()) {
@@ -413,7 +407,7 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
-        /** @var array{headRefName: string}|null $data */
+        /** @var array{headRefName: string, isCrossRepository?: bool}|null $data */
         $data = json_decode($result->output(), true);
 
         if (! $data || empty($data['headRefName'])) {
@@ -422,13 +416,49 @@ class WorktreeCreateCommand extends Command
             return null;
         }
 
+        if (! empty($data['isCrossRepository'])) {
+            // A fork's branch is not on origin, and its name may equal a local one
+            // (often `master`): take GitHub's pull ref into its own local branch.
+            $branch = "pr-{$prNumber}";
+            $fetch = Process::path(base_path())->timeout(60)->run(
+                sprintf('git fetch origin %s', escapeshellarg("pull/{$prNumber}/head:refs/heads/{$branch}")),
+            );
+            if (! $fetch->successful()) {
+                $this->components->error("Fetching PR #{$prNumber} from its fork failed: ".$fetch->errorOutput());
+
+                return null;
+            }
+            $this->components->info("PR #{$prNumber} is from a fork; its head is in branch {$branch}");
+
+            return $branch;
+        }
+
         $branch = $data['headRefName'];
         $this->components->info("PR #{$prNumber} branch: {$branch}");
 
-        // Ensure we have the remote branch locally
-        Process::path(base_path())->timeout(30)->run('git fetch origin');
+        return $this->fetchBranch($branch) ? $branch : null;
+    }
 
-        return $branch;
+    /**
+     * Fetch origin and check that the branch is now local or on origin. Without
+     * this, create would cut a new branch with that name from the base.
+     */
+    private function fetchBranch(string $branch): bool
+    {
+        $fetch = Process::path(base_path())->timeout(30)->run('git fetch origin');
+        if (! $fetch->successful()) {
+            $this->components->error('git fetch origin failed: '.$fetch->errorOutput());
+
+            return false;
+        }
+        foreach (['refs/heads/'.$branch, 'refs/remotes/origin/'.$branch] as $ref) {
+            if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg($ref))->successful()) {
+                return true;
+            }
+        }
+        $this->components->error("Branch {$branch} is neither local nor on origin after the fetch.");
+
+        return false;
     }
 
     /**
