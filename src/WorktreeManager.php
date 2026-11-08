@@ -242,6 +242,11 @@ class WorktreeManager
             if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
                 throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
             }
+            // A run without resume does every stage again (the config stage rewrites .env):
+            // stages of an earlier run must not count, or a later resume would skip them.
+            if (! $resume) {
+                $state['completed'] = [];
+            }
             $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
             // Without its own databases, the copied .env still names the main database and its account.
             // Without --resume the config stage copies the main .env again, and only provisioning would restore the worktree's values.
