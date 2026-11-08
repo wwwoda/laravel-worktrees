@@ -94,7 +94,8 @@ final readonly class MariaDbServer implements DatabaseServer
     {
         if ($owner !== null) {
             // The dump's definers are accounts of the old server; the owner is the account here.
-            $rewrite = Process::timeout(600)->run(sprintf('sed -E %s %s > %s && mv %s %s',
+            // umask 077: the rewritten copy holds the data; no other local user may read it.
+            $rewrite = Process::timeout(600)->run(sprintf('umask 077 && sed -E %s %s > %s && mv %s %s',
                 escapeshellarg('s/DEFINER=`[^`]*`@`[^`]*`/DEFINER=`'.Identifier::check($owner).'`@`%`/g'),
                 escapeshellarg($file), escapeshellarg($file.'.d'), escapeshellarg($file.'.d'), escapeshellarg($file)));
             if (! $rewrite->successful()) {
