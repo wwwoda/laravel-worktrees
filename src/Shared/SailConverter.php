@@ -249,6 +249,8 @@ class SailConverter
                 // template build runs in it. After the databases are set up, recreate it
                 // so it starts with the new database settings.
                 $step('Starting the main checkout\'s app container...');
+                // The container must not start with a URL to the old database or Redis.
+                $this->provisioner->clearConnectionUrls($path);
                 $this->compose($path, 'docker compose up -d', $output);
                 $this->provisioner->provisionMain($path, $fill, $output, $step);
                 $this->compose($path, 'docker compose up -d --force-recreate', $output);

@@ -54,6 +54,7 @@ beforeEach(function () {
     $this->order = [];
     $this->countFails = false;
     $this->ups = [];
+    $this->envAtUp = [];
     $this->volumes = [];
     $this->volumeRemovals = [];
     $this->runningVolume = null;
@@ -86,6 +87,7 @@ beforeEach(function () {
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'docker compose up -d' => function (PendingProcess $p) {
                 $this->ups[] = $p->path;
+                $this->envAtUp[] = (string) EnvFile::get($p->path.'/.env', 'DB_URL');
 
                 return $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result();
             },
@@ -776,6 +778,8 @@ test('converting the main checkout empties its connection URLs', function () {
     $this->artisan('worktree:convert', ['name' => 'main'])->assertSuccessful();
 
     expect(EnvFile::get($this->main.'/.env', 'DB_URL'))->toBe('')
+        // Also the first start of the app container, before the databases are set up.
+        ->and($this->envAtUp)->toBe([''])
         ->and(EnvFile::get($this->main.'/.env', 'REDIS_URL'))->toBe('')
         ->and(EnvFile::get($this->main.'/.env', 'DB_USERNAME'))->toBe('hungryport');
 });
