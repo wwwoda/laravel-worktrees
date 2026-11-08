@@ -288,17 +288,14 @@ class DatabaseProvisioner
     }
 
     /**
-     * Drop a deleted worktree's own databases and user and empty its Redis
-     * numbers. Only names that its state file lists, that its name derives
-     * and that are neither the main database nor a template are touched; any
-     * other name stops the whole step before anything is dropped.
+     * The checks of deprovision(), without any change: what it would drop, or
+     * an exception that says why nothing may be dropped. worktree:delete runs
+     * them before it stops anything.
      *
-     * @param  (Closure(string): void)|null  $onStep
-     * @return list<string> what was removed
+     * @return array{databases: list<string>, user: string, redis: list<int>}
      */
-    public function deprovision(string $name, string $path, ?Closure $onStep = null): array
+    public function checkDeprovision(string $name, string $path): array
     {
-        $step = $onStep ?? static fn (string $message) => null;
         $state = WorktreeState::load($path);
         if ($state === null) {
             throw new RuntimeException("Worktree '{$name}' has no state file: its shared databases are not dropped, because nothing is guessed. Drop them by hand if needed.");
@@ -341,6 +338,23 @@ class DatabaseProvisioner
         if ($numbers !== [] && $this->redis->taken($path, $numbers)) {
             throw new RuntimeException('Another worktree or the main checkout also uses Redis databases '.implode(', ', $numbers).' of this state. Nothing was dropped.');
         }
+
+        return ['databases' => $databases, 'user' => $user, 'redis' => $numbers];
+    }
+
+    /**
+     * Drop a deleted worktree's own databases and user and empty its Redis
+     * numbers. Only names that its state file lists, that its name derives
+     * and that are neither the main database nor a template are touched; any
+     * other name stops the whole step before anything is dropped.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string> what was removed
+     */
+    public function deprovision(string $name, string $path, ?Closure $onStep = null): array
+    {
+        $step = $onStep ?? static fn (string $message) => null;
+        ['databases' => $databases, 'user' => $user, 'redis' => $numbers] = $this->checkDeprovision($name, $path);
 
         // Reach Redis before anything is dropped, so a Redis problem leaves the
         // worktree whole instead of half deleted. The flush itself comes first too:

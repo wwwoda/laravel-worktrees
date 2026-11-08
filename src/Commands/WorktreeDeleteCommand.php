@@ -62,6 +62,12 @@ class WorktreeDeleteCommand extends Command
             // Registration first: the safety checks run git in the folder, and a look-alike folder is not ours.
             $branch = $worktreeManager->describe($name)['branch'];
 
+            // Shared services: a missing or bad state file stops the delete before
+            // anything is stopped or removed.
+            if ($worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
+                $worktreeManager->checkSharedDatabases($name);
+            }
+
             if (! $this->option('force') && ! $this->confirmDelete($worktreeManager, $name)) {
                 return self::SUCCESS;
             }

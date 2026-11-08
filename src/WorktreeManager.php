@@ -179,6 +179,16 @@ class WorktreeManager
         return $this->bootstrapStrategy->removeDatabases($name, $this->pathFor($name), $onStep);
     }
 
+    /**
+     * Throw when the state file does not allow removeSharedDatabases(); changes nothing.
+     */
+    public function checkSharedDatabases(string $name): void
+    {
+        if ($this->bootstrapStrategy instanceof ProvisionsDatabases) {
+            $this->bootstrapStrategy->checkRemoveDatabases($name, $this->pathFor($name));
+        }
+    }
+
     public function usesSharedDatabases(): bool
     {
         return $this->bootstrapStrategy instanceof ProvisionsDatabases;

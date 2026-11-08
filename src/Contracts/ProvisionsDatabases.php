@@ -18,6 +18,12 @@ interface ProvisionsDatabases
     public function provisionDatabases(string $name, string $worktreePath, array $options, ?Closure $output = null, ?Closure $onStep = null): void;
 
     /**
+     * The checks of removeDatabases() without any change: throws when its
+     * state file does not allow the removal.
+     */
+    public function checkRemoveDatabases(string $name, string $worktreePath): void;
+
+    /**
      * Drop the worktree's own databases and user and empty its Redis numbers.
      *
      * @param  (Closure(string): void)|null  $onStep

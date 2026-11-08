@@ -127,6 +127,11 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         );
     }
 
+    public function checkRemoveDatabases(string $name, string $worktreePath): void
+    {
+        $this->provisioner->checkDeprovision($name, $worktreePath);
+    }
+
     public function removeDatabases(string $name, string $worktreePath, ?Closure $onStep = null): array
     {
         return $this->provisioner->deprovision($name, $worktreePath, $onStep);

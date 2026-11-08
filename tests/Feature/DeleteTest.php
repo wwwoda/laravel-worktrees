@@ -337,3 +337,29 @@ test('a state with a bad Redis allocation or database list stops the delete befo
         unset($s->data['databases']['parallel']);
     }, 'database list'],
 ]);
+
+test('a missing or bad state file stops the delete before the containers are stopped', function (Closure $edit, string $message) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $edit(($this->path)('t9'));
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain($message)
+        ->assertFailed();
+
+    expect($this->atDown)->toBeNull()
+        ->and($this->server->databases)->toHaveKey('hp_t9')
+        ->and(is_dir(($this->path)('t9')))->toBeTrue();
+    Process::assertNotRan(fn (PendingProcess $p) => is_string($p->command) && str_contains($p->command, 'down'));
+})->with([
+    'missing' => [fn (string $path) => File::delete(WorktreeState::path($path)), 'has no state file'],
+    'foreign database' => [function (string $path) {
+        $state = WorktreeState::load($path);
+        $state->data['databases']['e2e'] = 'hungryport';
+        $state->save($path);
+    }, "Refusing to drop 'hungryport'"],
+    'no user' => [function (string $path) {
+        $state = WorktreeState::load($path);
+        unset($state->data['user']);
+        $state->save($path);
+    }, 'names no user'],
+]);
