@@ -144,6 +144,15 @@ class SailConverter
         $this->removeOldContainers($project, $output);
 
         $dump = $this->dumpOldVolume($project, $oldDatabase, $step, $output);
+        // Provisioning keeps an existing database and fills only a new one. When the
+        // target exists without a recorded import, the old data would be dropped
+        // silently and the template (or older) data would stay in use.
+        $target = $this->provisioner->appDatabase($candidate['main'] ? null : $candidate['name']);
+        if ($dump !== null && WorktreeState::load($path)?->string('source') !== 'converted' && $this->provisioner->server()->databaseExists($target)) {
+            File::delete($dump);
+
+            throw new RuntimeException("The shared database '{$target}' exists already, and the old volume holds data that would not be imported. Drop '{$target}' if it holds nothing you need, then run the conversion again.");
+        }
         $fill = $dump === null ? null : function (string $database) use ($dump, $output, $step): void {
             $step("Importing the old data into {$database}...");
             $this->provisioner->server()->importFile($database, $dump, $output);

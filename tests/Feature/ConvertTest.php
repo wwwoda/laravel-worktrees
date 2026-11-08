@@ -425,3 +425,20 @@ test('a failed delete makes convert fail', function () {
         ->expectsConfirmation("Delete worktree 'old1'?", 'yes')
         ->assertFailed();
 });
+
+test('an existing shared database stops the conversion when the old volume holds data', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    (new WorktreeState(['source' => 'template', 'name' => 'old1']))->save($path);
+    $this->server->databases['hp_old1'] = ['template data'];
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('exists already')
+        ->assertFailed();
+
+    expect($this->server->databases['hp_old1'])->toBe(['template data'])
+        ->and(SailConverter::isConverted($path))->toBeFalse();
+
+    unset($this->server->databases['hp_old1']);
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});

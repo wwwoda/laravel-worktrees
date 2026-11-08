@@ -166,6 +166,15 @@ class DatabaseProvisioner
     }
 
     /**
+     * The app database a conversion fills: the main database for the main
+     * checkout, the derived app database for a worktree.
+     */
+    public function appDatabase(?string $worktreeName): string
+    {
+        return $worktreeName === null ? Identifier::check($this->mainDatabase) : $this->names($worktreeName)->app;
+    }
+
+    /**
      * Give the main checkout its databases on the shared server: the main
      * database (filled by `$fillMain`, else a template copy), its test and e2e
      * databases, a user with the main database's name and rights on exactly
