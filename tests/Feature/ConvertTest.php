@@ -88,6 +88,11 @@ beforeEach(function () {
 
                 return $this->upFails-- > 0 ? Process::result(errorOutput: 'compose failed', exitCode: 1) : Process::result();
             },
+            'git worktree prune' => function () {
+                $this->worktrees = array_filter($this->worktrees, 'is_dir');
+
+                return Process::result();
+            },
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
             "'docker' 'ps' '-a' '--filter' *" => fn (PendingProcess $p) => Process::result(implode("\n", array_map(fn (string $name) => "{$name} {$name}",
                 $this->containers[substr($p->command[4], strlen('label=com.docker.compose.project='))] ?? []))),
@@ -720,4 +725,17 @@ test('a temporary database whose removal cannot be checked fails the conversion'
         ->assertFailed();
 
     expect($this->server->databaseExists('hp_old1'))->toBeFalse();
+});
+
+test('convert deletes an unconverted Sail worktree and keeps its old volume as backup', function () {
+    $path = sailWorktree($this, 'old1', 'merged-branch');
+
+    $this->artisan('worktree:convert')
+        ->expectsChoice('main (master, 2026-11-01)', 'skip', ['convert' => 'Convert', 'skip' => 'Skip'])
+        ->expectsChoice('old1 (merged-branch, 2026-11-01): merged, delete suggested', 'delete', ['convert' => 'Convert', 'delete' => 'Delete the worktree', 'skip' => 'Skip'])
+        ->expectsConfirmation("Delete worktree 'old1'?", 'yes')
+        ->assertSuccessful();
+
+    expect(is_dir($path))->toBeFalse();
+    Process::assertNotRan(fn (PendingProcess $p) => is_string($p->command) && str_contains($p->command, 'down -v'));
 });
