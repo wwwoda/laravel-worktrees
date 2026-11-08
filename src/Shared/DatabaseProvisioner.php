@@ -38,6 +38,10 @@ class DatabaseProvisioner
     {
         $names = WorktreeNames::for($name, $this->prefix, $this->parallelWorkers);
         $names->assertSafe($this->mainDatabase, $this->templates->prefix());
+        // MySQL account names have at most 32 characters (MariaDB 80, PostgreSQL 63 like the databases).
+        if ($this->server->driver() === 'mysql' && strlen($names->user) > 32) {
+            throw new RuntimeException("The worktree name '{$name}' is too long for MySQL: the user name '{$names->user}' has more than 32 characters.");
+        }
 
         return $names;
     }

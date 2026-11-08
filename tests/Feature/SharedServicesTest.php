@@ -227,6 +227,32 @@ test('names that could equal another worktree, a template or the main database a
     'main database' => ['main', 'hp_main', 'main database'],
 ]);
 
+test('on MySQL a name whose user would exceed 32 characters is refused before the server is touched', function () {
+    $mysql = new class extends FakeDatabaseServer
+    {
+        public function driver(): string
+        {
+            return 'mysql';
+        }
+    };
+    $mysql->databases = ['hungryport' => []];
+    app()->instance(DatabaseServer::class, $mysql);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($mysql));
+    $name = 'a-long-worktree-name-for-mysql';
+
+    $this->artisan('worktree:create', ['name' => $name])
+        ->expectsOutputToContain('more than 32 characters')
+        ->assertFailed();
+
+    expect($mysql->log)->toBe([]);
+});
+
+test('on MariaDB the same name is accepted', function () {
+    $this->artisan('worktree:create', ['name' => 'a-long-worktree-name-for-mysql'])->assertSuccessful();
+
+    expect($this->server->users)->toHaveKey('hp_a_long_worktree_name_for_mysql');
+});
+
 test('a name another worktree already uses is refused', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
     $this->worktrees['other'] = $this->base.'/elsewhere/T9';
