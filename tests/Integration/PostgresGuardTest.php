@@ -64,10 +64,15 @@ afterEach(function () {
     if (! isset($this->server)) {
         return;
     }
+    // Each template has a builder role of its own name: drop it after its database.
+    $templates = $this->server->databasesStartingWith($this->prefix.'_tpl_');
     foreach ($this->server->databasesStartingWith($this->prefix.'_') as $database) {
         $this->server->dropDatabase($database);
     }
-    foreach (['t9', 't9_1', 'tpl_builder', 'mainrole'] as $user) {
+    foreach ($templates as $template) {
+        $this->server->dropUser(app(TemplateManager::class)->builder($template));
+    }
+    foreach (['t9', 't9_1', 'mainrole'] as $user) {
         $this->server->dropUser($this->prefix.'_'.$user);
     }
     File::deleteDirectory($this->base);
@@ -111,8 +116,10 @@ test('the template builder can no longer log in, and a second provisioning keeps
 
     $again = app(DatabaseProvisioner::class)->provision('t9', $this->base.'/t9');
 
+    $builder = app(TemplateManager::class)->builder(app(TemplateManager::class)->name());
     expect(($this->as)($again, 'SELECT email FROM users', "{$this->prefix}_t9")->output)->toContain('mine@example.com')
-        ->and($this->server->runAs($this->prefix.'_tpl_builder', 'x', 'SELECT 1')->successful)->toBeFalse();
+        ->and($this->server->userExists($builder))->toBeTrue()
+        ->and($this->server->runAs($builder, 'x', 'SELECT 1')->successful)->toBeFalse();
 });
 
 test('--from-main copies a main database that has open connections', function () {
@@ -143,7 +150,7 @@ test('--from-main of an idle main database hands over its objects but never the 
         ->and(($this->as)($state, "DROP DATABASE {$p}_main")->successful)->toBeFalse();
 });
 
-test('a failed later template build keeps its error and retires the builder', function () {
+test('a failed later template build keeps its error, drops its own builder and keeps the older one', function () {
     ($this->provision)('t9');
     $first = app(TemplateManager::class)->name();
     config()->set('worktrees.shared.database.template.seed_command', 'seed again '.$this->prefix);
@@ -155,9 +162,12 @@ test('a failed later template build keeps its error and retires the builder', fu
         }
     });
 
-    expect(fn () => app(TemplateManager::class)->ensure())->toThrow(RuntimeException::class, 'migration failed')
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'migration failed')
         ->and($this->server->databaseExists($first))->toBeTrue()
-        ->and($this->server->runAs($this->prefix.'_tpl_builder', 'x', 'SELECT 1')->successful)->toBeFalse();
+        ->and($this->server->userExists($templates->builder($templates->name())))->toBeFalse()
+        ->and($this->server->userExists($templates->builder($first)))->toBeTrue();
 });
 
 test('--from-main of a main database in use with a superuser extension restores it', function () {

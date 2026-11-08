@@ -2,10 +2,13 @@
 
 namespace Woda\Worktrees\Shared;
 
+use Dotenv\Exception\InvalidFileException;
+use Dotenv\Parser\Parser;
 use Illuminate\Support\Facades\File;
 
 /**
- * Reads and upserts `KEY=value` lines of a `.env` file. Values are written
+ * Reads and upserts `KEY=value` lines of a `.env` file. Reads parse the file as
+ * Laravel's dotenv does (quotes, inline comments, `export`). Values are written
  * literally: `$1` or `\0` in a value is never read as a back-reference.
  */
 final class EnvFile
@@ -32,16 +35,28 @@ final class EnvFile
         return ($content === '' ? '' : rtrim($content, "\n")."\n").$line."\n";
     }
 
+    /**
+     * The value as dotenv reads it, without variable expansion. A file that dotenv
+     * cannot parse has no values: a guess could name the wrong database.
+     */
     public static function get(string $path, string $key): ?string
     {
         if (! File::exists($path)) {
             return null;
         }
-        if (! preg_match('/^'.preg_quote($key, '/').'=(.*)$/m', File::get($path), $match)) {
+        try {
+            $entries = (new Parser)->parse(File::get($path));
+        } catch (InvalidFileException) {
             return null;
         }
+        $value = null;
+        // The last line wins, as in dotenv.
+        foreach ($entries as $entry) {
+            if ($entry->getName() === $key) {
+                $value = $entry->getValue()->map(static fn ($value): string => $value->getChars())->getOrElse('');
+            }
+        }
 
-        // A CRLF file leaves "\r" at the end of the line; it is not part of the value.
-        return trim($match[1], " \t\r\"'");
+        return $value;
     }
 }

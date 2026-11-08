@@ -38,7 +38,7 @@ class FakeDatabaseServer implements DatabaseServer
 
     public function finishTemplateBuild(string $builder, string $template): void
     {
-        $this->dropUser($builder);
+        $this->retireUser($builder);
     }
 
     public function ping(): bool
@@ -99,10 +99,9 @@ class FakeDatabaseServer implements DatabaseServer
 
     public function retireUser(string $user): void
     {
+        // Like the real servers: the account cannot log in, but keeps its rights,
+        // which the views and routines it defined need.
         $this->log[] = "retire user {$user}";
-        if (isset($this->users[$user])) {
-            $this->users[$user]['databases'] = [];
-        }
     }
 
     public function runAs(string $user, string $password, string $sql, ?string $database = null): ServerResult

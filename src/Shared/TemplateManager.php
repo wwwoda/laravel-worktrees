@@ -66,6 +66,18 @@ class TemplateManager
     }
 
     /**
+     * The account that builds a template and stays the definer of its views and
+     * routines. Each template has its own: a shared one would lose its rights on an
+     * older template when the next one is built, and a dump of the older one's views
+     * would then fail. It has the template's name, which no worktree user can have,
+     * because worktree names that start with the template prefix are refused.
+     */
+    public function builder(string $template): string
+    {
+        return $template;
+    }
+
+    /**
      * Reads the server and the marker, which other processes change.
      *
      * @phpstan-impure
@@ -121,6 +133,7 @@ class TemplateManager
                     continue;
                 }
                 $this->server->dropDatabase($database);
+                $this->server->dropUser($this->builder($database));
                 File::delete($this->markerPath($database));
                 $dropped[] = $database;
             }
@@ -144,7 +157,7 @@ class TemplateManager
         if ($this->server->databaseExists($name)) {
             $this->server->dropDatabase($name);
         }
-        $builder = $this->prefix().'builder';
+        $builder = $this->builder($name);
         $password = bin2hex(random_bytes(16));
         // The user first: PostgreSQL makes it the owner of the new database. Both sit
         // inside the cleanup: a failed setup must not leave the builder able to log in.
@@ -155,18 +168,18 @@ class TemplateManager
             // Inside the guard: if retiring fails, the template is not marked ready.
             $this->server->finishTemplateBuild($builder, $name);
         } catch (\Throwable $error) {
-            // Clean up without hiding the build error; each step on its own, so the
-            // builder is retired even when the drop fails. On PostgreSQL it may still
-            // own older templates: retire it the driver's way.
+            // Clean up without hiding the build error. The builder belongs to this
+            // template only: it goes with the database. If either drop fails, the
+            // builder is retired, so it can at least no longer log in.
             try {
                 $this->server->dropDatabase($name);
+                $this->server->dropUser($builder);
             } catch (\Throwable) {
-                // The build error below is what the person needs to see.
-            }
-            try {
-                $this->server->finishTemplateBuild($builder, $name);
-            } catch (\Throwable) {
-                // As above.
+                try {
+                    $this->server->finishTemplateBuild($builder, $name);
+                } catch (\Throwable) {
+                    // The build error below is what the person needs to see.
+                }
             }
 
             throw $error instanceof RuntimeException ? $error : new RuntimeException($error->getMessage(), 0, $error);
