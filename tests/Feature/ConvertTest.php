@@ -563,3 +563,14 @@ test('the definer rewrite of an import keeps the dump private', function () {
 
     Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'umask 077 && sed -E'));
 });
+
+test('a worktree with the main checkout\'s compose project is not converted', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', "APP_NAME=App\nCOMPOSE_PROJECT_NAME=hungryport\nDB_DATABASE=hungryport\n");
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('compose project of the main checkout')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([]);
+});

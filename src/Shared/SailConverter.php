@@ -159,6 +159,14 @@ class SailConverter
         // Before any change: a name another worktree holds would share its databases.
         if (! $candidate['main']) {
             $this->manager->assertNameFree($candidate['name'], $path);
+            // A copied .env may keep the main checkout's compose project: the container
+            // removal and the volume read below would then act on the main checkout.
+            $main = MainCheckout::path();
+            $theirs = WorktreeState::load($main)?->string('old_project') ?? $this->oldComposeProject($main);
+            $ours = WorktreeState::load($path)?->string('old_project') ?? $this->oldComposeProject($path);
+            if ($ours === $theirs) {
+                throw new RuntimeException("The worktree's .env names the compose project of the main checkout ('{$ours}'); its old containers and volume cannot be told apart from the main checkout's. Write the worktree's own old compose project as old_project into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
+            }
         }
         // The first run records the old names: a later run finds `.env` rewritten.
         [$project, $oldDatabase] = $this->markConverting($path, $candidate['main'] ? null : $this->provisioner->appDatabase($candidate['name']));
