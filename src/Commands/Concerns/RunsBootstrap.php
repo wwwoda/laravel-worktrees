@@ -50,7 +50,12 @@ trait RunsBootstrap
         } catch (\RuntimeException $e) {
             $write('['.date('H:i:s').'] FAILED: '.$e->getMessage()."\n");
             $this->components->error($e->getMessage());
-            $this->components->warn("The checkout is kept. Continue with: {$resumeHint}");
+            // Skipped stages are not recorded: the resume needs the same skip options.
+            $skips = '';
+            foreach (['skip_deps' => '--skip-deps', 'skip_build' => '--skip-build', 'skip_db' => '--skip-db'] as $key => $flag) {
+                $skips .= empty($options[$key]) ? '' : ' '.$flag;
+            }
+            $this->components->warn("The checkout is kept. Continue with: {$resumeHint}{$skips}");
             $this->components->warn("Log: {$log}");
 
             return self::FAILURE;

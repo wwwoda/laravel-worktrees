@@ -243,7 +243,7 @@ test('setup with the native strategy keeps an existing SQLite database', functio
     try {
         $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
         expect(File::get($path.'/database/database.sqlite'))->toBe('lane data')
-            ->and(File::get($path.'/.env'))->toContain('DB_DATABASE='.realpath($path.'/database/database.sqlite'))
+            ->and(File::get($path.'/.env'))->toContain("DB_DATABASE=database/database.sqlite\n")
             ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE='.base_path('database/database.sqlite'));
     } finally {
         File::delete(base_path('database/database.sqlite'));

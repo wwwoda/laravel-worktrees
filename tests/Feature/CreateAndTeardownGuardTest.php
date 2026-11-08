@@ -185,3 +185,23 @@ test('a worktree with its own compose project is started', function () {
 
     Process::assertRan('docker compose up -d');
 });
+
+test('the resume hint after a failed create keeps the skip options', function () {
+    $path = $this->base.'/'.basename(base_path()).'-lane';
+    Process::fake([
+        'git show-ref *' => Process::result(exitCode: 1),
+        'git worktree add *' => function () use ($path) {
+            File::ensureDirectoryExists($path);
+
+            return Process::result();
+        },
+        'git worktree list --porcelain' => fn () => Process::result("worktree {$path}\nHEAD abc\nbranch refs/heads/lane\n\n"),
+        'composer install *' => Process::result(errorOutput: 'composer failed', exitCode: 1),
+        '*' => Process::result(),
+    ]);
+
+    $this->artisan('worktree:create', ['name' => 'lane', '--skip-db' => true, '--skip-build' => true])
+        // On this branch, create run again completes the setup.
+        ->expectsOutputToContain('worktree:create lane --skip-build --skip-db')
+        ->assertFailed();
+});
