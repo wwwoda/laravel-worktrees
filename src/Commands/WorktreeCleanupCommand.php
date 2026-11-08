@@ -91,6 +91,7 @@ class WorktreeCleanupCommand extends Command
 
             try {
                 $worktreeManager->tearDown($name);
+                $worktreeManager->removeSharedDatabases($name);
                 $worktreeManager->remove($name);
             } catch (\RuntimeException $e) {
                 $this->components->error("Skipping '{$name}': {$e->getMessage()}");
@@ -98,8 +99,9 @@ class WorktreeCleanupCommand extends Command
                 continue;
             }
 
-            $suffix = str_replace('-', '_', $name);
-            $databaseCloner->drop($suffix);
+            if (! $worktreeManager->usesSharedDatabases()) {
+                $databaseCloner->drop(str_replace('-', '_', $name));
+            }
 
             $this->components->info("Removed '{$name}'.");
         }

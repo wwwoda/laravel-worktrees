@@ -15,7 +15,8 @@ class WorktreeDeleteCommand extends Command
     protected $signature = 'worktree:delete
         {name? : Worktree name}
         {--force : Skip safety checks and confirmation}
-        {--keep-db : Keep the cloned database}';
+        {--keep-db : Keep the cloned database}
+        {--delete-branch : Delete the local branch when it is merged into the base branch, without asking}';
 
     protected $description = 'Delete a git worktree';
 
@@ -59,7 +60,13 @@ class WorktreeDeleteCommand extends Command
             }
 
             // Registration first: the safety checks run git in the folder, and a look-alike folder is not ours.
-            $worktreeManager->describe($name);
+            $branch = $worktreeManager->describe($name)['branch'];
+
+            // Shared services: a missing or bad state file stops the delete before
+            // anything is stopped or removed.
+            if ($worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
+                $worktreeManager->checkSharedDatabases($name);
+            }
 
             if (! $this->option('force') && ! $this->confirmDelete($worktreeManager, $name)) {
                 return self::SUCCESS;
@@ -71,17 +78,22 @@ class WorktreeDeleteCommand extends Command
             // Always: finished sessions may still be tracked and must not outlive the worktree.
             $processManager->terminate($name);
 
-            // Tear down per-worktree environment (e.g. docker compose down -v).
-            // No-op for the native bootstrap strategy.
-            $this->components->info('Tearing down worktree environment...');
+            // First stop the containers: no process may hold files, ports or
+            // database connections of what is removed next.
+            $this->components->info('Stopping the worktree environment...');
             $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
 
-            // Remove worktree
+            // Shared services: only the worktree's own databases, user and Redis numbers.
+            if ($worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
+                foreach ($worktreeManager->removeSharedDatabases($name, fn (string $message) => $this->line("  {$message}")) as $removed) {
+                    $this->line("  Removed {$removed}.");
+                }
+            }
+
             $this->components->info("Removing worktree '{$name}'...");
             $worktreeManager->remove($name);
 
-            // Drop database
-            if (! $this->option('keep-db')) {
+            if (! $worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
                 $suffix = str_replace('-', '_', $name);
                 $databaseCloner->drop($suffix);
             }
@@ -95,9 +107,38 @@ class WorktreeDeleteCommand extends Command
             return self::FAILURE;
         }
 
+        if (is_string($branch) && $branch !== '') {
+            $this->reportBranch($worktreeManager, $branch);
+        }
+
         $this->components->info("Worktree '{$name}' deleted.");
 
         return self::SUCCESS;
+    }
+
+    private function reportBranch(WorktreeManager $worktreeManager, string $branch): void
+    {
+        $status = $worktreeManager->branchStatus($branch);
+        if (! $status['exists']) {
+            return;
+        }
+        if (! $status['merged']) {
+            $this->components->warn("Branch '{$branch}' remains; it is not merged into the base branch.");
+
+            return;
+        }
+        $delete = $this->option('delete-branch')
+            || (! $this->option('force') && $this->input->isInteractive() && confirm("Branch '{$branch}' is merged. Delete it?", true));
+        if (! $delete) {
+            $this->components->warn("Branch '{$branch}' remains (merged; delete it with: git branch -d {$branch}).");
+
+            return;
+        }
+        if ($worktreeManager->deleteMergedBranch($branch)) {
+            $this->components->info("Deleted merged branch '{$branch}'.");
+        } else {
+            $this->components->warn("Branch '{$branch}' could not be deleted.");
+        }
     }
 
     /**

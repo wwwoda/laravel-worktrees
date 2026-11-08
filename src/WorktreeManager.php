@@ -8,6 +8,10 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
+use Woda\Worktrees\Contracts\ProvisionsDatabases;
+use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\SailConverter;
 
 class WorktreeManager
 {
@@ -16,7 +20,9 @@ class WorktreeManager
      * they are untracked in most projects and would make every bootstrapped
      * worktree look dirty to delete and cleanup.
      */
-    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock'";
+    private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/worktree-bootstrap.clone' ':(exclude)storage/app/worktree' ':(exclude)storage/logs/worktree-setup.log'";
+
+    private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
 
     public function __construct(
         private readonly string $basePath,
@@ -36,6 +42,35 @@ class WorktreeManager
      * @return list<array<string, mixed>>
      */
     public function list(): array
+    {
+        $worktrees = $this->registered();
+
+        // Filter out the main worktree and add derived name
+        $mainPath = base_path();
+
+        return array_values(array_filter(array_map(
+            function (array $wt): ?array {
+                $name = $this->nameFromPath(is_string($wt['path'] ?? null) ? $wt['path'] : '');
+                if ($name === null) {
+                    return null;
+                }
+                $wt['name'] = $name;
+
+                return $wt;
+            },
+            array_filter(
+                $worktrees,
+                fn (array $wt): bool => ($wt['path'] ?? '') !== $mainPath,
+            ),
+        )));
+    }
+
+    /**
+     * Every worktree git knows, wherever its folder is.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function registered(): array
     {
         $result = $this->git('worktree list --porcelain');
 
@@ -73,24 +108,7 @@ class WorktreeManager
             $worktrees[] = $current;
         }
 
-        // Filter out the main worktree and add derived name
-        $mainPath = base_path();
-
-        return array_values(array_filter(array_map(
-            function (array $wt): ?array {
-                $name = $this->nameFromPath(is_string($wt['path'] ?? null) ? $wt['path'] : '');
-                if ($name === null) {
-                    return null;
-                }
-                $wt['name'] = $name;
-
-                return $wt;
-            },
-            array_filter(
-                $worktrees,
-                fn (array $wt): bool => ($wt['path'] ?? '') !== $mainPath,
-            ),
-        )));
+        return $worktrees;
     }
 
     public function create(string $name, ?string $branch = null, ?string $baseBranch = null): string
@@ -131,10 +149,69 @@ class WorktreeManager
 
         // Always delete directory manually + prune. git worktree remove fails
         // when untracked/gitignored files exist (e.g. .env, .claude, node_modules).
-        if (! File::deleteDirectory($path)) {
-            throw new RuntimeException('Failed to remove worktree directory.');
+        File::deleteDirectory($path);
+        clearstatcache();
+        if (is_dir($path)) {
+            throw new RuntimeException("The folder {$path} could not be removed completely (files owned by another user, such as the container's?). Remove it by hand, then run: git worktree prune");
         }
         $this->git('worktree prune');
+        foreach ($this->list() as $worktree) {
+            $registered = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
+            if ((realpath($registered) ?: $registered) === $path) {
+                throw new RuntimeException("The folder is gone, but git still lists the worktree {$path}. Run: git worktree prune");
+            }
+        }
+    }
+
+    /**
+     * Drop the worktree's own databases on shared services (no-op for other
+     * strategies, whose databases the DatabaseCloner drops).
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @return list<string>
+     */
+    public function removeSharedDatabases(string $name, ?Closure $onStep = null): array
+    {
+        if (! $this->bootstrapStrategy instanceof ProvisionsDatabases) {
+            return [];
+        }
+
+        return $this->bootstrapStrategy->removeDatabases($name, $this->pathFor($name), $onStep);
+    }
+
+    /**
+     * Throw when the state file does not allow removeSharedDatabases(); changes nothing.
+     */
+    public function checkSharedDatabases(string $name): void
+    {
+        if ($this->bootstrapStrategy instanceof ProvisionsDatabases) {
+            $this->bootstrapStrategy->checkRemoveDatabases($name, $this->pathFor($name));
+        }
+    }
+
+    public function usesSharedDatabases(): bool
+    {
+        return $this->bootstrapStrategy instanceof ProvisionsDatabases;
+    }
+
+    /**
+     * After a delete: is the local branch still there, and is it merged into the base branch?
+     *
+     * @return array{exists: bool, merged: bool}
+     */
+    public function branchStatus(string $branch): array
+    {
+        $exists = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful();
+
+        return [
+            'exists' => $exists,
+            'merged' => $exists && $this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful(),
+        ];
+    }
+
+    public function deleteMergedBranch(string $branch): bool
+    {
+        return $this->git('branch -d '.escapeshellarg($branch))->successful();
     }
 
     public function exists(string $name): bool
@@ -193,20 +270,50 @@ class WorktreeManager
     }
 
     /**
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
      */
     public function bootstrap(
         string $name,
         array $options = [],
         ?Closure $onStep = null,
         ?Closure $processOutput = null,
+        ?Closure $onStageDone = null,
     ): void {
-        $step = $onStep ?? static fn () => null;
-        $path = $this->pathFor($name);
+        $this->bootstrapPath($name, $this->pathFor($name), $options, $onStep, $processOutput, $onStageDone);
+    }
 
-        $identity = $this->describe($name);
+    /**
+     * Bootstrap a registered worktree at any path (frontier makes its own
+     * folders). With `setup`, existing config files are kept and a `.env`
+     * without a bootstrap record is completed instead of refused.
+     *
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool, fill_app?: (Closure(string): void)|null}  $options
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
+     */
+    public function bootstrapPath(
+        string $name,
+        string $path,
+        array $options = [],
+        ?Closure $onStep = null,
+        ?Closure $processOutput = null,
+        ?Closure $onStageDone = null,
+    ): void {
+        if (! preg_match('/^[a-zA-Z0-9-]+$/', $name)) {
+            throw new RuntimeException('Invalid worktree name.');
+        }
+        $step = $onStep ?? static fn () => null;
+        $path = rtrim(realpath($path) ?: $path, '/');
+
+        $identity = $this->describePath($path);
+        if ($this->isMainCheckout($path)) {
+            throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
+        }
+        $this->assertNameFree($name, $path);
         File::ensureDirectoryExists($path.'/storage');
         $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
         if ($handle === false) {
@@ -226,18 +333,34 @@ class WorktreeManager
             if (! $this->isBootstrapRecord($decoded)) {
                 throw new RuntimeException('storage/worktree-bootstrap.json does not have the shape of a bootstrap record. Review or remove it, then resume.');
             }
-            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
+            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string, name?: string} $state */
             $state = $decoded;
+            if (isset($state['name']) && $state['name'] !== $name) {
+                throw new RuntimeException("This worktree was set up with the name '{$state['name']}'; continue with that name.");
+            }
+            $state['name'] = $name;
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
             $state['branch'] = $identity['branch'];
             $state['initial_head'] ??= $identity['head'];
             $resume = ! empty($options['resume']);
-            if ($resume && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
+            $setup = ! empty($options['setup']);
+            if ($resume && ! $setup && ! in_array('config', $state['completed'], true) && File::exists($path.'/.env')) {
                 throw new RuntimeException('Configuration exists without a completed bootstrap record. Review it before resuming.');
             }
-            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume): void {
+            // A run without resume does every stage again (the config stage rewrites .env):
+            // stages of an earlier run must not count, or a later resume would skip them.
+            if (! $resume) {
+                $state['completed'] = [];
+            }
+            $provisions = $this->bootstrapStrategy instanceof ProvisionsDatabases;
+            // Without its own databases, the copied .env still names the main database and its account.
+            // Without --resume the config stage copies the main .env again, and only provisioning would restore the worktree's values.
+            if ($provisions && ! empty($options['skip_db']) && (! $resume || ! in_array('database', $state['completed'], true))) {
+                throw new RuntimeException('--skip-db works with shared services only on a resume, once the worktree has its own databases: otherwise its .env names the main database. Run without --skip-db.');
+            }
+            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
                     return;
                 }
@@ -245,21 +368,56 @@ class WorktreeManager
                 $state['status'] = 'running';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
                 $step($id);
+                $started = microtime(true);
                 $action();
+                $onStageDone && $onStageDone($id, microtime(true) - $started);
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             };
-            $run('config', function () use ($path, $name): void {
-                $this->copyConfigFiles($path);
+            $run('config', function () use ($path, $name, $options, $setup, $provisions): void {
+                if ($setup && $provisions) {
+                    SailConverter::rememberOldNames($path);
+                }
+                $this->copyConfigFiles($path, keepExisting: $setup);
                 $this->applyEnvReplacements($path, $name);
+                if ($this->bootstrapStrategy instanceof ConfiguresWorktreeEnvironment) {
+                    $this->bootstrapStrategy->configureEnvironment($path, ['horizon' => ! empty($options['horizon'])]);
+                }
             });
+            // Shared services: the databases exist and `.env` names them before the
+            // app container starts, so its worker and scheduler start with them.
+            if ($this->bootstrapStrategy instanceof ProvisionsDatabases && empty($options['skip_db'])) {
+                $run('database', fn () => $this->bootstrapStrategy->provisionDatabases($name, $path, [
+                    'from_main' => ! empty($options['from_main']),
+                    'fill_app' => $options['fill_app'] ?? null,
+                    'branch' => $identity['branch'],
+                    'base' => $options['base'] ?? $this->baseBranch,
+                ], $processOutput, $step));
+            }
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
                 $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
                 $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
             }
-            if (empty($options['skip_db'])) {
-                $run('database', fn () => $this->databaseCloner->clone($path, $this->sanitizeSuffix($name), $processOutput));
+            if (! $provisions && empty($options['skip_db'])) {
+                $run('database', function () use ($path, $name, $processOutput, $step): void {
+                    $suffix = $this->sanitizeSuffix($name);
+                    // The marker is written only after the target was found absent, right
+                    // before the clone: a target with the marker is a clone of ours that
+                    // stopped half way; a target without it existed before and is kept.
+                    $marker = $path.'/'.self::CLONE_MARKER;
+                    if (File::exists($marker)) {
+                        $this->databaseCloner->drop($suffix);
+                    } elseif ($this->databaseCloner->targetExists($path, $suffix)) {
+                        $step('The worktree database exists; kept as it is.');
+                        $this->databaseCloner->pointEnvAtWorktreeDatabase($path);
+
+                        return;
+                    }
+                    File::put($marker, date(DATE_ATOM)."\n");
+                    $this->databaseCloner->clone($path, $suffix, $processOutput);
+                    File::delete($marker);
+                });
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
                 $run('build', fn () => $this->bootstrapStrategy->buildFrontend($path, $processOutput), ! is_file($path.'/public/build/manifest.json'));
@@ -295,7 +453,7 @@ class WorktreeManager
                 return false;
             }
         }
-        foreach (['stage', 'status', 'initial_head'] as $key) {
+        foreach (['stage', 'status', 'initial_head', 'name'] as $key) {
             if (array_key_exists($key, $record) && ! is_string($record[$key])) {
                 return false;
             }
@@ -307,7 +465,52 @@ class WorktreeManager
     /** @return array{path: string, branch: string|null, head: string, bootstrap: mixed} */
     public function describe(string $name): array
     {
-        $path = $this->pathFor($name);
+        return $this->describePath($this->pathFor($name));
+    }
+
+    /**
+     * The name decides the worktree's database, ports and compose project: two
+     * registered worktrees with the same name would share them. Another worktree
+     * holds a name by its folder (`<project>-<name>` in the base path) or by its
+     * bootstrap record.
+     */
+    public function assertNameFree(string $name, string $path): void
+    {
+        $self = realpath($path) ?: $path;
+        foreach ($this->registered() as $index => $worktree) {
+            $other = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
+            if ($index === 0 || $other === '' || (realpath($other) ?: $other) === $self) {
+                continue;
+            }
+            $record = $other.'/storage/worktree-bootstrap.json';
+            $decoded = File::exists($record) ? json_decode(File::get($record), true) : null;
+            $names = array_filter([$this->nameFromPath($other), is_array($decoded) && is_string($decoded['name'] ?? null) ? $decoded['name'] : null]);
+            foreach ($names as $taken) {
+                if (strtolower($this->sanitizeSuffix($taken)) === strtolower($this->sanitizeSuffix($name))) {
+                    throw new RuntimeException("The worktree at {$other} already uses the name '{$taken}'. Choose another name.");
+                }
+            }
+        }
+    }
+
+    /**
+     * True for the repository's main checkout (the first entry of `git worktree list`).
+     */
+    public function isMainCheckout(string $path): bool
+    {
+        $registered = $this->registered();
+        $mainPath = is_string($registered[0]['path'] ?? null) ? $registered[0]['path'] : '';
+
+        return $mainPath !== '' && (realpath($mainPath) ?: $mainPath) === (realpath($path) ?: $path);
+    }
+
+    /**
+     * A registered worktree at any path, also outside the base path.
+     *
+     * @return array{path: string, branch: string|null, head: string, bootstrap: mixed}
+     */
+    public function describePath(string $path): array
+    {
         $worktree = $this->registeredEntry($path);
         $statePath = $path.'/storage/worktree-bootstrap.json';
 
@@ -321,13 +524,14 @@ class WorktreeManager
     }
 
     /**
-     * The `git worktree list` entry of a path; fails when Git does not know the path as a worktree.
+     * The `git worktree list` entry of a path, also outside the base path; fails
+     * when Git does not know the path as a worktree.
      *
      * @return array<string, mixed>
      */
     private function registeredEntry(string $path): array
     {
-        foreach ($this->list() as $worktree) {
+        foreach ($this->registered() as $worktree) {
             $registeredPath = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
             if ((realpath($registeredPath) ?: $registeredPath) === (realpath($path) ?: $path)) {
                 return $worktree;
@@ -392,7 +596,7 @@ class WorktreeManager
         return substr($basename, strlen($prefix));
     }
 
-    private function copyConfigFiles(string $targetPath): void
+    private function copyConfigFiles(string $targetPath, bool $keepExisting = false): void
     {
         $sourcePath = base_path();
 
@@ -400,7 +604,7 @@ class WorktreeManager
             $source = $sourcePath.'/'.$file;
             $target = $targetPath.'/'.$file;
 
-            if (! File::exists($source)) {
+            if (! File::exists($source) || ($keepExisting && File::exists($target))) {
                 continue;
             }
 
@@ -507,11 +711,7 @@ class WorktreeManager
      */
     private function replaceEnvLine(string $content, string $key, string $line): string
     {
-        return (string) preg_replace_callback(
-            '/^'.preg_quote($key, '/').'=.*/m',
-            static fn (): string => $line,
-            $content,
-        );
+        return EnvFile::upsertLine($content, $key, $line);
     }
 
     public function portOffset(string $name): int
