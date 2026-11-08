@@ -311,11 +311,13 @@ Publish `config/worktrees.php` to change values, or set the environment variable
    - With the `mysql` or `pgsql` clone, `DB_DATABASE` becomes `{database}_{name}` (`-` changed to `_`).
    - `APP_PORT` and `VITE_PORT`, only when the key is in `.env` (see [Ports](#ports)).
    - The `env_overrides` values.
-3. `sail` and `shared`: `docker compose up -d`, then a wait until the app service runs PHP.
+3. `sail`: `docker compose up -d`, then a wait until the app service runs PHP.
 4. Composer install and node install.
 5. The database: the clone. A database that exists already is kept. A clone that stopped half way is dropped and made again.
 6. The frontend build.
 7. The migrations (not with `--skip-deps`).
+
+With `shared` the order is different: after step 2, the shared databases are made and written to `.env`, and only then the app container starts (see [App container and dependencies](#app-container-and-dependencies)). Step 5 does not occur.
 
 ### Ports
 
@@ -424,7 +426,7 @@ Set `shared.database.driver` to `pgsql`. The default admin user is `postgres`, t
 | Access of other users | Only the granted names. | `CONNECT` is revoked from `PUBLIC` on every database that the package creates. |
 | Copy | `mariadb-dump \| mariadb` through a private temporary file. Definers of views, triggers, routines and events become the worktree's user. | `CREATE DATABASE … TEMPLATE …`. A source with open connections (the main database for `--from-main`) is dumped and restored. All objects in the copy are given to the worktree's role. |
 | Template builder after the build | Locked (`ACCOUNT LOCK`); it stays the definer of the template's views. | `NOLOGIN`; it keeps the template's objects. |
-| `worktree:convert` | Imports the old Sail volume. | Stops before any change when an old volume exists: the volume holds MariaDB data. |
+| `worktree:convert` | Imports the old Sail volume. Stops when an old volume exists, because the volume holds MariaDB data. It stops before it removes containers or imports data; it only records the old names in the state file. |
 
 The `--recreate-databases` guard runs when the package boots in a test worker: it acts only in a worktree that has a state file and whose default connection is `pgsql`.
 
