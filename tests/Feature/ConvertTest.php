@@ -655,3 +655,16 @@ test('a corrected DB_DATABASE is used on the next run after an unusable one', fu
 
     expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
 });
+
+test('a worktree with another worktree\'s compose project is not converted', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    $path = sailWorktree($this, 'old2', 'feature-old2');
+    File::put($path.'/.env', "APP_NAME=App\nCOMPOSE_PROJECT_NAME=hungryport-old1\nDB_DATABASE=hungryport\n");
+
+    $this->artisan('worktree:convert', ['name' => 'old2'])
+        ->expectsOutputToContain('compose project of the checkout at')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([])
+        ->and($this->server->databaseExists('hp_old2'))->toBeFalse();
+});

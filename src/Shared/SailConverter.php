@@ -160,14 +160,10 @@ class SailConverter
         // Before any change: a name another worktree holds would share its databases.
         if (! $candidate['main']) {
             $this->manager->assertNameFree($candidate['name'], $path);
-            // A copied .env may keep the main checkout's compose project: the container
-            // removal and the volume read below would then act on the main checkout.
-            $main = MainCheckout::path();
-            $theirs = WorktreeState::load($main)?->string('old_project') ?? self::oldComposeProject($main);
-            $ours = WorktreeState::load($path)?->string('old_project') ?? self::oldComposeProject($path);
-            if ($ours === $theirs) {
-                throw new RuntimeException("The worktree's .env names the compose project of the main checkout ('{$ours}'); its old containers and volume cannot be told apart from the main checkout's. Write the worktree's own old compose project as old_project into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
-            }
+            // A copied .env may keep the compose project of the main checkout or of
+            // another worktree: the container removal and the volume read below would
+            // then act on that checkout.
+            $this->assertOwnComposeProject($path);
         }
         // The first run records the old names: a later run finds `.env` rewritten.
         [$project, $oldDatabase] = $this->markConverting($path, $candidate['main'] ? null : $this->provisioner->appDatabase($candidate['name']));
@@ -265,6 +261,32 @@ class SailConverter
         $state->data['converted_at'] = date(DATE_ATOM);
         $state->data['old_volume'] = $this->volumeName($project);
         $state->save($path);
+    }
+
+    private function assertOwnComposeProject(string $path): void
+    {
+        $ours = WorktreeState::load($path)?->string('old_project') ?? self::oldComposeProject($path);
+        $main = realpath(MainCheckout::path()) ?: MainCheckout::path();
+        $self = realpath($path) ?: $path;
+        $others = [$main];
+        foreach ($this->manager->registered() as $worktree) {
+            $other = is_string($worktree['path'] ?? null) ? (realpath($worktree['path']) ?: $worktree['path']) : '';
+            if ($other !== '' && $other !== $self && is_dir($other) && ! in_array($other, $others, true)) {
+                $others[] = $other;
+            }
+        }
+        foreach ($others as $other) {
+            try {
+                $theirs = WorktreeState::load($other)?->string('old_project') ?? self::oldComposeProject($other);
+            } catch (RuntimeException) {
+                // A checkout without a usable project name cannot share ours.
+                continue;
+            }
+            if ($ours === $theirs) {
+                $whose = $other === $main ? 'the main checkout' : "the checkout at {$other}";
+                throw new RuntimeException("The worktree's .env names the compose project of {$whose} ('{$ours}'); its old containers and volume cannot be told apart from that checkout's. Write the worktree's own old compose project as old_project into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
+            }
+        }
     }
 
     /**
