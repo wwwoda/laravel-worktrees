@@ -77,6 +77,8 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         if (! in_array($mode, ['listen', 'horizon'], true)) {
             throw new RuntimeException("Unknown queue worker mode '{$mode}'. Use 'listen' or 'horizon'.");
         }
+        // The recreate below acts on the worktree's compose project: not on the main checkout's.
+        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
         EnvFile::upsert($worktreePath.'/.env', [
             $this->queueEnvKeys['mode'] => $mode,
             $this->queueEnvKeys['queues'] => implode(',', QueueList::for($worktreePath)),
