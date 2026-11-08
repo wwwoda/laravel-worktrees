@@ -18,7 +18,7 @@ class WorktreeCreateCommand extends Command
 
     protected $signature = 'worktree:create
         {name? : Worktree name (interactive if omitted)}
-        {--branch= : Branch name (default: agent/{name})}
+        {--branch= : Branch name (default: branch_prefix + name)}
         {--base= : Base branch to create from}
         {--issue= : GitHub issue number}
         {--pr= : Pull request number}
