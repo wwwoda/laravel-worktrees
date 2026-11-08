@@ -123,3 +123,18 @@ test('a copy gives views of a retired definer to the new owner', function () {
         ->and($this->server->runAs($builder, str_repeat('b', 32), 'SELECT 1')->successful)->toBeFalse();
     $this->server->dropUser($builder);
 });
+
+test('an import gives the definers of the dump to the owner', function () {
+    $names = WorktreeNames::for('t9', $this->prefix, 2);
+    $password = bin2hex(random_bytes(16));
+    $this->server->grantUser($names->user, $password, $names->databases());
+    $this->server->createDatabase($names->app);
+    $dump = tempnam(sys_get_temp_dir(), 'lw-dump-');
+    file_put_contents($dump, "CREATE TABLE items (id INT);\nINSERT INTO items VALUES (5);\n"
+        ."/*!50001 CREATE ALGORITHM=UNDEFINED */\n/*!50013 DEFINER=`old_sail`@`%` SQL SECURITY DEFINER */\n/*!50001 VIEW `item_ids` AS select `items`.`id` AS `id` from `items` */;\n");
+
+    $this->server->importFile($names->app, $dump, owner: $names->user);
+    unlink($dump);
+
+    expect($this->server->runAs($names->user, $password, "SELECT id FROM `{$names->app}`.`item_ids`")->output)->toContain('5');
+});

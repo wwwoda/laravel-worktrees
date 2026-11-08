@@ -89,8 +89,17 @@ final readonly class MariaDbServer implements DatabaseServer
         $this->admin('DROP DATABASE IF EXISTS `'.Identifier::check($database).'`');
     }
 
-    public function importFile(string $database, string $file, ?Closure $output = null): void
+    public function importFile(string $database, string $file, ?Closure $output = null, ?string $owner = null): void
     {
+        if ($owner !== null) {
+            // The dump's definers are accounts of the old server; the owner is the account here.
+            $rewrite = Process::timeout(600)->run(sprintf('sed -E %s %s > %s && mv %s %s',
+                escapeshellarg('s/DEFINER=`[^`]*`@`[^`]*`/DEFINER=`'.Identifier::check($owner).'`@`%`/g'),
+                escapeshellarg($file), escapeshellarg($file.'.d'), escapeshellarg($file.'.d'), escapeshellarg($file)));
+            if (! $rewrite->successful()) {
+                throw new RuntimeException("Preparing the import into '{$database}' failed: {$rewrite->errorOutput()}");
+            }
+        }
         $command = sprintf('%s -u %s%s %s < %s', $this->client, escapeshellarg($this->adminUser), $this->hostFlags(),
             escapeshellarg(Identifier::check($database)), escapeshellarg($file));
         $result = Process::env(['MYSQL_PWD' => $this->adminPassword])->timeout(1800)->run($this->wrap($command), $output);
