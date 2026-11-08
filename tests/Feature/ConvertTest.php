@@ -721,3 +721,16 @@ test('a temporary database whose removal cannot be checked fails the conversion'
 
     expect($this->server->databaseExists('hp_old1'))->toBeFalse();
 });
+
+test('an old MariaDB volume is not converted into a PostgreSQL server', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1', ['users']);
+    $this->server->driverName = 'pgsql';
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('runs PostgreSQL')
+        ->assertFailed();
+
+    expect($this->removed)->toBe([])
+        ->and($this->server->databaseExists('hp_old1'))->toBeFalse()
+        ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE=hp_old1');
+});

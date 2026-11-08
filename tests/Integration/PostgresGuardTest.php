@@ -209,3 +209,15 @@ test('a database that existed with PUBLIC CONNECT is closed to other roles when 
     expect(($this->as)($t91, 'SELECT 1', "{$p}_t9")->successful)->toBeFalse()
         ->and(($this->as)($t9, 'SELECT 1', "{$p}_t9")->successful)->toBeTrue();
 });
+
+test('an import with an owner hands the imported objects to the worktree role', function () {
+    $t9 = ($this->provision)('t9');
+    $dump = $this->base.'/dump.sql';
+    File::put($dump, "CREATE TABLE imported (id SERIAL PRIMARY KEY, note TEXT);\nINSERT INTO imported (note) VALUES ('old data');\n");
+
+    $this->server->importFile("{$this->prefix}_t9", $dump, owner: (string) $t9->string('user'));
+
+    expect(($this->as)($t9, 'SELECT note FROM imported', "{$this->prefix}_t9")->output)->toContain('old data')
+        ->and(($this->as)($t9, "INSERT INTO imported (note) VALUES ('new')", "{$this->prefix}_t9")->successful)->toBeTrue()
+        ->and(($this->as)($t9, 'DROP TABLE imported', "{$this->prefix}_t9")->successful)->toBeTrue();
+});

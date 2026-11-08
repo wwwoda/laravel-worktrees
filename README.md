@@ -180,6 +180,7 @@ Set `shared.database.driver` to `pgsql` (admin user `postgres` by default, clien
 - `CONNECT` is revoked from `PUBLIC` on every database the package creates, so no other role can connect to a worktree's or a template database.
 - Copies use `CREATE DATABASE … TEMPLATE …`. A source with open connections (the main database for `--from-main`) is dumped and restored instead. Objects in the copy are handed to the worktree's role.
 - The template builder role keeps owning the template's objects and can no longer log in after the build.
+- `worktree:convert` reads the old Sail volume with MariaDB, so it cannot import that data into a PostgreSQL server: it stops before it changes anything when an old volume exists.
 
 ### Template databases
 

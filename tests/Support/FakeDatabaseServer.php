@@ -24,9 +24,11 @@ class FakeDatabaseServer implements DatabaseServer
 
     public bool $up = true;
 
+    public string $driverName = 'mariadb';
+
     public function driver(): string
     {
-        return 'mariadb';
+        return $this->driverName;
     }
 
     public bool $inAdvance = false;

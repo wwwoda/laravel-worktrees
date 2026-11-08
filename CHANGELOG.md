@@ -11,7 +11,7 @@
 - **Shared services app container:** starts the shared stack when the database server does not answer (`shared.stack.start_command`), writes `shared.app.compose_file` as `COMPOSE_FILE`, copies `vendor` and `node_modules` from the main checkout with copy-on-write when the lock files match, builds the bundle in the container, removes a stale `public/hot`, and writes the queue worker mode and queue list to `.env`. `worktree:create --horizon`. `worktree:create` prints step times and the URL.
 - **`worktree:setup <path> [--name]`**: sets up a git worktree that another tool created, at any path. `worktree:setup` and `worktree:create` can run again and complete a partial setup without copying a database again; existing config files are kept. Steps are logged to `storage/logs/worktree-setup.log`.
 - **`worktree:worker <worktree> [listen|horizon]`**: shows or switches the queue worker and recreates the app container.
-- **`worktree:convert [name] [--all]`**: moves Sail worktrees and the main checkout to shared services, keeping their data from the old volume; **`worktree:volumes [--remove=NAME]`** lists the old volumes with their size and removes only named ones.
+- **`worktree:convert [name] [--all]`**: moves Sail worktrees and the main checkout to shared services, keeping their data from the old volume; **`worktree:volumes [--remove=NAME]`** lists the old volumes with their size and removes only named ones. With a PostgreSQL server, `worktree:convert` stops when an old MariaDB volume exists.
 - Integration tests against a real MariaDB and PostgreSQL 17 (`tests/Integration`, CI job `integration`).
 
 - **`Contracts\BootstrapStrategy` interface** — abstracts how bootstrap
