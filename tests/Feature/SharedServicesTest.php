@@ -12,6 +12,7 @@ use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
 use Woda\Worktrees\Tests\Support\FakeTemplateRecipe;
+use Woda\Worktrees\WorktreeManager;
 
 /*
  * worktree:create with the shared-services strategy. Docker and git calls are
@@ -422,4 +423,75 @@ test('a worktree with the main checkout\'s compose project is not started, also 
 
     Process::assertNotRan('docker compose up -d');
     MainCheckout::forget();
+});
+
+test('Redis numbers of a worktree that lost its state file stay taken', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::delete(WorktreeState::path(($this->path)('t9')));
+
+    $this->artisan('worktree:create', ['name' => 't10'])->assertSuccessful();
+
+    expect(WorktreeState::load(($this->path)('t10'))?->redis())->toBe([4, 5]);
+});
+
+test('an incomplete state file of another worktree does not hide its names', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::put(WorktreeState::path(($this->path)('t9')), json_encode(['schema' => WorktreeState::SCHEMA]));
+    $this->worktrees['other'] = $this->base.'/elsewhere/T9';
+    File::ensureDirectoryExists($this->base.'/elsewhere/T9');
+
+    expect(fn () => app(DatabaseProvisioner::class)->provision('T9', $this->base.'/elsewhere/T9'))
+        ->toThrow(RuntimeException::class, 'already uses the database names');
+});
+
+test('--skip-db without --resume is refused also after the databases exist', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    expect(fn () => app(WorktreeManager::class)->bootstrap('t9', ['skip_db' => true]))->toThrow(RuntimeException::class, '--skip-db');
+
+    expect(File::get(($this->path)('t9').'/.env'))->toContain('DB_DATABASE=hp_t9');
+});
+
+test('the template build in the container keeps the password off the command line', function () {
+    $recipe = new ArtisanTemplateRecipe('container', 'laravel.test', 'mariadb', 3306);
+
+    $recipe->build('hp_tpl_abc', 'hp_tpl_builder', str_repeat('a', 32), '');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'php artisan migrate --force')
+        && ! str_contains((string) $p->command, str_repeat('a', 32))
+        && str_contains((string) $p->command, ' -e DB_PASSWORD ')
+        && ($p->environment['DB_PASSWORD'] ?? null) === str_repeat('a', 32));
+});
+
+test('the mysql driver picks the mysql clients when none are configured', function () {
+    config()->set('worktrees.shared.database.driver', 'mysql');
+    $config = require __DIR__.'/../../config/worktrees.php';
+    config()->set('worktrees.shared.database.client', $config['shared']['database']['client']);
+    config()->set('worktrees.shared.database.dump_client', $config['shared']['database']['dump_client']);
+    app()->forgetInstance(DatabaseServer::class);
+
+    $server = app(DatabaseServer::class);
+
+    expect((new ReflectionProperty($server, 'client'))->getValue($server))->toBe('mysql')
+        ->and((new ReflectionProperty($server, 'dumpClient'))->getValue($server))->toBe('mysqldump');
+});
+
+test('pruning waits for a running template build', function () {
+    $templates = app(TemplateManager::class);
+    $lock = base_path('storage/app/worktrees/template.lock');
+    File::ensureDirectoryExists(dirname($lock));
+    $builder = proc_open([PHP_BINARY, '-r', sprintf(
+        '$h = fopen(%s, "c"); flock($h, LOCK_EX); file_put_contents(%s, "locked"); usleep(1500000); flock($h, LOCK_UN);',
+        var_export($lock, true), var_export($lock.'.held', true),
+    )], [], $pipes);
+    while (! File::exists($lock.'.held')) {
+        usleep(50_000);
+    }
+    $started = microtime(true);
+
+    $templates->prune();
+
+    expect(microtime(true) - $started)->toBeGreaterThan(1.0);
+    proc_close($builder);
+    File::delete($lock.'.held');
 });

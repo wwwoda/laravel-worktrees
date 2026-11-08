@@ -113,13 +113,20 @@ class TemplateManager
     {
         $current = $this->name();
         $dropped = [];
-        foreach ($this->server->databasesStartingWith($this->prefix()) as $database) {
-            if ($database === $current || ! preg_match('/^'.preg_quote($this->prefix(), '/').'[0-9a-f]{12}$/', $database)) {
-                continue;
+        // Under the build lock: a running build must not lose its database half way.
+        $lock = $this->lock(null);
+        try {
+            foreach ($this->server->databasesStartingWith($this->prefix()) as $database) {
+                if ($database === $current || ! preg_match('/^'.preg_quote($this->prefix(), '/').'[0-9a-f]{12}$/', $database)) {
+                    continue;
+                }
+                $this->server->dropDatabase($database);
+                File::delete($this->markerPath($database));
+                $dropped[] = $database;
             }
-            $this->server->dropDatabase($database);
-            File::delete($this->markerPath($database));
-            $dropped[] = $database;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
 
         return $dropped;
