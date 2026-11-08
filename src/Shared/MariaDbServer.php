@@ -68,7 +68,8 @@ final readonly class MariaDbServer implements DatabaseServer
         $definers = $owner === null ? '' : sprintf(' && sed -E %s "$f" > "$f.d" && mv "$f.d" "$f"',
             escapeshellarg('s/DEFINER=`[^`]*`@`[^`]*`/DEFINER=`'.Identifier::check($owner).'`@`%`/g'));
         $script = sprintf(
-            'f=$(mktemp) && %s %s --single-transaction --routines --triggers --events %s > "$f"%s && %s %s %s < "$f"; s=$?; rm -f "$f" "$f.d"; exit $s',
+            // umask 077: the dump and its rewritten copy hold the data; no other local user may read them.
+            'umask 077 && f=$(mktemp) && %s %s --single-transaction --routines --triggers --events %s > "$f"%s && %s %s %s < "$f"; s=$?; rm -f "$f" "$f.d"; exit $s',
             $this->dumpClient, $credentials, escapeshellarg($source), $definers,
             $this->client, $credentials, escapeshellarg($target),
         );
