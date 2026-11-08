@@ -193,13 +193,27 @@ class SailConverter
         $target = $this->provisioner->appDatabase($candidate['main'] ? null : $candidate['name']);
         $marker = $path.'/'.self::IMPORT_MARKER;
         if ($dump !== null) {
-            $this->provisioner->ensureServer($step, $output);
+            try {
+                $this->provisioner->ensureServer($step, $output);
+            } catch (\Throwable $error) {
+                // The dump holds a full copy of the data: never leave it behind.
+                File::delete($dump);
+
+                throw $error;
+            }
             $state = WorktreeState::load($path);
             $pending = $state !== null && is_array($state->data['pending_copies'] ?? null) ? $state->data['pending_copies'] : [];
             $ours = $state?->string('source') === 'converted'
                 || (File::exists($marker) && trim(File::get($marker)) === $target)
                 || in_array($target, $pending, true);
-            if (! $ours && $this->provisioner->server()->databaseExists($target)) {
+            try {
+                $exists = $this->provisioner->server()->databaseExists($target);
+            } catch (\Throwable $error) {
+                File::delete($dump);
+
+                throw $error;
+            }
+            if (! $ours && $exists) {
                 File::delete($dump);
 
                 throw new RuntimeException("The shared database '{$target}' exists already, and the old volume holds data that would not be imported. Drop '{$target}' if it holds nothing you need, then run the conversion again.");

@@ -574,3 +574,13 @@ test('a worktree with the main checkout\'s compose project is not converted', fu
 
     expect($this->removed)->toBe([]);
 });
+
+test('a shared server that cannot be started leaves no dump behind', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    $this->server->up = false;
+    $before = glob(sys_get_temp_dir().'/worktree-convert-*') ?: [];
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertFailed();
+
+    expect(array_diff(glob(sys_get_temp_dir().'/worktree-convert-*') ?: [], $before))->toBe([]);
+});
