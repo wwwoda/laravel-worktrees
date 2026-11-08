@@ -586,6 +586,51 @@ test('a shared server that cannot be started leaves no dump behind', function ()
     expect(array_diff(glob(sys_get_temp_dir().'/worktree-convert-*') ?: [], $before))->toBe([]);
 });
 
+test('a folder set up under another name converts under that name', function () {
+    $path = sailWorktree($this, 'frontier-123', 'lane-123');
+    File::put($path.'/.env', "APP_NAME=App\nCOMPOSE_PROJECT_NAME=app-t901\nDB_DATABASE=hp_t901\n");
+    (new WorktreeState(['source' => 'template', 'name' => 't901', 'old_project' => 'hungryport-frontier-123', 'old_database' => 'hungryport']))->save($path);
+    (new WorktreeState(['converted_at' => '2026-11-08T00:00:00+00:00']))->save($this->main);
+
+    $this->artisan('worktree:convert', ['--all' => true])->assertSuccessful();
+
+    expect($this->server->databases['hp_t901'] ?? null)->toBe(['imported: users'])
+        ->and($this->server->databaseExists('hp_frontier_123'))->toBeFalse();
+});
+
+test('setup of a Sail folder keeps its old names, so the conversion still finds its old volume', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+
+    $this->artisan('worktree:setup', ['path' => $path, '--name' => 'old1'])->assertSuccessful();
+    expect(File::get($path.'/.env'))->toContain('COMPOSE_PROJECT_NAME=app-old1')
+        ->and(WorktreeState::load($path)?->string('old_project'))->toBe('hungryport-old1')
+        ->and(WorktreeState::load($path)?->string('old_database'))->toBe('hungryport');
+
+    // Setup made hp_old1 from the template: the conversion names it instead of skipping the old data.
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain("'hp_old1' exists already")
+        ->assertFailed();
+});
+
+test('a failed move of the old bootstrap record stops the conversion', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::ensureDirectoryExists($path.'/storage/app/worktree');
+    File::put($path.'/storage/worktree-bootstrap.json', '{"completed":["config","database"]}');
+    // The record cannot be renamed in a folder without write access.
+    chmod($path.'/storage', 0555);
+
+    try {
+        $this->artisan('worktree:convert', ['name' => 'old1'])
+            ->expectsOutputToContain('Moving the old bootstrap record')
+            ->assertFailed();
+    } finally {
+        chmod($path.'/storage', 0755);
+    }
+
+    expect(SailConverter::isConverted($path))->toBeFalse()
+        ->and(File::exists($path.'/storage/worktree-bootstrap.json'))->toBeTrue();
+});
+
 test('a failed definer rewrite of an import leaves no copy of the dump', function () {
     // Real processes: the shell command itself must clean up.
     Process::swap(new Factory);
@@ -598,4 +643,15 @@ test('a failed definer rewrite of an import leaves no copy of the dump', functio
     $left = glob($dir.'/*') ?: [];
     File::deleteDirectory($dir);
     expect($left)->toBe([]);
+});
+
+test('a corrected DB_DATABASE is used on the next run after an unusable one', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', "COMPOSE_PROJECT_NAME=hungryport-old1\nDB_DATABASE=bad'name\n");
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertFailed();
+
+    File::put($path.'/.env', "COMPOSE_PROJECT_NAME=hungryport-old1\nDB_DATABASE=hungryport\n");
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
 });

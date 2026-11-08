@@ -55,7 +55,8 @@ class SailConverter
             $isMain = (realpath($path) ?: $path) === $main;
             $branch = is_string($worktree['branch'] ?? null) ? $worktree['branch'] : null;
             $list[] = [
-                'name' => $isMain ? 'main' : ($this->manager->nameFromPath($path) ?? trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower(basename($path))), '-')),
+                // A folder set up with --name keeps that name: its databases follow it.
+                'name' => $isMain ? 'main' : (WorktreeState::load($path)?->string('name') ?? $this->manager->nameFromPath($path) ?? trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower(basename($path))), '-')),
                 'path' => $path,
                 'branch' => $branch,
                 'last_commit' => trim(Process::path($path)->timeout(10)->run('git log -1 --format=%cs')->output()),
@@ -119,7 +120,7 @@ class SailConverter
         }
         try {
             // A recorded old project wins: a shared setup may have rewritten .env.
-            $volume = $this->volumeName($state->string('old_project') ?? $this->oldComposeProject($path));
+            $volume = $this->volumeName($state->string('old_project') ?? self::oldComposeProject($path));
         } catch (RuntimeException) {
             return false;
         }
@@ -162,8 +163,8 @@ class SailConverter
             // A copied .env may keep the main checkout's compose project: the container
             // removal and the volume read below would then act on the main checkout.
             $main = MainCheckout::path();
-            $theirs = WorktreeState::load($main)?->string('old_project') ?? $this->oldComposeProject($main);
-            $ours = WorktreeState::load($path)?->string('old_project') ?? $this->oldComposeProject($path);
+            $theirs = WorktreeState::load($main)?->string('old_project') ?? self::oldComposeProject($main);
+            $ours = WorktreeState::load($path)?->string('old_project') ?? self::oldComposeProject($path);
             if ($ours === $theirs) {
                 throw new RuntimeException("The worktree's .env names the compose project of the main checkout ('{$ours}'); its old containers and volume cannot be told apart from the main checkout's. Write the worktree's own old compose project as old_project into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
             }
@@ -242,8 +243,10 @@ class SailConverter
             } else {
                 // The old bootstrap record says "done" for the Sail stages: start over.
                 $record = $path.'/storage/worktree-bootstrap.json';
-                if (File::exists($record) && ! File::exists($path.'/storage/worktree-bootstrap.sail.json')) {
-                    File::move($record, $path.'/storage/worktree-bootstrap.sail.json');
+                if (File::exists($record) && ! File::exists($path.'/storage/worktree-bootstrap.sail.json')
+                    && ! @rename($record, $path.'/storage/worktree-bootstrap.sail.json')) {
+                    // A resume would read the old record and skip the import.
+                    throw new RuntimeException("Moving the old bootstrap record {$record} aside failed; nothing was imported. Move it to storage/worktree-bootstrap.sail.json and run the conversion again.");
                 }
                 $this->manager->bootstrapPath($candidate['name'], $path, [
                     'resume' => true,
@@ -305,7 +308,34 @@ class SailConverter
         return strtr($this->volumePattern, ['{compose_project}' => $project]);
     }
 
-    private function oldComposeProject(string $path): string
+    /**
+     * Before `worktree:setup` first rewrites the `.env` of an existing folder, keep
+     * its old compose project and database name: a later conversion needs them to
+     * find and read the old Sail volume. Nothing is kept for a folder without its
+     * own `.env`, one that has shared services already, or one whose `.env` names
+     * the main checkout's compose project (a copy of the main checkout's `.env`).
+     */
+    public static function rememberOldNames(string $path): void
+    {
+        $state = WorktreeState::load($path) ?? new WorktreeState([]);
+        if (! File::exists($path.'/.env') || $state->string('source') !== null || isset($state->data['old_project'])) {
+            return;
+        }
+        try {
+            $project = self::oldComposeProject($path);
+            $main = MainCheckout::path();
+            if ((realpath($main) ?: $main) === (realpath($path) ?: $path) || $project === self::oldComposeProject($main)) {
+                return;
+            }
+        } catch (RuntimeException) {
+            return;
+        }
+        $state->data['old_project'] = $project;
+        $state->data['old_database'] = EnvFile::get($path.'/.env', 'DB_DATABASE');
+        $state->save($path);
+    }
+
+    private static function oldComposeProject(string $path): string
     {
         $project = EnvFile::get($path.'/.env', 'COMPOSE_PROJECT_NAME');
         if ($project === null || $project === '' || str_contains($project, '$')) {
@@ -328,12 +358,17 @@ class SailConverter
         // A shared setup before the conversion rewrote .env: its DB_DATABASE is the new
         // name, and the old one cannot be read from it any more.
         $envDatabase = EnvFile::get($path.'/.env', 'DB_DATABASE');
-        if (! isset($state->data['old_database']) && $sharedDatabase !== null && $envDatabase !== null && strtolower($envDatabase) === strtolower($sharedDatabase)) {
-            throw new RuntimeException("The .env already names the shared database '{$sharedDatabase}': the old Sail database name is unknown. Write it as old_database (and the old compose project as old_project) into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
+        // A usable recorded name stays (`.env` may be rewritten since); a missing or
+        // unusable one is read again, so a corrected DB_DATABASE counts on the next run.
+        $recorded = $state->string('old_database');
+        if ($recorded === null || ! self::validOldDatabase($recorded)) {
+            if ($sharedDatabase !== null && $envDatabase !== null && strtolower($envDatabase) === strtolower($sharedDatabase)) {
+                throw new RuntimeException("The .env already names the shared database '{$sharedDatabase}': the old Sail database name is unknown. Write it as old_database (and the old compose project as old_project) into ".WorktreeState::RELATIVE_PATH.', then run the conversion again; nothing was changed.');
+            }
+            $state->data['old_database'] = $envDatabase;
         }
         $state->data['converting'] = true;
-        $state->data['old_project'] ??= $this->oldComposeProject($path);
-        $state->data['old_database'] ??= EnvFile::get($path.'/.env', 'DB_DATABASE');
+        $state->data['old_project'] ??= self::oldComposeProject($path);
         $state->save($path);
 
         return [(string) $state->string('old_project'), $state->string('old_database')];

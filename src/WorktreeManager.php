@@ -11,6 +11,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\SailConverter;
 
 class WorktreeManager
 {
@@ -314,7 +315,10 @@ class WorktreeManager
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             };
-            $run('config', function () use ($path, $name, $options, $setup): void {
+            $run('config', function () use ($path, $name, $options, $setup, $provisions): void {
+                if ($setup && $provisions) {
+                    SailConverter::rememberOldNames($path);
+                }
                 $this->copyConfigFiles($path, keepExisting: $setup);
                 $this->applyEnvReplacements($path, $name);
                 if ($this->bootstrapStrategy instanceof ConfiguresWorktreeEnvironment) {
