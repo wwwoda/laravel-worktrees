@@ -9,6 +9,7 @@ use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 use Woda\Worktrees\Tests\Support\FakeDatabaseServer;
@@ -594,4 +595,13 @@ test('a builder that cannot be retired after the build leaves no ready template'
         ->and($templates->isReady($templates->name()))->toBeFalse()
         ->and($failing->finishCalls)->toBe(2)
         ->and($failing->users)->toBe([]);
+});
+
+test('the copy keeps its dump files private', function () {
+    Process::fake(['*' => Process::result()]);
+    $server = new MariaDbServer('mariadb', null, '127.0.0.1', 3306, 'root', '');
+
+    $server->copyDatabase('hp_tpl_abc', 'hp_t9', 'hp_t9');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'mariadb-dump') && str_contains((string) $p->command, 'umask 077'));
 });
