@@ -124,7 +124,12 @@ class WorktreeCreateCommand extends Command
             ], $onStep, $processOutput);
         } catch (\RuntimeException $e) {
             $this->components->error($e->getMessage());
-            $this->components->warn("The checkout is kept. Continue with: php artisan worktree:bootstrap {$name} --resume");
+            // Skipped stages are not recorded: the resume needs the same skip options.
+            $skips = implode('', array_map(
+                static fn (string $option): string => " --{$option}",
+                array_filter(['skip-deps', 'skip-build', 'skip-db'], fn (string $option): bool => (bool) $this->option($option)),
+            ));
+            $this->components->warn("The checkout is kept. Continue with: php artisan worktree:bootstrap {$name} --resume{$skips}");
 
             return self::FAILURE;
         }
