@@ -166,6 +166,17 @@ class DatabaseProvisioner
     }
 
     /**
+     * Start the shared stack when the database server does not answer.
+     *
+     * @param  (Closure(string): void)|null  $onStep
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function ensureServer(?Closure $onStep = null, ?Closure $output = null): void
+    {
+        $this->stack->ensureRunning($onStep, $output);
+    }
+
+    /**
      * The app database a conversion fills: the main database for the main
      * checkout, the derived app database for a worktree.
      */

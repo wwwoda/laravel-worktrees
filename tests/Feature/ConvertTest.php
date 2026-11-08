@@ -88,7 +88,8 @@ beforeEach(function () {
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
             "'docker' 'ps' '-a' '--filter' *" => fn (PendingProcess $p) => Process::result(implode("\n", array_map(fn (string $name) => "{$name} {$name}",
                 $this->containers[substr($p->command[4], strlen('label=com.docker.compose.project='))] ?? []))),
-            "'docker' 'rm' '-f' 'worktree-convert-*" => Process::result(),
+            "'docker' 'rm' '-f' 'worktree-convert-*" => fn () => ($this->tempRmFails ?? false) ? Process::result(errorOutput: 'device busy', exitCode: 1) : Process::result(),
+            "'docker' 'container' 'inspect' 'worktree-convert-*" => fn () => ($this->tempRmFails ?? false) ? Process::result('[{}]') : Process::result(errorOutput: 'No such container', exitCode: 1),
             "'docker' 'rm' '-f' *" => function (PendingProcess $p) {
                 $this->removed[] = implode(' ', $p->command);
                 $this->order[] = 'remove old containers';
@@ -250,7 +251,7 @@ test('the main checkout converts first, into the main database', function () {
         ->and($state?->redis())->toBe([0, 1])
         ->and(File::get($this->main.'/.env'))->toContain('DB_USERNAME=hungryport');
     $imports = array_values(array_filter($this->server->log, fn ($l) => str_starts_with($l, 'import ')));
-    expect($imports)->toBe(['import hungryport', 'import hp_old1']);
+    expect($imports)->toBe(['import hungryport as hungryport', 'import hp_old1 as hp_old1']);
 });
 
 test('running convert again skips converted worktrees', function () {
@@ -490,4 +491,54 @@ test('the temporary database runs without a network', function () {
 
     Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && $p->command[1] === 'run' && in_array('--network', $p->command, true)
         && $p->command[array_search('--network', $p->command, true) + 1] === 'none');
+});
+
+test('a retry after a stopped import keeps going: the target is its own', function (Closure $mark) {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    $this->server->databases['hp_old1'] = ['imported: users'];
+    $mark($path);
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect(SailConverter::isConverted($path))->toBeTrue();
+})->with([
+    'import marker' => [function (string $path) {
+        File::ensureDirectoryExists($path.'/storage/app/worktree');
+        File::put($path.'/storage/app/worktree/convert-imported', 'hp_old1');
+    }],
+    'unfinished copy' => [function (string $path) {
+        (new WorktreeState(['pending_copies' => ['hp_old1']]))->save($path);
+    }],
+]);
+
+test('the shared stack is started before the target check', function () {
+    config()->set('worktrees.shared.stack.start_command', 'docker compose -f shared.yml up -d');
+    app()->forgetInstance(SailConverter::class);
+    sailWorktree($this, 'old1', 'feature-old1');
+    $this->server->up = false;
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});
+
+test('the recorded old project decides whether an old volume still waits', function () {
+    $path = sailWorktree($this, 'old1', 'feature-old1');
+    File::put($path.'/.env', "APP_NAME=App\nCOMPOSE_PROJECT_NAME=app-old1\nDB_DATABASE=hp_old1\n");
+    (new WorktreeState(['source' => 'template', 'name' => 'old1', 'old_project' => 'hungryport-old1', 'old_database' => 'hungryport']))->save($path);
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])->assertSuccessful();
+
+    expect($this->server->databases['hp_old1'])->toBe(['imported: users']);
+});
+
+test('a temporary database that cannot be removed fails the conversion', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    $this->tempRmFails = true;
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('Removing the temporary database')
+        ->assertFailed();
+
+    expect($this->server->databaseExists('hp_old1'))->toBeFalse();
 });

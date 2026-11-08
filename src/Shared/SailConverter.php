@@ -24,6 +24,9 @@ use Woda\Worktrees\WorktreeManager;
  */
 class SailConverter
 {
+    /** Names the database a conversion imported into, so a retry knows it as its own. */
+    private const IMPORT_MARKER = 'storage/app/worktree/convert-imported';
+
     public function __construct(
         private readonly WorktreeManager $manager,
         private readonly DatabaseProvisioner $provisioner,
@@ -115,7 +118,8 @@ class SailConverter
             return false;
         }
         try {
-            $volume = $this->volumeName($this->oldComposeProject($path));
+            // A recorded old project wins: a shared setup may have rewritten .env.
+            $volume = $this->volumeName($state->string('old_project') ?? $this->oldComposeProject($path));
         } catch (RuntimeException) {
             return false;
         }
@@ -170,15 +174,29 @@ class SailConverter
         // Provisioning keeps an existing database and fills only a new one. When the
         // target exists without a recorded import, the old data would be dropped
         // silently and the template (or older) data would stay in use.
+        // A target that this conversion made is fine: a recorded import, or an
+        // unfinished copy that provisioning drops and imports again.
         $target = $this->provisioner->appDatabase($candidate['main'] ? null : $candidate['name']);
-        if ($dump !== null && WorktreeState::load($path)?->string('source') !== 'converted' && $this->provisioner->server()->databaseExists($target)) {
-            File::delete($dump);
+        $marker = $path.'/'.self::IMPORT_MARKER;
+        if ($dump !== null) {
+            $this->provisioner->ensureServer($step, $output);
+            $state = WorktreeState::load($path);
+            $pending = $state !== null && is_array($state->data['pending_copies'] ?? null) ? $state->data['pending_copies'] : [];
+            $ours = $state?->string('source') === 'converted'
+                || (File::exists($marker) && trim(File::get($marker)) === $target)
+                || in_array($target, $pending, true);
+            if (! $ours && $this->provisioner->server()->databaseExists($target)) {
+                File::delete($dump);
 
-            throw new RuntimeException("The shared database '{$target}' exists already, and the old volume holds data that would not be imported. Drop '{$target}' if it holds nothing you need, then run the conversion again.");
+                throw new RuntimeException("The shared database '{$target}' exists already, and the old volume holds data that would not be imported. Drop '{$target}' if it holds nothing you need, then run the conversion again.");
+            }
         }
-        $fill = $dump === null ? null : function (string $database) use ($dump, $output, $step): void {
+        $fill = $dump === null ? null : function (string $database) use ($dump, $output, $step, $marker): void {
             $step("Importing the old data into {$database}...");
-            $this->provisioner->server()->importFile($database, $dump, $output);
+            // The account of a worktree (and of the main checkout) has the name of its app database.
+            $this->provisioner->server()->importFile($database, $dump, $output, owner: $database);
+            File::ensureDirectoryExists(dirname($marker));
+            File::put($marker, $database);
         };
 
         try {
@@ -375,8 +393,21 @@ class SailConverter
             }
 
             return $file;
+        } catch (\Throwable $error) {
+            throw $error;
         } finally {
-            Process::timeout(60)->run(['docker', 'rm', '-f', $container]);
+            // A temporary server left on the volume would conflict with a later
+            // conversion or volume removal. Its own error wins over a read error only
+            // when nothing else failed.
+            $removed = Process::timeout(60)->run(['docker', 'rm', '-f', $container]);
+            if (! isset($error) && ! $removed->successful()
+                && Process::timeout(30)->run(['docker', 'container', 'inspect', $container])->successful()) {
+                if (isset($file)) {
+                    File::delete($file);
+                }
+
+                throw new RuntimeException("Removing the temporary database '{$container}' failed: {$removed->errorOutput()}");
+            }
         }
     }
 }
