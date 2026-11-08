@@ -123,6 +123,7 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
             (bool) ($options['from_main'] ?? false),
             $output,
             $onStep,
+            $options['fill_app'] ?? null,
         );
     }
 

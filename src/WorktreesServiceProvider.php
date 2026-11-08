@@ -7,12 +7,14 @@ use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
+use Woda\Worktrees\Commands\WorktreeConvertCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
 use Woda\Worktrees\Commands\WorktreeSetupCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
+use Woda\Worktrees\Commands\WorktreeVolumesCommand;
 use Woda\Worktrees\Commands\WorktreeWorkerCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
@@ -24,6 +26,7 @@ use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\MariaDbServer;
 use Woda\Worktrees\Shared\RedisAllocator;
+use Woda\Worktrees\Shared\SailConverter;
 use Woda\Worktrees\Shared\SharedConfig;
 use Woda\Worktrees\Shared\SharedStack;
 use Woda\Worktrees\Shared\TemplateManager;
@@ -75,6 +78,7 @@ class WorktreesServiceProvider extends ServiceProvider
         });
 
         $this->registerSharedServices();
+        $this->registerConverter();
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -215,6 +219,23 @@ class WorktreesServiceProvider extends ServiceProvider
         });
     }
 
+    private function registerConverter(): void
+    {
+        $this->app->bindIf(SailConverter::class, function (Application $app): SailConverter {
+            $config = new SharedConfig;
+
+            return new SailConverter(
+                manager: $app->make(WorktreeManager::class),
+                provisioner: $app->make(DatabaseProvisioner::class),
+                strategy: $app->make(BootstrapStrategy::class),
+                image: $config->string('convert.image', 'mariadb:10.11'),
+                volumePattern: $config->string('convert.volume', '{compose_project}_sail-mariadb'),
+                baseBranch: is_string($base = config('worktrees.base_branch')) ? $base : 'master',
+                keepContainers: array_filter([$config->nullableString('database.container')]),
+            );
+        });
+    }
+
     private static function mainDatabaseFromMainCheckout(): string
     {
         $database = EnvFile::get(MainCheckout::file('.env'), 'DB_DATABASE');
@@ -242,6 +263,8 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeTemplateCommand::class,
                 WorktreeSetupCommand::class,
                 WorktreeWorkerCommand::class,
+                WorktreeConvertCommand::class,
+                WorktreeVolumesCommand::class,
             ]);
         }
     }

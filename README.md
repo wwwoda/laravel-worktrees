@@ -190,6 +190,14 @@ php artisan worktree:template --name    # print the current template name
 - **Queue worker:** `WORKTREE_QUEUE_WORKER=listen|horizon` and `WORKTREE_QUEUES=<list>` are written to `.env` for your container to read. The list holds every queue that `config/horizon.php` names when the project requires `laravel/horizon`, else `default`. `worktree:create --horizon` picks Horizon.
 - `worktree:create` prints the time of each step and the worktree's URL.
 
+### Moving Sail worktrees: `worktree:convert` and `worktree:volumes`
+
+`worktree:convert` lists every worktree and the main checkout with its branch, last commit date, whether the branch is merged into the base branch, and whether it is converted. It asks per worktree: convert, delete (suggested when merged), or skip. `--all` converts everything without asking; a name (or a folder path, when several worktrees have the same name) converts one. The main checkout converts first. Converted worktrees are skipped on the next run.
+
+For each worktree it removes the old containers (found by their compose project label, so the old compose file is not needed), starts a temporary database container (`shared.convert.image`) straight from the old volume (`shared.convert.volume`, default `{compose_project}_sail-mariadb`) with `--skip-grant-tables`, dumps the old database, imports it into the worktree's new app database on the shared server, and sets up the rest like `worktree:setup`. An empty or missing old volume means a template copy, with a message. The main checkout's data goes into the main database; its user has the main database's name and its Redis numbers are the reserved ones. A conversion that stops can run again: it uses the old names that the first run recorded.
+
+The old volumes stay as backup. `worktree:volumes` lists the volumes that match `shared.convert.backup_volumes` with their size; `--remove=NAME` (repeatable) removes only volumes from that list.
+
 ### Production-like data
 
 `worktree:create --from-main` copies the main checkout's database into the worktree's app database in place of the template. It works only where `shared.database.allow_from_main` is true (`WORKTREE_ALLOW_FROM_MAIN`); elsewhere it is refused.

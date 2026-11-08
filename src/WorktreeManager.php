@@ -11,6 +11,7 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
 use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\SailConverter;
 
 class WorktreeManager
 {
@@ -230,7 +231,7 @@ class WorktreeManager
      * folders). With `setup`, existing config files are kept and a `.env`
      * without a bootstrap record is completed instead of refused.
      *
-     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool}  $options
+     * @param  array{skip_deps?: bool, skip_build?: bool, skip_db?: bool, resume?: bool, from_main?: bool, base?: string|null, horizon?: bool, setup?: bool, fill_app?: (Closure(string): void)|null}  $options
      * @param  (Closure(string): void)|null  $onStep
      * @param  (Closure(string, string): void)|null  $processOutput
      * @param  (Closure(string, float): void)|null  $onStageDone  stage id and seconds
@@ -314,7 +315,10 @@ class WorktreeManager
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             };
-            $run('config', function () use ($path, $name, $options, $setup): void {
+            $run('config', function () use ($path, $name, $options, $setup, $provisions): void {
+                if ($setup && $provisions) {
+                    SailConverter::rememberOldNames($path);
+                }
                 $this->copyConfigFiles($path, keepExisting: $setup);
                 $this->applyEnvReplacements($path, $name);
                 if ($this->bootstrapStrategy instanceof ConfiguresWorktreeEnvironment) {
@@ -326,6 +330,7 @@ class WorktreeManager
             if ($this->bootstrapStrategy instanceof ProvisionsDatabases && empty($options['skip_db'])) {
                 $run('database', fn () => $this->bootstrapStrategy->provisionDatabases($name, $path, [
                     'from_main' => ! empty($options['from_main']),
+                    'fill_app' => $options['fill_app'] ?? null,
                     'branch' => $identity['branch'],
                     'base' => $options['base'] ?? $this->baseBranch,
                 ], $processOutput, $step));
@@ -410,7 +415,7 @@ class WorktreeManager
      * holds a name by its folder (`<project>-<name>` in the base path) or by its
      * bootstrap record.
      */
-    private function assertNameFree(string $name, string $path): void
+    public function assertNameFree(string $name, string $path): void
     {
         $self = realpath($path) ?: $path;
         foreach ($this->registered() as $index => $worktree) {
