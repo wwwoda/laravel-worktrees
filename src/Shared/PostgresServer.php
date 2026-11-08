@@ -155,7 +155,8 @@ final readonly class PostgresServer implements DatabaseServer
 
     /**
      * Make `$owner` the owner of every object inside the copied database:
-     * schemas, tables, views, sequences, routines and types, whoever owned them
+     * schemas, tables, views, sequences, routines and types (enum, domain,
+     * range with its multirange, standalone composite), whoever owned them
      * (the template builder, the main database's role, a superuser). Each object
      * is changed on its own; REASSIGN OWNED is not used, because it also moves
      * shared objects such as other databases.
@@ -183,7 +184,8 @@ final readonly class PostgresServer implements DatabaseServer
               LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.signature, '{$owner}'); END LOOP;
               FOR r IN SELECT n.nspname, t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
                 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
-                  AND t.typtype IN ('e', 'd') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e')
+                  AND (t.typtype IN ('e', 'd', 'r') OR (t.typtype = 'c' AND (SELECT c.relkind FROM pg_class c WHERE c.oid = t.typrelid) = 'c'))
+                  AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e')
               LOOP EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{$owner}'); END LOOP;
             END
             \$\$;
