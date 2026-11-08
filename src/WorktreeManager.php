@@ -253,6 +253,7 @@ class WorktreeManager
         if ($this->isMainCheckout($path)) {
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
+        $this->assertNameFree($name, $path);
         File::ensureDirectoryExists($path.'/storage');
         $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
         if ($handle === false) {
@@ -401,6 +402,31 @@ class WorktreeManager
     public function describe(string $name): array
     {
         return $this->describePath($this->pathFor($name));
+    }
+
+    /**
+     * The name decides the worktree's database, ports and compose project: two
+     * registered worktrees with the same name would share them. Another worktree
+     * holds a name by its folder (`<project>-<name>` in the base path) or by its
+     * bootstrap record.
+     */
+    private function assertNameFree(string $name, string $path): void
+    {
+        $self = realpath($path) ?: $path;
+        foreach ($this->registered() as $index => $worktree) {
+            $other = is_string($worktree['path'] ?? null) ? $worktree['path'] : '';
+            if ($index === 0 || $other === '' || (realpath($other) ?: $other) === $self) {
+                continue;
+            }
+            $record = $other.'/storage/worktree-bootstrap.json';
+            $decoded = File::exists($record) ? json_decode(File::get($record), true) : null;
+            $names = array_filter([$this->nameFromPath($other), is_array($decoded) && is_string($decoded['name'] ?? null) ? $decoded['name'] : null]);
+            foreach ($names as $taken) {
+                if (strtolower($this->sanitizeSuffix($taken)) === strtolower($this->sanitizeSuffix($name))) {
+                    throw new RuntimeException("The worktree at {$other} already uses the name '{$taken}'. Choose another name.");
+                }
+            }
+        }
     }
 
     /**

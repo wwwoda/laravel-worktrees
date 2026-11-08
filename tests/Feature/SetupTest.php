@@ -343,3 +343,14 @@ test('create run again after its .env was copied, but before the config stage wa
 
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 });
+
+test('setup refuses a name that another registered worktree already uses', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $path = frontierWorktree($this, 'elsewhere-t9', 'lane-t9');
+
+    $this->artisan('worktree:setup', ['path' => $path, '--name' => 't9'])
+        ->expectsOutputToContain('already uses the name')
+        ->assertFailed();
+
+    expect(File::exists($path.'/.env'))->toBeFalse();
+});
