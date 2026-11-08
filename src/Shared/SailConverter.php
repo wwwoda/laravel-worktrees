@@ -496,9 +496,11 @@ class SailConverter
             // A temporary server left on the volume would conflict with a later
             // conversion or volume removal. Its own error wins over a read error only
             // when nothing else failed.
+            // Only Docker's "no such container" proves it gone; any other failure
+            // (daemon down) may leave a server on the volume.
             $removed = Process::timeout(60)->run(['docker', 'rm', '-f', $container]);
             if (! isset($error) && ! $removed->successful()
-                && Process::timeout(30)->run(['docker', 'container', 'inspect', $container])->successful()) {
+                && ! str_contains(strtolower(Process::timeout(30)->run(['docker', 'container', 'inspect', $container])->errorOutput()), 'no such container')) {
                 if (isset($file)) {
                     File::delete($file);
                 }

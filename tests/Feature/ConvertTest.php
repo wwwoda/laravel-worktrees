@@ -707,3 +707,17 @@ test('the main checkout\'s shared stack starts only after the old volume is dump
 
     expect(array_slice($steps, 0, 3))->toBe(['temporary database', 'dump', 'start with shared layout']);
 });
+
+test('a temporary database whose removal cannot be checked fails the conversion', function () {
+    sailWorktree($this, 'old1', 'feature-old1');
+    Process::fake([
+        "'docker' 'rm' '-f' 'worktree-convert-*" => Process::result(errorOutput: 'Cannot connect to the Docker daemon', exitCode: 1),
+        "'docker' 'container' 'inspect' 'worktree-convert-*" => Process::result(errorOutput: 'Cannot connect to the Docker daemon', exitCode: 1),
+    ]);
+
+    $this->artisan('worktree:convert', ['name' => 'old1'])
+        ->expectsOutputToContain('Removing the temporary database')
+        ->assertFailed();
+
+    expect($this->server->databaseExists('hp_old1'))->toBeFalse();
+});
