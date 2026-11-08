@@ -30,7 +30,7 @@ class WorktreeWorkerCommand extends Command
             if ($manager->isMainCheckout($path)) {
                 throw new \RuntimeException('This is the main checkout; the worker switch changes worktrees only.');
             }
-        } catch (\RuntimeException $e) {
+        } catch (\RuntimeException|\JsonException $e) {
             $this->components->error($e->getMessage());
 
             return self::FAILURE;

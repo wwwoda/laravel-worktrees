@@ -48,7 +48,10 @@ return [
         |   'native' (default) → composer/npm/migrate executed directly on the host.
         |   'sail'             → `docker compose up -d` first, PHP/composer/artisan
         |                        commands run via `docker compose exec laravel.test ...`
-        |                        Vite + node-pm stay on host.
+        |                        Vite + node-pm stay on host. With a database
+        |                        service per worktree, set database.strategy to
+        |                        'none' (the clone strategies copy on the main
+        |                        checkout's server).
         |   'shared'           → like 'sail', with the databases, user and Redis
         |                        numbers of each worktree on shared services
         |                        (see 'shared' below).

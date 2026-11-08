@@ -246,8 +246,10 @@ class DatabaseCloner
         if ($this->resolveStrategy() !== 'sqlite' || ! File::exists($envPath) || ! File::exists($targetPath)) {
             return;
         }
-        $absoluteTarget = realpath($targetPath) ?: $targetPath;
-        File::put($envPath, Shared\EnvFile::upsertLine(File::get($envPath), 'DB_DATABASE', 'DB_DATABASE='.$absoluteTarget));
+        // A path relative to the app: Laravel resolves it against base_path(), which
+        // works on the host and inside a Sail container (where the host's absolute
+        // path does not exist).
+        File::put($envPath, Shared\EnvFile::upsertLine(File::get($envPath), 'DB_DATABASE', 'DB_DATABASE=database/database.sqlite'));
     }
 
     // ──────────────────────────────────────────────────────────────

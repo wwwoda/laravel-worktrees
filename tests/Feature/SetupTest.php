@@ -243,7 +243,7 @@ test('setup with the native strategy keeps an existing SQLite database', functio
     try {
         $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
         expect(File::get($path.'/database/database.sqlite'))->toBe('lane data')
-            ->and(File::get($path.'/.env'))->toContain('DB_DATABASE='.realpath($path.'/database/database.sqlite'))
+            ->and(File::get($path.'/.env'))->toContain("DB_DATABASE=database/database.sqlite\n")
             ->and(File::get($path.'/.env'))->not->toContain('DB_DATABASE='.base_path('database/database.sqlite'));
     } finally {
         File::delete(base_path('database/database.sqlite'));
@@ -343,3 +343,24 @@ test('create run again after its .env was copied, but before the config stage wa
 
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 });
+
+test('setup refuses a name that another registered worktree already uses', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $path = frontierWorktree($this, 'elsewhere-t9', 'lane-t9');
+
+    $this->artisan('worktree:setup', ['path' => $path, '--name' => 't9'])
+        ->expectsOutputToContain('already uses the name')
+        ->assertFailed();
+
+    expect(File::exists($path.'/.env'))->toBeFalse();
+});
+
+test('create and the worker switch print a broken bootstrap record as an error', function (string $command, array $arguments) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    File::put(($this->path)('t9').'/storage/worktree-bootstrap.json', '{"completed":');
+
+    $this->artisan($command, $arguments)->assertFailed();
+})->with([
+    'create' => ['worktree:create', ['name' => 't9']],
+    'worker' => ['worktree:worker', ['worktree' => 't9', 'mode' => 'horizon']],
+]);

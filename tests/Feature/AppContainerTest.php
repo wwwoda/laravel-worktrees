@@ -139,7 +139,8 @@ test('vendor and node_modules are copied with copy-on-write when the lock files 
     // After the copy, composer install completes it (the main checkout may have been
     // installed with --no-dev) and builds the autoloader for this branch.
     Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'" && $p->path === ($this->path)('t9'));
-    Process::assertNotRan('pnpm install');
+    // The host install completes the copy (the main checkout may lack dev packages).
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'pnpm install' && $p->path === ($this->path)('t9'));
 });
 
 test('copy-on-write is skipped when the lock files differ', function () {
