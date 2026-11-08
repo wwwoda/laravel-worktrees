@@ -315,15 +315,24 @@ class DatabaseProvisioner
     }
 
     /**
-     * The values a worktree's .env holds for the configured database keys.
+     * The database and user names a worktree's .env holds under the configured
+     * keys, also where they sit inside a longer value such as a DATABASE_URL.
      *
      * @return list<string>
      */
     private function envNames(string $path): array
     {
-        $keys = array_keys(array_filter($this->envMap, static fn (string $value): bool => preg_match('/\{db_(app|test|e2e|user)\}/', $value) === 1));
+        $names = [];
+        foreach ($this->envMap as $key => $template) {
+            $value = EnvFile::get($path.'/.env', $key);
+            foreach ($value === null ? [] : EnvFile::placeholderValues($template, $value) as $name => $found) {
+                if (in_array($name, ['db_app', 'db_test', 'db_e2e', 'db_user'], true)) {
+                    $names[] = $found;
+                }
+            }
+        }
 
-        return array_values(array_filter(array_map(static fn (string $key): ?string => EnvFile::get($path.'/.env', $key), $keys), is_string(...)));
+        return $names;
     }
 
     private function password(WorktreeState $state, string $user, string $path): string
