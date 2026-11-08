@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Process\Factory;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
@@ -583,4 +584,18 @@ test('a shared server that cannot be started leaves no dump behind', function ()
     $this->artisan('worktree:convert', ['name' => 'old1'])->assertFailed();
 
     expect(array_diff(glob(sys_get_temp_dir().'/worktree-convert-*') ?: [], $before))->toBe([]);
+});
+
+test('a failed definer rewrite of an import leaves no copy of the dump', function () {
+    // Real processes: the shell command itself must clean up.
+    Process::swap(new Factory);
+    $dir = sys_get_temp_dir().'/lw-import-'.uniqid();
+    File::ensureDirectoryExists($dir);
+    $server = new MariaDbServer('mariadb', null, '127.0.0.1', 3306, 'root', '');
+
+    expect(fn () => $server->importFile('hp_t9', $dir.'/missing.sql', owner: 'hp_t9'))
+        ->toThrow(RuntimeException::class, 'Preparing the import');
+    $left = glob($dir.'/*') ?: [];
+    File::deleteDirectory($dir);
+    expect($left)->toBe([]);
 });

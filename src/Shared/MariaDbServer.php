@@ -95,9 +95,9 @@ final readonly class MariaDbServer implements DatabaseServer
         if ($owner !== null) {
             // The dump's definers are accounts of the old server; the owner is the account here.
             // umask 077: the rewritten copy holds the data; no other local user may read it.
-            $rewrite = Process::timeout(600)->run(sprintf('umask 077 && sed -E %s %s > %s && mv %s %s',
-                escapeshellarg(self::definerRewrite($owner)),
-                escapeshellarg($file), escapeshellarg($file.'.d'), escapeshellarg($file.'.d'), escapeshellarg($file)));
+            // The rewritten copy goes on every exit: a failed rewrite must not leave the data behind.
+            $rewrite = Process::timeout(600)->run(sprintf('umask 077 && sed -E %1$s %2$s > %3$s && mv %3$s %2$s; s=$?; rm -f %3$s; exit $s',
+                escapeshellarg(self::definerRewrite($owner)), escapeshellarg($file), escapeshellarg($file.'.d')));
             if (! $rewrite->successful()) {
                 throw new RuntimeException("Preparing the import into '{$database}' failed: {$rewrite->errorOutput()}");
             }
