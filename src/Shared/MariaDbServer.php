@@ -89,7 +89,9 @@ final readonly class MariaDbServer implements DatabaseServer
         $account = $this->account($user);
         $password = Identifier::password($password);
         $sql = "CREATE USER IF NOT EXISTS {$account} IDENTIFIED BY '{$password}';\n"
-            ."ALTER USER {$account} IDENTIFIED BY '{$password}';\n";
+            ."ALTER USER {$account} IDENTIFIED BY '{$password}';\n"
+            // An account that exists already keeps no rights from before: only the list below.
+            ."REVOKE ALL PRIVILEGES, GRANT OPTION FROM {$account};\n";
         foreach ($databases as $database) {
             // In GRANT, `_` and `%` are wildcards even inside backticks: escape them
             // so the right covers this exact name only.
