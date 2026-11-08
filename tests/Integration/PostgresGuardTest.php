@@ -6,6 +6,7 @@ use Woda\Worktrees\Contracts\TemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\PostgresServer;
+use Woda\Worktrees\Shared\RedisServer;
 use Woda\Worktrees\Shared\TemplateManager;
 use Woda\Worktrees\Shared\WorktreeState;
 
@@ -220,4 +221,29 @@ test('an import with an owner hands the imported objects to the worktree role', 
     expect(($this->as)($t9, 'SELECT note FROM imported', "{$this->prefix}_t9")->output)->toContain('old data')
         ->and(($this->as)($t9, "INSERT INTO imported (note) VALUES ('new')", "{$this->prefix}_t9")->successful)->toBeTrue()
         ->and(($this->as)($t9, 'DROP TABLE imported', "{$this->prefix}_t9")->successful)->toBeTrue();
+});
+
+test('deleting worktree t9 drops its databases and role and leaves t9-1, the main database and the template', function () {
+    // No Redis here: emptying its numbers is covered by the feature tests.
+    app()->instance(RedisServer::class, new class(null, '', 0) extends RedisServer
+    {
+        public function ping(): void {}
+
+        public function flush(int $database): void {}
+    });
+    $t9 = ($this->provision)('t9');
+    $t91 = ($this->provision)('t9-1');
+    $template = app(TemplateManager::class)->name();
+    $p = $this->prefix;
+
+    $removed = app(DatabaseProvisioner::class)->deprovision('t9', $this->base.'/t9');
+
+    expect($removed)->toContain("database {$p}_t9", "database {$p}_t9_test_test_1", "user {$p}_t9")
+        ->and($this->server->databaseExists("{$p}_t9"))->toBeFalse()
+        ->and($this->server->databaseExists("{$p}_t9_test_test_2"))->toBeFalse()
+        ->and($this->server->userExists("{$p}_t9"))->toBeFalse()
+        ->and($this->server->databaseExists("{$p}_t9_1"))->toBeTrue()
+        ->and($this->server->databaseExists("{$p}_main"))->toBeTrue()
+        ->and($this->server->databaseExists($template))->toBeTrue()
+        ->and(($this->as)($t91, 'SELECT email FROM users', "{$p}_t9_1")->output)->toContain('test@example.com');
 });
