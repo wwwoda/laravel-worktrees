@@ -171,9 +171,20 @@ class DatabaseProvisioner
         if ($stateName !== null && strtolower($stateName) !== strtolower($name)) {
             throw new RuntimeException("The state file of '{$name}' belongs to worktree '{$stateName}'. Nothing was dropped.");
         }
+        // The state's lists must have their full shape: a part that does not parse
+        // would read as "nothing to drop" and leave data behind half deleted.
+        $recorded = $state->data['databases'] ?? null;
+        $parallel = is_array($recorded) ? ($recorded['parallel'] ?? []) : null;
+        if (! is_array($recorded) || ! is_string($recorded['app'] ?? null) || ! is_string($recorded['test'] ?? null) || ! is_string($recorded['e2e'] ?? null)
+            || ! is_array($parallel) || ! array_is_list($parallel) || array_filter($parallel, static fn (mixed $value): bool => ! is_string($value)) !== []) {
+            throw new RuntimeException("The database list in the state file of '{$name}' is incomplete. Nothing was dropped.");
+        }
+        if (! $this->redis->isAllocation($state->data['redis'] ?? null)) {
+            throw new RuntimeException("The Redis numbers in the state file of '{$name}' are missing or not an allocation of this package. Nothing was dropped.");
+        }
         $databases = $state->databases();
         foreach ($databases as $database) {
-            if (! $names->owns($database) || strtolower($database) === strtolower($this->mainDatabase)
+            if (! ($names->owns($database) || $names->ownsParallel($database)) || strtolower($database) === strtolower($this->mainDatabase)
                 || str_starts_with($database, $this->templates->prefix())) {
                 throw new RuntimeException("Refusing to drop '{$database}': it is not one of the worktree's own database names. Nothing was dropped.");
             }

@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\Shared\TemplateManager;
@@ -292,3 +293,44 @@ test('a Redis that refuses the flush stops the delete before any database is dro
         ->and($this->server->users)->toHaveKey('hp_t9')
         ->and(is_dir(($this->path)('t9')))->toBeTrue();
 });
+
+test('a delete after a lower parallel worker count still drops the recorded parallel databases', function () {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $this->server->databases['hp_t9_test_test_2'] = [];
+    config()->set('worktrees.shared.database.parallel_workers', 1);
+    app()->forgetInstance(DatabaseProvisioner::class);
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])->assertSuccessful();
+
+    expect($this->server->databases)->not->toHaveKey('hp_t9_test_test_2');
+});
+
+test('a state with a bad Redis allocation or database list stops the delete before any change', function (Closure $edit, string $message) {
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    $state = WorktreeState::load(($this->path)('t9'));
+    $edit($state);
+    $state->save(($this->path)('t9'));
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain($message)
+        ->assertFailed();
+
+    expect($this->flushed)->toBe([])
+        ->and($this->server->databases)->toHaveKey('hp_t9')
+        ->and($this->server->users)->toHaveKey('hp_t9');
+})->with([
+    'redis missing' => [function (WorktreeState $s) {
+        unset($s->data['redis']);
+    }, 'Redis'],
+    'redis out of the allocation' => [function (WorktreeState $s) {
+        $s->data['redis'] = [42];
+    }, 'Redis'],
+    'redis reserved' => [function (WorktreeState $s) {
+        $s->data['redis'] = [0, 1];
+    }, 'Redis'],
+    'databases not a list of names' => [function (WorktreeState $s) {
+        $s->data['databases'] = ['app' => 5];
+    }, 'database list'],
+]);

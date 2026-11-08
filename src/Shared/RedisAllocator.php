@@ -52,6 +52,26 @@ final readonly class RedisAllocator
     }
 
     /**
+     * True for what allocate() hands out: the right count of distinct numbers,
+     * within the Redis databases, none reserved.
+     */
+    public function isAllocation(mixed $numbers): bool
+    {
+        if (! is_array($numbers) || ! array_is_list($numbers) || count($numbers) !== $this->perWorktree) {
+            return false;
+        }
+        $seen = [];
+        foreach ($numbers as $number) {
+            if (! is_int($number) || $number < 0 || $number >= $this->databases || in_array($number, $this->reserved, true) || in_array($number, $seen, true)) {
+                return false;
+            }
+            $seen[] = $number;
+        }
+
+        return true;
+    }
+
+    /**
      * True when another worktree's state already names one of these numbers.
      *
      * @param  list<int>  $numbers

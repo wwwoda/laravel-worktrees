@@ -88,4 +88,13 @@ final readonly class WorktreeNames
     {
         return in_array($database, $this->databases(), true);
     }
+
+    /**
+     * A parallel test database of this worktree, for any worker count: the
+     * count may have been higher when the database was made.
+     */
+    public function ownsParallel(string $database): bool
+    {
+        return preg_match('/^'.preg_quote($this->test, '/').'_test_[1-9][0-9]*$/', $database) === 1;
+    }
 }
