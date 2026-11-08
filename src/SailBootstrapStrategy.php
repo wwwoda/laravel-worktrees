@@ -219,6 +219,13 @@ class SailBootstrapStrategy implements BootstrapStrategy
             preg_match_all('/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/m', File::get($worktreePath.'/.env'), $matches);
             $keys = [...$keys, ...$matches[1]];
         }
+        // Every inherited Compose control variable (COMPOSE_ENV_FILES, COMPOSE_DISABLE_ENV_FILE, ...)
+        // could point compose at another configuration.
+        foreach ([...array_keys(getenv()), ...array_keys($_ENV), ...array_keys($_SERVER)] as $key) {
+            if (is_string($key) && str_starts_with($key, 'COMPOSE_')) {
+                $keys[] = $key;
+            }
+        }
         $clearedEnv = array_fill_keys($keys, false);
 
         return Process::path($worktreePath)->timeout($timeout)->env($clearedEnv);

@@ -130,3 +130,22 @@ test('a pull request from a fork is checked out from its pull ref', function () 
     Process::assertRan(fn (PendingProcess $process) => $process->command === "git fetch origin 'pull/5/head:refs/heads/pr-5'");
     Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, "worktree add '{$path}' 'pr-5'"));
 });
+
+test('compose runs without any inherited COMPOSE_ variable', function () {
+    $worktree = $this->base.'/wt';
+    File::ensureDirectoryExists($worktree);
+    putenv('COMPOSE_DISABLE_ENV_FILE=1');
+    $_ENV['COMPOSE_ENV_FILES'] = '/parent/.env';
+    Process::fake(['*' => Process::result()]);
+
+    try {
+        (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($worktree);
+    } finally {
+        putenv('COMPOSE_DISABLE_ENV_FILE');
+        unset($_ENV['COMPOSE_ENV_FILES']);
+    }
+
+    Process::assertRan(fn (PendingProcess $process) => str_contains((string) $process->command, 'down')
+        && $process->environment['COMPOSE_DISABLE_ENV_FILE'] === false
+        && $process->environment['COMPOSE_ENV_FILES'] === false);
+});
