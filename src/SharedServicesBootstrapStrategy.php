@@ -25,8 +25,9 @@ use Woda\Worktrees\Shared\WorktreeState;
  *
  * Dependencies: `vendor` and the host `node_modules` are copied from the main
  * checkout with copy-on-write when the lock files are equal (APFS `cp -c` on
- * macOS, `cp --reflink=always` elsewhere); when that is not possible,
- * `composer install` runs in the container and the node install on the host.
+ * macOS, `cp --reflink=always` elsewhere). `composer install` then runs in the
+ * container in any case (fast after a copy); the node install runs on the host
+ * when no copy was possible.
  * The bundle is built inside the container, whose `node_modules` is the
  * project's own Docker volume (native packages install for one platform).
  */
@@ -76,6 +77,8 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         if (! in_array($mode, ['listen', 'horizon'], true)) {
             throw new RuntimeException("Unknown queue worker mode '{$mode}'. Use 'listen' or 'horizon'.");
         }
+        // The recreate below acts on the worktree's compose project: not on the main checkout's.
+        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
         EnvFile::upsert($worktreePath.'/.env', [
             $this->queueEnvKeys['mode'] => $mode,
             $this->queueEnvKeys['queues'] => implode(',', QueueList::for($worktreePath)),
@@ -133,16 +136,11 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
     {
-        if ($this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output)) {
-            // The copied autoload files describe the main checkout's classes; the
-            // branch may have moved some. Build them for this worktree.
-            $result = $this->compose($worktreePath, 300)->run($this->execCommand('composer dump-autoload --no-interaction'), $output);
-            if (! $result->successful()) {
-                throw new RuntimeException("composer dump-autoload failed: {$result->errorOutput()}");
-            }
-
-            return;
-        }
+        // With equal lock files, a copy-on-write copy of the main checkout's vendor
+        // makes the install below fast. The install still runs: the main checkout may
+        // have been installed with --no-dev, and the autoloader must describe this
+        // branch's classes.
+        $this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output);
         parent::installComposerDependencies($worktreePath, $output);
     }
 

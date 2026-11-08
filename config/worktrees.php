@@ -88,6 +88,8 @@ return [
         // The worktree's app container: the compose file (written to the
         // worktree's `.env` as COMPOSE_FILE) and the service from
         // 'bootstrap.sail.app_service'. The bundle is built inside it.
+        // Empty: the project's default compose file, which must then be
+        // app-only (no database or Redis service of its own).
         'app' => [
             'compose_file' => env('WORKTREE_APP_COMPOSE_FILE'),
         ],
@@ -152,7 +154,8 @@ return [
                 'hash_paths' => ['database/migrations', 'database/seeders'],
                 // Runs after `php artisan migrate --force` to fill the template.
                 'seed_command' => env('WORKTREE_TEMPLATE_SEED_COMMAND', 'php artisan db:seed --force'),
-                // 'container': in the main checkout's app container; 'host': on this machine.
+                // 'container': in the main checkout's app container (connects to app_host and app_port);
+                // 'host': on this machine (connects to host and port, like the admin connection).
                 'runner' => env('WORKTREE_TEMPLATE_RUNNER', 'container'),
                 // Extra environment for the template build, e.g. ['QUEUE_CONNECTION' => 'sync'].
                 'env' => [],

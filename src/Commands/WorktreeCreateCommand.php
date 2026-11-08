@@ -110,7 +110,8 @@ class WorktreeCreateCommand extends Command
             }
             $this->components->info("Worktree '{$name}' exists; completing its setup...");
 
-            return $this->runBootstrap($worktreeManager, $name, $path, [...$options, 'resume' => true], "php artisan worktree:create {$name}");
+            // Setup mode: a .env from the stopped run is kept, also when its config stage was not recorded.
+            return $this->runBootstrap($worktreeManager, $name, $path, [...$options, 'resume' => true, 'setup' => true], "php artisan worktree:create {$name}");
         }
 
         $this->components->info("Creating worktree '{$name}'...");

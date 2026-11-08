@@ -62,9 +62,14 @@ final readonly class MariaDbServer implements DatabaseServer
         $this->createDatabase($target);
 
         $credentials = '-u '.escapeshellarg($this->adminUser).$this->hostFlags();
+        // Views, triggers, routines and events of the copy run as its owner: the
+        // definer of the source (the template builder, the main app's user) has no
+        // rights on the copy.
+        $definers = $owner === null ? '' : sprintf(' && sed -E %s "$f" > "$f.d" && mv "$f.d" "$f"',
+            escapeshellarg('s/DEFINER=`[^`]*`@`[^`]*`/DEFINER=`'.Identifier::check($owner).'`@`%`/g'));
         $script = sprintf(
-            'f=$(mktemp) && %s %s --single-transaction --routines --triggers --events %s > "$f" && %s %s %s < "$f"; s=$?; rm -f "$f"; exit $s',
-            $this->dumpClient, $credentials, escapeshellarg($source),
+            'f=$(mktemp) && %s %s --single-transaction --routines --triggers --events %s > "$f"%s && %s %s %s < "$f"; s=$?; rm -f "$f" "$f.d"; exit $s',
+            $this->dumpClient, $credentials, escapeshellarg($source), $definers,
             $this->client, $credentials, escapeshellarg($target),
         );
         $result = Process::env(['MYSQL_PWD' => $this->adminPassword])->timeout(1800)
@@ -99,7 +104,7 @@ final readonly class MariaDbServer implements DatabaseServer
         $account = $this->account($user);
         $password = Identifier::password($password);
         $sql = "CREATE USER IF NOT EXISTS {$account} IDENTIFIED BY '{$password}';\n"
-            ."ALTER USER {$account} IDENTIFIED BY '{$password}';\n"
+            ."ALTER USER {$account} IDENTIFIED BY '{$password}' ACCOUNT UNLOCK;\n"
             // An account that exists already keeps no rights from before: only the list below.
             ."REVOKE ALL PRIVILEGES, GRANT OPTION FROM {$account};\n";
         foreach ($databases as $database) {
@@ -125,6 +130,13 @@ final readonly class MariaDbServer implements DatabaseServer
     public function dropUser(string $user): void
     {
         $this->admin('DROP USER IF EXISTS '.$this->account($user));
+    }
+
+    public function retireUser(string $user): void
+    {
+        $account = $this->account($user);
+        // The rights on its own databases stay: a dump of a view needs a definer that can read its tables.
+        $this->admin("ALTER USER {$account} ACCOUNT LOCK;");
     }
 
     public function runAs(string $user, string $password, string $sql, ?string $database = null): ServerResult

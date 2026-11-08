@@ -272,8 +272,12 @@ class WorktreeManager
             if (! $this->isBootstrapRecord($decoded)) {
                 throw new RuntimeException('storage/worktree-bootstrap.json does not have the shape of a bootstrap record. Review or remove it, then resume.');
             }
-            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string} $state */
+            /** @var array{completed: list<string>, stage?: string, status?: string, branch?: string|null, initial_head?: string, name?: string} $state */
             $state = $decoded;
+            if (isset($state['name']) && $state['name'] !== $name) {
+                throw new RuntimeException("This worktree was set up with the name '{$state['name']}'; continue with that name.");
+            }
+            $state['name'] = $name;
             if (array_key_exists('branch', $state) && $state['branch'] !== $identity['branch']) {
                 throw new RuntimeException('Worktree branch changed since bootstrap.');
             }
@@ -385,7 +389,7 @@ class WorktreeManager
                 return false;
             }
         }
-        foreach (['stage', 'status', 'initial_head'] as $key) {
+        foreach (['stage', 'status', 'initial_head', 'name'] as $key) {
             if (array_key_exists($key, $record) && ! is_string($record[$key])) {
                 return false;
             }
