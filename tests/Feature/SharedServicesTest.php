@@ -169,6 +169,26 @@ test('a second setup waits for a running template build and does not build twice
     proc_close($builder);
 });
 
+test('a template build that fails while it sets up its builder leaves no builder account', function () {
+    $failing = new class extends FakeDatabaseServer
+    {
+        public function grantUser(string $user, string $password, array $databases): void
+        {
+            parent::grantUser($user, $password, $databases);
+
+            throw new RuntimeException('grant failed');
+        }
+    };
+    app()->instance(DatabaseServer::class, $failing);
+    app()->instance(TemplateRecipe::class, new FakeTemplateRecipe($failing));
+    $templates = app(TemplateManager::class);
+
+    expect(fn () => $templates->ensure())->toThrow(RuntimeException::class, 'grant failed');
+
+    expect($failing->users)->toBe([])
+        ->and($failing->databaseExists($templates->name()))->toBeFalse();
+});
+
 test('--from-main copies the main database where config allows it', function () {
     config()->set('worktrees.shared.database.allow_from_main', true);
 
