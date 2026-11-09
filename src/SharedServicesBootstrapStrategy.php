@@ -27,6 +27,8 @@ use Woda\Worktrees\Shared\WorktreeState;
  * checkout with copy-on-write when the lock files are equal (APFS `cp -c` on
  * macOS, `cp --reflink=always` elsewhere). `composer install` (in the container)
  * and the node install (on the host) then run in any case, fast after a copy.
+ * The node copy and install run before the app container starts (see
+ * InstallsNodeBeforeBringUp).
  * The bundle is built inside the container, whose `node_modules` is the
  * project's own Docker volume (native packages install for one platform).
  */

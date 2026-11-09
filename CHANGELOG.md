@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.2 (2026-11-09)
+
+A fix for the `shared` and `sail` strategies. No breaking change.
+
+### Fixed
+
+- **Build in the app container on Linux:** with `shared`, the node install on the host ran after `docker compose up -d`. On Linux, pnpm removes an empty `node_modules` folder and makes it again, and that detaches the volume that the app container mounts there. The build in the container then ran on the host's packages and stopped (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). Now the copy-on-write copy of `node_modules` and the host node install run before the containers start, with `shared` and `sail`; the `native` order (Composer, then node) is unchanged. The copy of `node_modules` from the main checkout also works again: before, the mount point folder that `compose up` made stopped it. ([#23](https://github.com/wwwoda/laravel-worktrees/issues/23))
+- **A running app container without its volume:** after `docker compose up -d`, the setup checks that the app container mounts each named volume of the app service. When one is missing (the container ran while `node_modules` was replaced on the host, for example on a resume), the app service is restarted once; when the volume is still missing, the setup stops with a message.
+- **The URL at the end of the setup** expands `${KEY}` references to other keys of the worktree's `.env`, as Laravel's dotenv does. Before, `https://${WORKTREE_HOST}` was printed as written.
+
+### Changed
+
+- New marker interface `Contracts\InstallsNodeBeforeBringUp`. `SailBootstrapStrategy` (and so `SharedServicesBootstrapStrategy`) implements it; a custom strategy without it keeps the order of `native`.
+
 ## v0.2.1 (2026-11-08)
 
 A fix for the `shared` strategy. No breaking change.
