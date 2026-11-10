@@ -590,6 +590,31 @@ class WorktreeManager
         return trim($result->output()) !== '';
     }
 
+    /**
+     * The uncommitted files of a checkout (`git status --porcelain` paths),
+     * without the files this package writes into it.
+     *
+     * @return list<string>
+     */
+    public function changedFiles(string $path): array
+    {
+        $result = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
+        $files = [];
+        foreach (preg_split('/\r?\n/', rtrim($result->output())) ?: [] as $line) {
+            if (strlen($line) > 3) {
+                // `XY path` or `XY old -> new`; the current path counts.
+                $file = substr($line, 3);
+                $file = str_contains($file, ' -> ') ? substr($file, (int) strrpos($file, ' -> ') + 4) : $file;
+                $files[] = trim($file, '"');
+            }
+        }
+
+        return $files;
+    }
+
     public function nameFromPath(string $path): ?string
     {
         $prefix = basename(base_path()).'-';
@@ -686,6 +711,12 @@ class WorktreeManager
                 'VITE_PORT='.($viteBase + $portOffset),
                 $content,
             );
+        }
+
+        // Optional services (compose profiles) of a new worktree; null keeps the main checkout's.
+        $profiles = config('worktrees.services.default');
+        if (is_string($profiles)) {
+            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.trim($profiles));
         }
 
         // User-defined env overrides — last so they win.
