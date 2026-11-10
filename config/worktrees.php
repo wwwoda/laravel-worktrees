@@ -234,6 +234,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Idle stacks (worktree:idle-stop, worktree:wake)
+    |--------------------------------------------------------------------------
+    |
+    | worktree:idle-stop stops the containers of worktrees unused for 'minutes'
+    | (no traffic to the app container, no code change, no log write). Run it
+    | from a host timer; with Sablier, the router starts a stack on its first
+    | request instead (see the README).
+    */
+
+    'idle' => [
+        'minutes' => (int) env('WORKTREE_IDLE_MINUTES', 30),
+        'include_main' => (bool) env('WORKTREE_IDLE_INCLUDE_MAIN', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | IDE
     |--------------------------------------------------------------------------
     */
