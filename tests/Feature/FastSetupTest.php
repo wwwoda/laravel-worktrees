@@ -195,6 +195,25 @@ it('does not restore into a database with tables', function () use ($strategy) {
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip'));
 });
 
+it('restores again after a restore that stopped half way, also over its tables', function () use ($strategy) {
+    ($this->fake)();
+    $this->migrateStatus = Process::result('  0001_create ..... [1] Ran');
+    $dump = new DatabaseDump(true);
+    $strategy(new FastSetup(dump: $dump));
+    File::ensureDirectoryExists($this->path.'/database/migrations');
+    File::ensureDirectoryExists($this->path.'/storage/app/worktree');
+    File::put($this->path.'/storage/app/worktree/dump-restore.pending', 'stopped');
+    File::put($this->path.'/.env', "DB_DATABASE=app_t9\n");
+    $file = $dump->path($dump->key($this->path));
+    File::ensureDirectoryExists(dirname($file));
+    File::put($file, gzencode('-- dump'));
+
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBe('restored')
+        ->and(File::exists($this->path.'/storage/app/worktree/dump-restore.pending'))->toBeFalse();
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip -c'));
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'migrate:status'));
+});
+
 it('treats the missing migrations table as empty also when migrate:status exits with 0', function () use ($strategy) {
     ($this->fake)();
     $this->migrateStatus = Process::result('ERROR  Migration table not found.');
@@ -308,6 +327,15 @@ describe('the frontend build cache', function () {
         File::deleteDirectory($this->tree.'/public/build');
         File::deleteDirectory($this->main.'/public/build');
         expect($this->cache->restore($this->tree))->toBe('cache');
+    });
+
+    it('does not use a build older than one of the main checkout\'s inputs (a discarded change)', function () {
+        File::ensureDirectoryExists($this->main.'/public/build');
+        File::put($this->main.'/public/build/manifest.json', '{}');
+        touch($this->main.'/public/build/manifest.json', time() + 5);
+        touch($this->main.'/resources/js/app.js', time() + 10);
+
+        expect($this->cache->restore($this->tree))->toBeNull();
     });
 
     it('does not use a build older than the main checkout\'s last checkout', function () {

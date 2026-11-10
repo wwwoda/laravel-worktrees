@@ -155,7 +155,23 @@ final readonly class BuildCache
             return false;
         }
 
-        return filemtime($manifest) >= filemtime($file);
+        $built = (int) filemtime($manifest);
+        if ($built < (int) filemtime($file)) {
+            return false;
+        }
+        // A discarded change rewrites its file: an input newer than the build means the
+        // build may hold code that the checkout no longer has.
+        $inputs = Process::path($main)->timeout(30)->run('git ls-files -z -- '.implode(' ', array_map(escapeshellarg(...), $this->paths)));
+        if (! $inputs->successful()) {
+            return false;
+        }
+        foreach (array_filter(explode("\0", $inputs->output())) as $input) {
+            if (is_file($main.'/'.$input) && filemtime($main.'/'.$input) > $built) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function copy(string $from, string $to): bool

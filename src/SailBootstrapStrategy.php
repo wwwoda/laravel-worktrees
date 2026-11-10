@@ -38,6 +38,9 @@ use Woda\Worktrees\Shared\MainCheckout;
  */
 class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp, UsesDatabaseDump
 {
+    // Written before a dump restore and removed after it: a restore that stopped half way.
+    private const RESTORE_MARKER = 'storage/app/worktree/dump-restore.pending';
+
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
@@ -432,28 +435,48 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): string
     {
         $dump = $this->fast->dump;
-        // Only into an empty database: a restore over existing tables would replace them.
-        // The message counts, not the exit code alone.
-        $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
-        $empty = stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false;
-        if (! $empty && $status->successful()) {
+        $pending = $worktreePath.'/'.self::RESTORE_MARKER;
+        // A restore that stopped half way left some tables: restore again over them
+        // (the dump drops each table before it creates it). Else only into an empty
+        // database: a restore over existing tables would replace them.
+        $interrupted = is_file($pending);
+        if (! $interrupted && ! $this->databaseIsEmpty($worktreePath)) {
             $onStep && $onStep('The database has tables; it is kept, and neither restored nor seeded.');
 
             return self::DUMP_EXISTING;
         }
-        if (! $empty) {
-            throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
-        }
         $file = $dump->find($worktreePath, $onStep);
+        if ($file === null && $interrupted) {
+            throw new RuntimeException('A restore of the database dump stopped half way, and the dump is gone: empty the database (or delete the worktree), remove '.self::RESTORE_MARKER.' and run the setup again.');
+        }
         if ($file === null) {
             $onStep && $onStep('No database dump for key '.$dump->key($worktreePath).' yet: this setup seeds and saves one.');
 
             return self::DUMP_MISSING;
         }
-        $onStep && $onStep('Restoring the database dump '.basename($file).'...');
+        $onStep && $onStep(($interrupted ? 'Restoring the database dump again (the last restore stopped half way): ' : 'Restoring the database dump ').basename($file).'...');
+        File::ensureDirectoryExists(dirname($pending));
+        File::put($pending, date(DATE_ATOM)."\n");
         $dump->restore($file, $worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output);
+        File::delete($pending);
 
         return self::DUMP_RESTORED;
+    }
+
+    /**
+     * True without a migrations table. The message counts, not the exit code alone.
+     */
+    private function databaseIsEmpty(string $worktreePath): bool
+    {
+        $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
+        if (stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false) {
+            return true;
+        }
+        if ($status->successful()) {
+            return false;
+        }
+
+        throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
     }
 
     public function seedAndSaveDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): void
