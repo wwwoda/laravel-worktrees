@@ -159,13 +159,13 @@ The order:
 2. `shared` without `--keep-db`: the state file is checked (see [Safe delete](#safe-delete)). A problem stops the delete before anything changes.
 3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete.
 4. The `ProcessManager` stops the worktree's processes.
-5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays.
+5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` whose name holds the compose project name (`shop-t9/app:latest`, or compose's default `shop-t9-worker`). Shared images, the main checkout's images and images that another container uses stay.
 6. `shared`: the worktree's own databases and user are dropped, and its Redis numbers are emptied.
 7. The folder is removed and `git worktree prune` runs. The command fails when the folder is still there or `git worktree list` still names it (for example files that belong to the container's user).
 8. `native` and `sail`: the database clone is dropped.
-9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`.
+9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`. A branch counts as merged when it is part of the base branch, or when GitHub (`gh`) reports a merged pull request whose head is the branch's commit: a squash or rebase merge. Such a branch is deleted with `git branch -D`; a branch with commits after the merge stays.
 
-The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes.
+The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes. The setup also lists the bootstrap files in the repository's `.git/info/exclude`, so a plain `git status` in a new worktree is clean.
 
 ### `worktree:cleanup`
 
@@ -233,7 +233,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `base_path` | `WORKTREE_BASE_PATH` | Folder for new worktrees. [the parent folder of the project] |
 | `branch_prefix` | `WORKTREE_BRANCH_PREFIX` | Prefix of a new branch, for example `agent/`. [empty] |
 | `base_branch` | `WORKTREE_BASE_BRANCH` | Base branch for new branches, and the branch that "merged" refers to. [`master`] |
-| `copy_files` | | Files and folders copied from the main checkout into a new worktree. [`['.env']`] |
+| `copy_files` | | Files and folders copied from the main checkout into a new worktree. Files that git tracks in the worktree are not overwritten: they keep the branch's version. [`['.env']`] |
 | `ports.app_base` | `WORKTREE_APP_PORT_BASE` | Base of the worktree's `APP_PORT`. [8100] |
 | `ports.vite_base` | `WORKTREE_VITE_PORT_BASE` | Base of the worktree's `VITE_PORT`. [5200] |
 | `env_overrides` | | `.env` values for each worktree (see [Env overrides](#env-overrides)). [`[]`] |
@@ -312,7 +312,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
    - With the `mysql` or `pgsql` clone, `DB_DATABASE` becomes `{database}_{name}` (`-` changed to `_`).
    - `APP_PORT` and `VITE_PORT`, only when the key is in `.env` (see [Ports](#ports)).
    - The `env_overrides` values.
-3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP. When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
+3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP and no healthcheck says `starting` any more (at most 2 minutes; an unhealthy service is reported, not fatal). When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
 4. Composer install, and with `native` the node install after it.
 5. The database: the clone. A database that exists already is kept. A clone that stopped half way is dropped and made again.
 6. The frontend build.
@@ -535,6 +535,8 @@ In a worktree:
 | `storage/app/worktree/state.json` | `shared`: the state file. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
+
+In the repository's git folder: a block in `info/exclude` (shared by all worktrees, never committed) that names `/storage/worktree-bootstrap.json`, `.lock` and `.clone`.
 
 ## ProcessManager contract
 
