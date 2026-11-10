@@ -191,8 +191,58 @@ it('does not restore into a database with tables', function () use ($strategy) {
     $strategy(new FastSetup(dump: new DatabaseDump(true)));
     File::ensureDirectoryExists($this->path);
 
-    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBeFalse();
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBe('existing');
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip'));
+});
+
+it('treats the missing migrations table as empty also when migrate:status exits with 0', function () use ($strategy) {
+    ($this->fake)();
+    $this->migrateStatus = Process::result('ERROR  Migration table not found.');
+    $strategy(new FastSetup(dump: new DatabaseDump(true)));
+    File::ensureDirectoryExists($this->path);
+
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBe('missing');
+});
+
+it('neither restores nor seeds when a setup runs again on a database with tables', function () use ($strategy) {
+    // A database with tables, as after an earlier setup: a run without --resume keeps it.
+    $this->migrateStatus = Process::result('  0001_create ..... [1] Ran');
+    ($this->fake)();
+    $strategy(new FastSetup(dump: new DatabaseDump(true)));
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'db:seed'));
+    expect(json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true)['dump'])->toBe('existing');
+});
+
+it('lends Sail\'s build context from vendor before it builds the shared image', function () use ($strategy) {
+    // Testbench's vendor is the package's own: create and remove only laravel/sail, which no dependency uses.
+    $sail = base_path('vendor/laravel/sail');
+    expect(is_dir($sail))->toBeFalse();
+    $runtime = $sail.'/runtimes/8.4';
+    File::ensureDirectoryExists($runtime);
+    File::put($runtime.'/Dockerfile', 'FROM alpine');
+    $this->contextAtBuild = null;
+    ($this->fake)([
+        'docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode($p->path === $this->path
+            ? ['name' => 'app-t9', 'services' => ['laravel.test' => ['build' => ['context' => $this->path.'/vendor/laravel/sail/runtimes/8.4']]]]
+            : ['name' => 'app', 'services' => []])),
+        "docker compose build 'laravel.test'" => function () {
+            $this->contextAtBuild = is_file($this->path.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
+            $this->images[] = 'app-image:'.ContentKey::of($this->path, ['Dockerfile', 'docker']);
+
+            return Process::result();
+        },
+    ]);
+    $strategy(new FastSetup(image: new AppImage('app-image')));
+
+    try {
+        $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
+    } finally {
+        File::deleteDirectory($sail);
+    }
+    expect($this->contextAtBuild)->toBeTrue()
+        ->and(is_dir($this->path.'/vendor/laravel'))->toBeFalse();
 });
 
 it('downloads a missing dump and keeps a failed download out of the way', function () {
@@ -275,6 +325,15 @@ describe('the frontend build cache', function () {
 
         ($this->git)($this->tree, 'commit -qam change');
         expect($this->cache->key($this->tree))->not->toBeNull()->not->toBe($before);
+    });
+
+    it('gives worktrees with other VITE_ values another key', function () {
+        File::put($this->main.'/.env', "APP_NAME=Main\nVITE_APP_HOST=main.test\n");
+        File::put($this->tree.'/.env', "APP_NAME=Tree\nVITE_APP_HOST=main.test\n");
+        expect($this->cache->key($this->tree))->toBe($this->cache->key($this->main));
+
+        File::put($this->tree.'/.env', "APP_NAME=Tree\nVITE_APP_HOST=tree.test\n");
+        expect($this->cache->key($this->tree))->not->toBe($this->cache->key($this->main));
     });
 
     it('stores a fresh build and prunes old entries', function () {

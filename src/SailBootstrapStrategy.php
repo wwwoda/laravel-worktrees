@@ -49,11 +49,16 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        $this->useSharedImage($worktreePath, $output);
+        // The tag goes into .env first, so compose resolves the shared image.
+        $tag = $this->writeImageTag($worktreePath);
         $config = $this->composeConfig($worktreePath);
         $this->assertOwnComposeProject($worktreePath, $config);
         $lent = $this->lendVendorPaths($worktreePath, $config);
         try {
+            // The build of a missing image needs the lent build contexts (Sail's runtimes under vendor).
+            if ($tag !== null) {
+                $this->ensureSharedImage($worktreePath, $tag, $output);
+            }
             $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
                 'docker compose up -d',
                 $output,
@@ -368,7 +373,9 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             return;
         }
 
-        $result = Process::path($worktreePath)->timeout(300)->run("{$this->nodePackageManager} run build", $output);
+        // Without the variables of the checkout that runs artisan: Vite reads VITE_*
+        // from the environment before .env, and would build with the main checkout's values.
+        $result = $this->compose($worktreePath, 300)->run("{$this->nodePackageManager} run build", $output);
 
         if (! $result->successful()) {
             throw new RuntimeException("Frontend build failed: {$result->errorOutput()}");
@@ -388,21 +395,30 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     }
 
     /**
-     * The shared app image: write its tag into `.env` and build it once when it is missing.
-     *
-     * @param  (Closure(string, string): void)|null  $output
+     * The shared app image's tag, written into `.env`; null when the shared image is off.
      */
-    private function useSharedImage(string $worktreePath, ?Closure $output): void
+    private function writeImageTag(string $worktreePath): ?string
     {
         $image = $this->fast->image;
         if (! $image->enabled()) {
-            return;
+            return null;
         }
         $tag = $image->tag($worktreePath);
         if (EnvFile::get($worktreePath.'/.env', $image->envKey()) !== $tag) {
             EnvFile::upsert($worktreePath.'/.env', [$image->envKey() => $tag]);
         }
-        $built = $image->ensure($tag, $this->appService, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output, $this->onStep);
+
+        return $tag;
+    }
+
+    /**
+     * Build the shared app image once when it is missing.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function ensureSharedImage(string $worktreePath, string $tag, ?Closure $output): void
+    {
+        $built = $this->fast->image->ensure($tag, $this->appService, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output, $this->onStep);
         if (! $built && $output) {
             $output('out', "Using the app image {$tag}.\n");
         }
@@ -413,29 +429,31 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         return $this->fast->dump->enabled();
     }
 
-    public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): bool
+    public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): string
     {
         $dump = $this->fast->dump;
         // Only into an empty database: a restore over existing tables would replace them.
+        // The message counts, not the exit code alone.
         $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
-        if ($status->successful()) {
-            $onStep && $onStep('The database has tables; the dump is not restored.');
+        $empty = stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false;
+        if (! $empty && $status->successful()) {
+            $onStep && $onStep('The database has tables; it is kept, and neither restored nor seeded.');
 
-            return false;
+            return self::DUMP_EXISTING;
         }
-        if (stripos($status->output().$status->errorOutput(), 'Migration table not found') === false) {
+        if (! $empty) {
             throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
         }
         $file = $dump->find($worktreePath, $onStep);
         if ($file === null) {
             $onStep && $onStep('No database dump for key '.$dump->key($worktreePath).' yet: this setup seeds and saves one.');
 
-            return false;
+            return self::DUMP_MISSING;
         }
         $onStep && $onStep('Restoring the database dump '.basename($file).'...');
         $dump->restore($file, $worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output);
 
-        return true;
+        return self::DUMP_RESTORED;
     }
 
     public function seedAndSaveDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): void

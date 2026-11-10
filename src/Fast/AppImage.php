@@ -20,6 +20,9 @@ use RuntimeException;
  */
 final readonly class AppImage
 {
+    // A waiting setup waits longer than the build may take.
+    private const BUILD_TIMEOUT = 1800;
+
     /**
      * @param  list<string>  $hashPaths
      */
@@ -70,7 +73,7 @@ final readonly class AppImage
                 return false;
             }
             $onStep && $onStep("Building the app image {$tag} (once for all worktrees with this Dockerfile)...");
-            $result = $compose(1800)->run('docker compose build '.escapeshellarg($this->service ?? $appService), $output);
+            $result = $compose(self::BUILD_TIMEOUT)->run('docker compose build '.escapeshellarg($this->service ?? $appService), $output);
             if (! $result->successful()) {
                 throw new RuntimeException("Building the app image {$tag} failed: ".trim($result->errorOutput()));
             }
@@ -79,6 +82,6 @@ final readonly class AppImage
             }
 
             return true;
-        }, onWait: $onStep);
+        }, timeout: self::BUILD_TIMEOUT + 300, onWait: $onStep);
     }
 }

@@ -2,6 +2,8 @@
 
 namespace Woda\Worktrees\Fast;
 
+use Dotenv\Dotenv;
+use Dotenv\Exception\InvalidFileException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Shared\MainCheckout;
@@ -32,6 +34,8 @@ final readonly class BuildCache
         private int $keep = 5,
         // Default: the main checkout of the repository that runs artisan.
         private ?string $mainCheckout = null,
+        // .env keys that the bundle embeds (Vite: VITE_*); their values are part of the key.
+        private string $envPrefix = 'VITE_',
     ) {}
 
     private function main(): string
@@ -59,7 +63,27 @@ final readonly class BuildCache
             return null;
         }
 
-        return substr(hash('sha256', "build:{$this->buildCommand}\n".$tree->output()), 0, 16);
+        return substr(hash('sha256', "build:{$this->buildCommand}\n".$this->embeddedEnv($checkout).$tree->output()), 0, 16);
+    }
+
+    /**
+     * The values that the bundle embeds from the checkout's `.env`: a worktree
+     * whose VITE_* values differ (its own host, say) gets its own build.
+     */
+    private function embeddedEnv(string $checkout): string
+    {
+        if ($this->envPrefix === '' || ! is_file($checkout.'/.env')) {
+            return '';
+        }
+        try {
+            $values = Dotenv::parse((string) file_get_contents($checkout.'/.env'));
+        } catch (InvalidFileException) {
+            return "env:unreadable\n";
+        }
+        $embedded = array_filter($values, fn (mixed $value, string $key): bool => str_starts_with($key, $this->envPrefix), ARRAY_FILTER_USE_BOTH);
+        ksort($embedded);
+
+        return 'env:'.json_encode($embedded)."\n";
     }
 
     /**

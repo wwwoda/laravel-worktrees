@@ -460,7 +460,7 @@ class WorktreeManager
                 ? $this->bootstrapStrategy : null;
             if ($dumper !== null) {
                 $run('dump', function () use (&$state, $dumper, $path, $processOutput, $step): void {
-                    $state['dump_restored'] = $dumper->restoreDatabaseDump($path, $processOutput, $step);
+                    $state['dump'] = $dumper->restoreDatabaseDump($path, $processOutput, $step);
                 });
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
@@ -479,7 +479,8 @@ class WorktreeManager
             if (empty($options['skip_deps']) && $this->runMigrations) {
                 $run('migrations', fn () => $this->bootstrapStrategy->runMigrations($path, $processOutput), true);
             }
-            if ($dumper !== null && ($state['dump_restored'] ?? false) !== true) {
+            // Only a database that had no dump is seeded; a restored or existing one is kept.
+            if ($dumper !== null && ($state['dump'] ?? null) === UsesDatabaseDump::DUMP_MISSING) {
                 $run('seed', fn () => $dumper->seedAndSaveDatabaseDump($path, $processOutput, $step));
             }
             $finishNode();
