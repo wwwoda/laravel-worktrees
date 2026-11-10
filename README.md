@@ -10,6 +10,7 @@ Git worktrees for Laravel projects, each with its own environment.
 - [Installation](#installation)
 - [Strategies](#strategies)
 - [Commands](#commands)
+- [Skill for agents](#skill-for-agents)
 - [Configuration reference](#configuration-reference)
 - [Native and Sail](#native-and-sail)
 - [Shared services](#shared-services)
@@ -221,6 +222,18 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 ```
 
 `--remove` removes only volumes that are in the list.
+
+## Skill for agents
+
+The package ships a skill for Claude Code and other agents that read `SKILL.md` files: `resources/boost/skills/worktree/SKILL.md`. It names the `worktree:*` commands, which container runs what, a decision tree (something is broken, queued jobs, the scheduler, the database, a browser check, workers on old code, tests) and the memory rules (optional services only when needed, idle stacks, delete merged worktrees).
+
+```bash
+php artisan vendor:publish --tag=worktrees-skill   # copies it to .claude/skills/worktree/SKILL.md
+```
+
+Publish it again after an update of the package. [Laravel Boost](https://github.com/laravel/boost) reads skills of packages from `resources/boost/skills/` too. Put project facts (the seed command's test login, the names of the compose profiles) into `worktrees.context.notes` or the project's own skills, not into the published file.
+
+A project's own instructions (`CLAUDE.md`, `AGENTS.md`) then need only a pointer, for example: "Worktrees: see the `worktree` skill; start with `php artisan worktree:context`."
 
 ## Configuration reference
 
