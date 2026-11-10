@@ -25,6 +25,10 @@ class WorktreeManager
 
     private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
 
+    private const EXCLUDE_MARKER = '# laravel-worktrees: files the package writes into each worktree';
+
+    private const PACKAGE_FILES = ['/storage/worktree-bootstrap.json', '/storage/worktree-bootstrap.lock', '/storage/worktree-bootstrap.clone'];
+
     public function __construct(
         private readonly string $basePath,
         private readonly string $branchPrefix,
@@ -196,23 +200,41 @@ class WorktreeManager
     }
 
     /**
-     * After a delete: is the local branch still there, and is it merged into the base branch?
+     * After a delete: is the local branch still there, and is it merged into the
+     * base branch? A branch whose pull request was squashed or rebased is not an
+     * ancestor of the base branch; it counts as merged when GitHub reports a merged
+     * pull request whose head is the local branch's commit (`via` is then `pull request`).
      *
-     * @return array{exists: bool, merged: bool}
+     * @return array{exists: bool, merged: bool, via: string|null}
      */
     public function branchStatus(string $branch): array
     {
         $exists = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful();
+        if (! $exists) {
+            return ['exists' => false, 'merged' => false, 'via' => null];
+        }
+        if ($this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful()) {
+            return ['exists' => true, 'merged' => true, 'via' => 'ancestor'];
+        }
+        $head = trim($this->git('rev-parse '.escapeshellarg('refs/heads/'.$branch))->output());
+        $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr list --head %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch)));
+        $pulls = $result->successful() ? json_decode($result->output(), true) : null;
+        foreach (is_array($pulls) ? $pulls : [] as $pull) {
+            if (is_array($pull) && $head !== '' && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
 
-        return [
-            'exists' => $exists,
-            'merged' => $exists && $this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful(),
-        ];
+        return ['exists' => true, 'merged' => false, 'via' => null];
     }
 
-    public function deleteMergedBranch(string $branch): bool
+    /**
+     * Delete a merged branch: `git branch -d`, or `-D` for a branch that a merged
+     * pull request with the same head commit squashed or rebased.
+     */
+    public function deleteMergedBranch(string $branch, bool $mergedByPullRequest = false): bool
     {
-        return $this->git('branch -d '.escapeshellarg($branch))->successful();
+        return $this->git('branch '.($mergedByPullRequest ? '-D' : '-d').' '.escapeshellarg($branch))->successful();
     }
 
     public function exists(string $name): bool
@@ -328,6 +350,7 @@ class WorktreeManager
 
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
+            $this->excludePackageFiles($path);
             $decoded = File::exists($statePath)
                 ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
                 : ['completed' => []];
@@ -616,14 +639,62 @@ class WorktreeManager
             if (! File::exists($source) || ($keepExisting && File::exists($target))) {
                 continue;
             }
+            // Files that git tracks in the worktree keep the branch's version: a copy of the
+            // main checkout's working file (a folder such as .claude holds tracked skills)
+            // would show as a change in every new worktree.
+            $tracked = $this->trackedFiles($targetPath, $file);
 
             if (File::isDirectory($source)) {
-                File::copyDirectory($source, $target);
-            } else {
+                foreach (File::allFiles($source, true) as $item) {
+                    $relative = $file.'/'.str_replace(DIRECTORY_SEPARATOR, '/', $item->getRelativePathname());
+                    if (isset($tracked[$relative])) {
+                        continue;
+                    }
+                    File::ensureDirectoryExists(dirname($targetPath.'/'.$relative));
+                    File::copy($item->getPathname(), $targetPath.'/'.$relative);
+                }
+            } elseif (! isset($tracked[$file])) {
                 File::ensureDirectoryExists(dirname($target));
                 File::copy($source, $target);
             }
         }
+    }
+
+    /**
+     * The files under `$pathspec` that git tracks in the checkout, as a set of relative paths.
+     *
+     * @return array<string, true>
+     */
+    private function trackedFiles(string $checkout, string $pathspec): array
+    {
+        $result = Process::path($checkout)->timeout(30)->run('git ls-files -z -- '.escapeshellarg($pathspec));
+        if (! $result->successful()) {
+            return [];
+        }
+        $files = array_filter(explode("\0", $result->output()), static fn (string $file): bool => $file !== '');
+
+        return array_fill_keys($files, true);
+    }
+
+    /**
+     * The files the package writes into a worktree are untracked: list them in the
+     * repository's `info/exclude` (shared by all its worktrees), so `git status`
+     * stays clean. Nothing is committed.
+     */
+    private function excludePackageFiles(string $path): void
+    {
+        $result = Process::path($path)->timeout(10)->run('git rev-parse --path-format=absolute --git-common-dir');
+        $common = trim($result->output());
+        if (! $result->successful() || $common === '' || ! is_dir($common)) {
+            return;
+        }
+        $exclude = $common.'/info/exclude';
+        $content = File::exists($exclude) ? File::get($exclude) : '';
+        if (str_contains($content, self::EXCLUDE_MARKER)) {
+            return;
+        }
+        File::ensureDirectoryExists(dirname($exclude));
+        File::append($exclude, ($content === '' || str_ends_with($content, "\n") ? '' : "\n").self::EXCLUDE_MARKER."\n".implode("\n", self::PACKAGE_FILES)."\n");
     }
 
     private function applyEnvReplacements(string $path, string $name): void

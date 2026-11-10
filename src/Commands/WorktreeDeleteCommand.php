@@ -81,7 +81,14 @@ class WorktreeDeleteCommand extends Command
             // First stop the containers: no process may hold files, ports or
             // database connections of what is removed next.
             $this->components->info('Stopping the worktree environment...');
-            $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
+            $verbose = $this->output->isVerbose();
+            $worktreeManager->tearDown($name, function (string $type, string $buffer) use ($verbose): void {
+                if ($verbose) {
+                    $this->output->write($buffer);
+                } elseif (str_starts_with($buffer, 'Removed the image')) {
+                    $this->line('  '.trim($buffer));
+                }
+            }, keepDatabase: (bool) $this->option('keep-db'));
 
             // Shared services: only the worktree's own databases, user and Redis numbers.
             if ($worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
@@ -127,14 +134,16 @@ class WorktreeDeleteCommand extends Command
 
             return;
         }
+        $how = $status['via'] === 'pull request' ? ' by a pull request (squashed or rebased)' : '';
         $delete = $this->option('delete-branch')
-            || (! $this->option('force') && $this->input->isInteractive() && confirm("Branch '{$branch}' is merged. Delete it?", true));
+            || (! $this->option('force') && $this->input->isInteractive() && confirm("Branch '{$branch}' is merged{$how}. Delete it?", true));
         if (! $delete) {
-            $this->components->warn("Branch '{$branch}' remains (merged; delete it with: git branch -d {$branch}).");
+            $flag = $status['via'] === 'pull request' ? '-D' : '-d';
+            $this->components->warn("Branch '{$branch}' remains (merged{$how}; delete it with: git branch {$flag} {$branch}).");
 
             return;
         }
-        if ($worktreeManager->deleteMergedBranch($branch)) {
+        if ($worktreeManager->deleteMergedBranch($branch, $status['via'] === 'pull request')) {
             $this->components->info("Deleted merged branch '{$branch}'.");
         } else {
             $this->components->warn("Branch '{$branch}' could not be deleted.");
