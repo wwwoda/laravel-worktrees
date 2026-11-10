@@ -5,7 +5,7 @@ description: Work in a git worktree of a Laravel project that uses woda/laravel-
 
 # Working in a worktree
 
-Each worktree of the project is a git checkout with its own Docker stack: an app container (PHP), its own database and Redis, and optional services behind compose profiles. Run every `worktree:*` command with `php artisan` in the worktree; without a name it acts on the checkout you are in.
+Each worktree of the project is a git checkout. With the `sail` or `shared` strategy it has its own Docker stack: an app container (PHP), its own database and Redis (or its own databases on a shared server), and optional services behind compose profiles. With `native`, PHP runs on the host and the container parts of this skill do not apply. Run every `worktree:*` command with `php artisan` in the worktree; without a name it acts on the checkout you are in.
 
 ## Start of a session
 
@@ -29,7 +29,7 @@ If the session-start hook is set up, this summary is already in your context. Re
 | Create another worktree | `php artisan worktree:create my-feature` (prints each step's time and the URL) |
 | Remove a worktree | `php artisan worktree:delete my-feature` (offers to delete a merged branch) |
 
-Do not run `php artisan test`, `composer` or `php artisan migrate` on the host: the host has the wrong database host, PHP version and environment. Use `worktree:exec`.
+With the `sail` or `shared` strategy (a Docker stack per worktree, the usual case), do not run `php artisan test`, `composer` or `php artisan migrate` on the host: the host has the wrong database host, PHP version and environment. Use `worktree:exec`. With the `native` strategy (no containers; `worktree:status` shows no compose project), the host is the right place, and `worktree:exec` runs the command there too.
 
 ## Decision tree
 
