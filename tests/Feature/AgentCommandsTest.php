@@ -322,11 +322,28 @@ it('reads * in COMPOSE_PROFILES as every profile', function () {
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' rm --stop --force'));
 });
 
+it('counts an edit inside an untracked folder as a code change', function () {
+    File::ensureDirectoryExists($this->path.'/app/NewFeature');
+    File::put($this->path.'/app/NewFeature/Job.php', '<?php');
+    touch($this->path.'/app/NewFeature/Job.php', time() + 200);
+    // The key of the default handler, so this result replaces it.
+    Process::fake(['git status --porcelain *' => Process::result("?? app/NewFeature/Job.php\n")]);
+
+    expect(app(WorktreeInspector::class)->lastCodeChange($this->path))->toBe(time() + 200);
+});
+
+it('removes a profile also when COMPOSE_PROFILES is *', function () {
+    File::append($this->path.'/.env', "COMPOSE_PROFILES=*\n");
+
+    $this->artisan('worktree:services', ['profiles' => ['workers'], '--worktree' => 't9', '--remove' => true])->assertSuccessful();
+    expect(File::get($this->path.'/.env'))->toContain('COMPOSE_PROFILES=tools');
+});
+
 it('counts a deleted file as a code change', function () {
     File::ensureDirectoryExists($this->path.'/app');
     touch($this->path.'/app', time() + 100);
+    // The key of the default handler, so this result replaces it.
     Process::fake(['git status --porcelain *' => Process::result(" D app/Gone.php\n")]);
-    ($this->fakeProcesses)();
 
     expect(app(WorktreeInspector::class)->lastCodeChange($this->path))->toBe(time() + 100);
 });

@@ -127,8 +127,15 @@ final readonly class WorktreeInspector
         if ($result->successful() && $reflog !== '' && is_file($reflog)) {
             $times[] = (int) filemtime($reflog);
         }
-        try {
-            foreach ($this->manager->changedFiles($path) as $file) {
+        // Every file, also inside untracked folders: a folder's time does not change when a file in it is edited.
+        $status = Process::path($path)->timeout(10)->run("git status --porcelain --untracked-files=all -- . ':(exclude)storage/worktree-bootstrap.*'");
+        if ($status->successful()) {
+            foreach (preg_split('/\r?\n/', rtrim($status->output())) ?: [] as $line) {
+                if (strlen($line) <= 3) {
+                    continue;
+                }
+                $file = substr($line, 3);
+                $file = trim(str_contains($file, ' -> ') ? substr($file, (int) strrpos($file, ' -> ') + 4) : $file, '"');
                 $full = $path.'/'.$file;
                 // A deleted file changed its folder (or, with the folder gone, the closest one that is left).
                 while (! file_exists($full) && $full !== $path && dirname($full) !== $full) {
@@ -138,8 +145,6 @@ final readonly class WorktreeInspector
                     $times[] = (int) filemtime($full);
                 }
             }
-        } catch (RuntimeException) {
-            // Without git status, HEAD's time is what we know.
         }
 
         return $times === [] ? 0 : max($times);

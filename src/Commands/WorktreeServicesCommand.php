@@ -120,7 +120,11 @@ class WorktreeServicesCommand extends Command
             return array_values(array_unique([...$stack->activeProfiles(), ...$names]));
         }
         if ($this->option('remove')) {
-            return array_values(array_diff($stack->activeProfiles(), $names));
+            // `*` is every profile: remove from the full list.
+            $active = $stack->activeProfiles();
+            $active = in_array('*', $active, true) ? $available : $active;
+
+            return array_values(array_diff($active, $names));
         }
 
         return $names;
