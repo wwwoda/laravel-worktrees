@@ -259,6 +259,34 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `database.pgsql_docker_container` | `WORKTREE_DB_PGSQL_DOCKER_CONTAINER` | Run the PostgreSQL clients in this container. [none] |
 | `database.docker_host` | `WORKTREE_DB_DOCKER_HOST` | Database host inside that container. [`127.0.0.1`] |
 
+### Fast setup (`sail`, `shared`)
+
+| Key | Env | Meaning |
+|---|---|---|
+| `fast.image.name` | `WORKTREE_APP_IMAGE_NAME` | Name of the shared app image. [none: off] |
+| `fast.image.env` | | `.env` key for its tag. [`WORKTREE_APP_IMAGE`] |
+| `fast.image.hash_paths` | | Build inputs that make the tag. [`['Dockerfile', 'docker']`] |
+| `fast.image.service` | `WORKTREE_APP_IMAGE_SERVICE` | The service that builds it. [the app service] |
+| `fast.composer.copy_vendor` | `WORKTREE_COPY_VENDOR` | Copy-on-write copy of `vendor` when `composer.lock` is equal. [true] |
+| `fast.composer.offline_first` | `WORKTREE_COMPOSER_OFFLINE_FIRST` | First install without network. [true] |
+| `fast.composer.cache_dir` | `WORKTREE_COMPOSER_CACHE_DIR` | `COMPOSER_CACHE_DIR` in the app container. [none] |
+| `fast.composer.runner` | `WORKTREE_COMPOSER_RUNNER` | `container` or `host`. [`container`] |
+| `fast.composer.host_command` | `WORKTREE_COMPOSER_HOST_COMMAND` | The install on the host. [`composer install --no-interaction --prefer-dist --ignore-platform-reqs`] |
+| `fast.parallel_node` | `WORKTREE_PARALLEL_NODE` | Node install while the containers start, when that is safe. [true] |
+| `fast.build_cache.enabled` | `WORKTREE_BUILD_CACHE` | Reuse a build with the same inputs. [true] |
+| `fast.build_cache.paths` | | Build inputs. [resources, `package.json`, lock files, Vite, TypeScript, Tailwind and PostCSS configs] |
+| `fast.build_cache.output` | | The build folder. [`public/build`] |
+| `fast.build_cache.keep` | | Cached builds kept. [5] |
+| `fast.database_dump.enabled` | `WORKTREE_DB_DUMP` | Start from a dump with test data. [false] |
+| `fast.database_dump.service` | `WORKTREE_DB_DUMP_SERVICE` | The database service. [`mariadb`] |
+| `fast.database_dump.hash_paths` | | What makes the key. [`['database/migrations', 'database/seeders']`] |
+| `fast.database_dump.seed_command` | `WORKTREE_DB_DUMP_SEED_COMMAND` | Fills the first database. [`php artisan db:seed --force`] |
+| `fast.database_dump.dump_command` | `WORKTREE_DB_DUMP_COMMAND` | In the database service. [`mariadb-dump … {database}`] |
+| `fast.database_dump.restore_command` | `WORKTREE_DB_RESTORE_COMMAND` | In the database service. [`mariadb … {database}`] |
+| `fast.database_dump.url` | `WORKTREE_DB_DUMP_URL` | Download URL with `{key}`. [none] |
+| `fast.database_dump.url_header` | `WORKTREE_DB_DUMP_URL_HEADER` | One header for the download. [none] |
+| `fast.database_dump.keep` | | Dumps kept. [3] |
+
 ### Shared services (`shared`)
 
 | Key | Env | Meaning |
@@ -344,6 +372,46 @@ When Sail's compose file builds the app image from `vendor/laravel/sail/...`, an
 ### Databases with the Sail strategy
 
 The `mysql` and `pgsql` clones copy on the main checkout's server. When each Sail worktree runs its own database service (the usual Sail compose file), the worktree does not use that server: set `WORKTREE_DB_STRATEGY=none`, and the migrations fill the worktree's own database. Keep `mysql` or `pgsql` only when `DB_HOST` of the worktrees points at the main checkout's server. The `sqlite` clone works with Sail: the relative path `database/database.sqlite` is correct on the host and in the container.
+
+### Fast setup (`sail`)
+
+A warm worktree of a separate stack (each worktree with its own database and Redis containers) is ready in about 10 seconds. These parts make it fast; all are in the top-level config section `fast`, and each can be switched off.
+
+| Part | What happens | What the project provides |
+|---|---|---|
+| Shared app image | The tag `{fast.image.name}:{key}` is written to the worktree's `.env` as `WORKTREE_APP_IMAGE`. The key is the content of `fast.image.hash_paths` (default `Dockerfile` and `docker/`). A missing tag is built once with `docker compose build`, under a lock, so worktrees made at the same time wait for one build. | `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service (and on the worker services with the same image), and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`. |
+| Composer | `composer install` runs first with `COMPOSER_DISABLE_NETWORK=1`: with a warm cache it needs no network, and a container without internet does not wait for time-outs (1.2 s instead of 88 s on an agent host). When that fails, it runs again with the network. With an equal `composer.lock`, `vendor` is first copied from the main checkout with copy-on-write (APFS on macOS, Btrfs or XFS on Linux; a one-file probe skips the copy on ext4). | A mount of the host's Composer cache into the app service and `WORKTREE_COMPOSER_CACHE_DIR` set to its path in the container. Or `WORKTREE_COMPOSER_RUNNER=host`: Composer runs on the host. |
+| Node | `pnpm install --prefer-offline` (`npm install --prefer-offline`) installs from the store. `node_modules` is never copied (a copy-on-write copy was slower than the install). When no service mounts a named volume at `node_modules`, the install runs while the containers start. | Nothing. |
+| Frontend build | The key is the git tree of `fast.build_cache.paths` (resources, lock files, the Vite config) at `HEAD`. A worktree with the same key gets a copy of a cached build from the main checkout's `storage/app/worktrees/builds/{key}/` (filled after each build), or of the main checkout's own `public/build` when the main checkout has the same key, no changes in those paths, and a manifest newer than its last checkout or commit. A worktree with uncommitted changes there builds. | Add the paths that the build reads to `fast.build_cache.paths` (for example the PHP classes that a type generator reads). |
+| Database with test data | See below. | `WORKTREE_DB_DUMP=true` and the seed command. |
+
+Also in the project's compose file: healthchecks with a short first check, for example `start_interval: 1s` (Compose 2.20 or later) next to `start_period`; with `interval: 10s` alone the first check comes after 10 seconds.
+
+`worktree:create` prints the time of each step. Measured on srv4 (Linux, ext4) with a Laravel 13 app, MariaDB and Redis per worktree, warm caches:
+
+| Step | Time |
+|---|---|
+| config (git worktree, `.env`) | 0.0 s |
+| environment (containers, MariaDB healthy on a fresh volume) | 6.3 s |
+| composer (offline, warm cache) | 1.4 s |
+| dump (restore) | 0.5 s |
+| build (copied from the cache) | 0.0 s |
+| migrations (nothing left) | 0.1 s |
+| node (in parallel with the steps above) | 8.3 s |
+| total | 8.4 s |
+
+### Database dump with test data
+
+With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree starts with a database that holds test data:
+
+1. The key is the content of `fast.database_dump.hash_paths` (default `database/migrations` and `database/seeders`) of the worktree and the seed command (`WORKTREE_DB_DUMP_SEED_COMMAND`, default `php artisan db:seed --force`).
+2. When the main checkout has `storage/app/worktrees/dumps/{key}.sql.gz`, it is restored into the worktree's database before the migrations, which then find nothing to do. Only an empty database (no migrations table) gets a restore.
+3. Else, with `WORKTREE_DB_DUMP_URL` (for example `https://ci.example.com/dumps/{key}.sql.gz`, with one header in `WORKTREE_DB_DUMP_URL_HEADER`), the dump is downloaded. A missing download is not an error.
+4. Else the worktree migrates, runs the seed command, and saves its database as the dump of the key for the next worktrees.
+
+The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image (`$MARIADB_ROOT_PASSWORD` in the container). For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
+
+**CI can publish the dump.** The key is the first 12 hex characters of SHA-256 over `seed:{seed command}\n`, then for each file under the hash paths, sorted by relative path (hidden files left out), `{relative path}\0{sha256 of the file}\n`. A CI job that migrates and seeds anyway can compute it the same way, dump the database to `{key}.sql.gz` and publish it where `WORKTREE_DB_DUMP_URL` points.
 
 ## Shared services
 
