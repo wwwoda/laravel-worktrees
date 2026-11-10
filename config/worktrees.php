@@ -234,6 +234,64 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Optional services (worktree:services)
+    |--------------------------------------------------------------------------
+    |
+    | Optional services are compose profiles: a service with `profiles:
+    | [workers]` runs only when COMPOSE_PROFILES in the worktree's `.env` names
+    | `workers`. `worktree:services workers` writes that key and starts or
+    | stops the containers.
+    |
+    | 'default': the profiles of a new worktree, written as COMPOSE_PROFILES
+    | at setup ("" for none). Null keeps the value copied from the main
+    | checkout's `.env`.
+    | 'aliases': other names for profiles, for example 'phpmyadmin' => 'tools'.
+    */
+
+    'services' => [
+        'default' => env('WORKTREE_DEFAULT_PROFILES'),
+        'aliases' => [
+            'phpmyadmin' => 'tools',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Commands in the app container (worktree:exec)
+    |--------------------------------------------------------------------------
+    |
+    | 'aliases': short names for the first word of `worktree:exec`.
+    | 'test_processes': with `php artisan test --parallel` and no
+    | `--processes`, use this many processes instead of one per CPU (for
+    | example 8 on a shared agent host). Empty: Laravel's default.
+    */
+
+    'exec' => [
+        'aliases' => [
+            'test' => 'php artisan test',
+            'artisan' => 'php artisan',
+            'tinker' => 'php artisan tinker',
+            'composer' => 'composer',
+        ],
+        'test_processes' => env('WORKTREE_TEST_PROCESSES'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Agent context (worktree:context)
+    |--------------------------------------------------------------------------
+    |
+    | 'notes': lines for agent sessions, for example where the test login is.
+    | 'log_errors': how many of the last error lines of laravel.log to show.
+    */
+
+    'context' => [
+        'notes' => [],
+        'log_errors' => 5,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | IDE
     |--------------------------------------------------------------------------
     */
