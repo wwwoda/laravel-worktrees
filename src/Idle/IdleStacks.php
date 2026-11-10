@@ -141,7 +141,7 @@ final readonly class IdleStacks
         if ($reflog->successful() && is_file($head = trim($reflog->output()))) {
             $times[] = (int) filemtime($head);
         }
-        $status = Process::path($path)->timeout(10)->run('git status --porcelain --untracked-files=normal');
+        $status = Process::path($path)->timeout(10)->run('git status --porcelain --untracked-files=all');
         foreach (preg_split('/\r?\n/', rtrim($status->output())) ?: [] as $line) {
             $file = $path.'/'.trim(substr($line, 3), '"');
             if (strlen($line) > 3 && file_exists($file)) {

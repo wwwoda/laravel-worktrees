@@ -86,3 +86,17 @@ it('wakes a stack and counts that as use', function () {
 it('reads docker sizes', function (string $value, ?int $bytes) {
     expect(IdleStacks::bytes($value))->toBe($bytes);
 })->with([['0B', 0], ['1.5kB', 1500], ['2MiB', 2097152], ['nonsense', null]]);
+
+it('skips a running stack without a traffic reading', function () {
+    Process::fake(['docker stats *' => Process::result(errorOutput: 'daemon busy', exitCode: 1)]);
+
+    $this->artisan('worktree:idle-stop', ['--minutes' => 30])->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_ends_with((string) $p->command, ' stop'));
+});
+
+it('reads each file inside untracked folders', function () {
+    // An edit inside an untracked folder does not change the folder's time: git must list the files.
+    app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'git status --porcelain --untracked-files=all' && $p->path === $this->paths['idle']);
+});

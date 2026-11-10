@@ -72,7 +72,13 @@ class WorktreeIdleStopCommand extends Command
                 continue;
             }
             $app = $checkout['running'][$stacks->appService()] ?? null;
-            $idle = intdiv($now - $stacks->lastActivity($checkout['path'], $app === null ? null : ($traffic[$app] ?? null), $now), 60);
+            // A running app container without a traffic reading (docker stats failed): unknown, not idle.
+            if ($app !== null && ! isset($traffic[$app])) {
+                $rows[] = [...$row, 'action' => 'skipped: no traffic reading'];
+
+                continue;
+            }
+            $idle = intdiv($now - $stacks->lastActivity($checkout['path'], $app === null ? null : $traffic[$app], $now), 60);
             $row['idle_minutes'] = $idle;
             if ($idle < $minutes) {
                 $rows[] = [...$row, 'action' => 'in use'];
