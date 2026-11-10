@@ -19,12 +19,14 @@ beforeEach(function () {
     File::ensureDirectoryExists($this->common);
     $this->envBefore = File::exists(base_path('.env')) ? File::get(base_path('.env')) : null;
     File::put(base_path('.env'), "APP_URL=https://app.test\nCOMPOSE_PROJECT_NAME=app\n");
-    File::ensureDirectoryExists(base_path('.claude/skills/app'));
-    File::put(base_path('.claude/skills/app/SKILL.md'), 'main working copy, with a local edit');
-    File::put(base_path('.claude/settings.local.json'), '{"local": true}');
+    // A folder of its own in the application: the test must not touch a real .claude folder.
+    $this->config = '.lw-test-claude-'.uniqid();
+    File::ensureDirectoryExists(base_path($this->config.'/skills/app'));
+    File::put(base_path($this->config.'/skills/app/SKILL.md'), 'main working copy, with a local edit');
+    File::put(base_path($this->config.'/settings.local.json'), '{"local": true}');
     config()->set('app.url', 'https://app.test');
     config()->set('worktrees.base_path', $this->base);
-    config()->set('worktrees.copy_files', ['.env', '.claude']);
+    config()->set('worktrees.copy_files', ['.env', './'.$this->config.'/']);
     config()->set('worktrees.database.strategy', 'none');
     config()->set('worktrees.bootstrap.strategy', 'sail');
     config()->set('worktrees.bootstrap.build_frontend', false);
@@ -32,18 +34,19 @@ beforeEach(function () {
     $this->path = $this->base.'/'.basename(base_path()).'-t9';
     $this->listed = true;
     $this->psResults = [];
+    $this->lsFiles = null;
     $this->fake = function (array $extra = []) {
         Process::fake($extra + [
             'git show-ref *' => Process::result(exitCode: 1),
             'git worktree add *' => function () {
-                File::ensureDirectoryExists($this->path.'/.claude/skills/app');
-                File::put($this->path.'/.claude/skills/app/SKILL.md', 'branch version');
+                File::ensureDirectoryExists($this->path.'/'.$this->config.'/skills/app');
+                File::put($this->path.'/'.$this->config.'/skills/app/SKILL.md', 'branch version');
 
                 return Process::result();
             },
             'git worktree list --porcelain' => fn () => Process::result('worktree '.base_path()."\nHEAD 000\nbranch refs/heads/master\n\n"
                 .($this->listed && is_dir($this->path) ? "worktree {$this->path}\nHEAD abc\nbranch refs/heads/t9\n\n" : '')),
-            "git ls-files -z -- '.claude'" => Process::result(".claude/skills/app/SKILL.md\0"),
+            'git ls-files -z -- *' => fn () => $this->lsFiles ?? Process::result($this->config."/skills/app/SKILL.md\0"),
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->common."\n"),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'docker compose ps --format json' => fn () => array_shift($this->psResults) ?? Process::result(),
@@ -54,7 +57,7 @@ beforeEach(function () {
 
 afterEach(function () {
     File::deleteDirectory($this->base);
-    File::deleteDirectory(base_path('.claude'));
+    File::deleteDirectory(base_path($this->config));
     $this->envBefore === null ? File::delete(base_path('.env')) : File::put(base_path('.env'), $this->envBefore);
 });
 
@@ -63,8 +66,18 @@ it('copies config folders without overwriting the files git tracks in the worktr
 
     $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
 
-    expect(File::get($this->path.'/.claude/skills/app/SKILL.md'))->toBe('branch version')
-        ->and(File::get($this->path.'/.claude/settings.local.json'))->toBe('{"local": true}');
+    expect(File::get($this->path.'/'.$this->config.'/skills/app/SKILL.md'))->toBe('branch version')
+        ->and(File::get($this->path.'/'.$this->config.'/settings.local.json'))->toBe('{"local": true}');
+});
+
+it('replaces no existing file when git cannot list the tracked files', function () {
+    $this->lsFiles = Process::result(errorOutput: 'fatal', exitCode: 128);
+    ($this->fake)();
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
+
+    expect(File::get($this->path.'/'.$this->config.'/skills/app/SKILL.md'))->toBe('branch version')
+        ->and(File::get($this->path.'/'.$this->config.'/settings.local.json'))->toBe('{"local": true}');
 });
 
 it('lists the files the package writes in the repository\'s info/exclude, once', function () {
@@ -78,8 +91,9 @@ it('lists the files the package writes in the repository\'s info/exclude, once',
         ->and($exclude)->toContain('/storage/worktree-bootstrap.lock');
 });
 
-it('waits while a healthcheck still starts', function () {
+it('waits while a healthcheck still starts, and while compose cannot tell', function () {
     $this->psResults = [
+        Process::result(errorOutput: 'daemon busy', exitCode: 1),
         Process::result(json_encode(['Service' => 'mariadb', 'Health' => 'starting'])."\n".json_encode(['Service' => 'redis', 'Health' => 'healthy'])),
         Process::result(json_encode(['Service' => 'mariadb', 'Health' => 'healthy'])),
     ];
@@ -87,7 +101,7 @@ it('waits while a healthcheck still starts', function () {
     File::ensureDirectoryExists($this->path);
 
     (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->bringUp($this->path);
-    Process::assertRanTimes('docker compose ps --format json', 2);
+    Process::assertRanTimes('docker compose ps --format json', 3);
 });
 
 it('removes the images the worktree built for itself on delete, and no shared image', function () {
@@ -118,7 +132,7 @@ it('offers a branch that a pull request squashed, and only with the same head co
         "git show-ref --verify --quiet 'refs/heads/t9'" => Process::result(),
         'git merge-base --is-ancestor *' => Process::result(exitCode: 1),
         "git rev-parse 'refs/heads/t9'" => Process::result("abc123\n"),
-        "gh pr list --head 't9' *" => Process::result(json_encode([['headRefOid' => $prHead]])),
+        "gh pr list --head 't9' --base 'master' *" => Process::result(json_encode([['headRefOid' => $prHead]])),
     ]);
     File::ensureDirectoryExists($this->path.'/storage');
     app()->singleton(BootstrapStrategy::class, fn () => new NativeBootstrapStrategy('pnpm'));

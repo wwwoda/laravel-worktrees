@@ -82,6 +82,13 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             $starting = [];
             $unhealthy = [];
             $result = $this->compose($worktreePath, 30)->run('docker compose ps --format json');
+            if (! $result->successful()) {
+                // Unknown is not ready: ask again until the deadline.
+                $starting = ['(docker compose ps failed: '.trim($result->errorOutput()).')'];
+                usleep(500_000);
+
+                continue;
+            }
             foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
                 $decoded = json_decode($line, true);
                 // Compose before 2.21 prints one array; later versions one object per line.

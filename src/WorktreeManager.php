@@ -217,7 +217,8 @@ class WorktreeManager
             return ['exists' => true, 'merged' => true, 'via' => 'ancestor'];
         }
         $head = trim($this->git('rev-parse '.escapeshellarg('refs/heads/'.$branch))->output());
-        $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr list --head %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch)));
+        // Only a pull request into the base branch: one merged into another branch did not reach it.
+        $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr list --head %s --base %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch), escapeshellarg($this->baseBranch)));
         $pulls = $result->successful() ? json_decode($result->output(), true) : null;
         foreach (is_array($pulls) ? $pulls : [] as $pull) {
             if (is_array($pull) && $head !== '' && ($pull['headRefOid'] ?? null) === $head) {
@@ -632,7 +633,13 @@ class WorktreeManager
     {
         $sourcePath = base_path();
 
-        foreach ($this->copyFiles as $file) {
+        foreach ($this->copyFiles as $entry) {
+            // `.claude/` and `./.claude` name the same folder as git's `.claude`.
+            $file = (string) preg_replace('#^(\./)+#', '', trim($entry));
+            $file = rtrim($file, '/');
+            if ($file === '') {
+                continue;
+            }
             $source = $sourcePath.'/'.$file;
             $target = $targetPath.'/'.$file;
 
@@ -641,19 +648,23 @@ class WorktreeManager
             }
             // Files that git tracks in the worktree keep the branch's version: a copy of the
             // main checkout's working file (a folder such as .claude holds tracked skills)
-            // would show as a change in every new worktree.
+            // would show as a change in every new worktree. Without the list of tracked
+            // files, no file that exists in the worktree is replaced.
             $tracked = $this->trackedFiles($targetPath, $file);
+            $keep = fn (string $relative): bool => $tracked === null
+                ? File::exists($targetPath.'/'.$relative)
+                : isset($tracked[$relative]);
 
             if (File::isDirectory($source)) {
                 foreach (File::allFiles($source, true) as $item) {
                     $relative = $file.'/'.str_replace(DIRECTORY_SEPARATOR, '/', $item->getRelativePathname());
-                    if (isset($tracked[$relative])) {
+                    if ($keep($relative)) {
                         continue;
                     }
                     File::ensureDirectoryExists(dirname($targetPath.'/'.$relative));
                     File::copy($item->getPathname(), $targetPath.'/'.$relative);
                 }
-            } elseif (! isset($tracked[$file])) {
+            } elseif (! $keep($file)) {
                 File::ensureDirectoryExists(dirname($target));
                 File::copy($source, $target);
             }
@@ -661,15 +672,16 @@ class WorktreeManager
     }
 
     /**
-     * The files under `$pathspec` that git tracks in the checkout, as a set of relative paths.
+     * The files under `$pathspec` that git tracks in the checkout, as a set of
+     * relative paths; null when git cannot tell.
      *
-     * @return array<string, true>
+     * @return array<string, true>|null
      */
-    private function trackedFiles(string $checkout, string $pathspec): array
+    private function trackedFiles(string $checkout, string $pathspec): ?array
     {
         $result = Process::path($checkout)->timeout(30)->run('git ls-files -z -- '.escapeshellarg($pathspec));
         if (! $result->successful()) {
-            return [];
+            return null;
         }
         $files = array_filter(explode("\0", $result->output()), static fn (string $file): bool => $file !== '');
 
