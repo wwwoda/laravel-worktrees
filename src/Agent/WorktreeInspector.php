@@ -40,23 +40,27 @@ final readonly class WorktreeInspector
     }
 
     /**
-     * Why a mutating command must not act on the target's containers: a linked
-     * worktree with the main checkout's compose project would act on the main
+     * Why a mutating command must not act on the target's containers: a
+     * checkout whose compose project is another checkout's (the main checkout's,
+     * or one whose containers carry the project name) would act on that
      * checkout's containers. Null when that is not the case.
      */
     public function ownStackProblem(WorktreeTarget $target): ?string
     {
         $stack = $this->stack($target->path);
-        if ($stack === null || $target->main) {
+        if ($stack === null) {
             return null;
         }
         try {
-            $stack->assertOwnProject(new ComposeStack(MainCheckout::path(), $stack->appService));
+            if (! $target->main) {
+                $stack->assertOwnProject(new ComposeStack(MainCheckout::path(), $stack->appService));
+            }
+            $owner = $stack->foreignOwner();
         } catch (RuntimeException $error) {
             return $error->getMessage();
         }
 
-        return null;
+        return $owner === null ? null : "The compose project '{$stack->projectName()}' belongs to the containers of {$owner}: acting on it here would change that checkout's containers. Give each checkout its own COMPOSE_PROJECT_NAME (worktrees.env_overrides).";
     }
 
     public function assertOwnStack(WorktreeTarget $target): void
@@ -126,7 +130,11 @@ final readonly class WorktreeInspector
         try {
             foreach ($this->manager->changedFiles($path) as $file) {
                 $full = $path.'/'.$file;
-                if (is_file($full)) {
+                // A deleted file changed its folder (or, with the folder gone, the closest one that is left).
+                while (! file_exists($full) && $full !== $path && dirname($full) !== $full) {
+                    $full = dirname($full);
+                }
+                if (file_exists($full)) {
                     $times[] = (int) filemtime($full);
                 }
             }

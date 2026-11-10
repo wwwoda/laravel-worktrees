@@ -83,7 +83,8 @@ final class ComposeStack
     {
         $services = [];
         foreach ($this->serviceProfiles() as $service => $serviceProfiles) {
-            if ($serviceProfiles === [] || array_intersect($serviceProfiles, $profiles) !== []) {
+            // `*` in COMPOSE_PROFILES turns on every profile.
+            if ($serviceProfiles === [] || in_array('*', $profiles, true) || array_intersect($serviceProfiles, $profiles) !== []) {
                 $services[] = $service;
             }
         }
@@ -119,6 +120,35 @@ final class ComposeStack
         if ($ours !== null && $ours === $main->projectName()) {
             throw new RuntimeException("This worktree has the compose project of the main checkout ('{$ours}'): changing its services would act on the main checkout's containers. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides).");
         }
+    }
+
+    /**
+     * The folder of another checkout whose containers carry this compose
+     * project's name (compose writes the folder into the label
+     * `com.docker.compose.project.working_dir`); null when none does.
+     */
+    public function foreignOwner(): ?string
+    {
+        $project = $this->projectName();
+        if ($project === null) {
+            return null;
+        }
+        $result = Process::timeout(30)->run(sprintf(
+            'docker ps -a --filter %s --format %s',
+            escapeshellarg('label=com.docker.compose.project='.$project),
+            escapeshellarg('{{.Label "com.docker.compose.project.working_dir"}}'),
+        ));
+        if (! $result->successful()) {
+            return null;
+        }
+        $self = rtrim(realpath($this->path) ?: $this->path, '/');
+        foreach (array_unique(array_filter(array_map(trim(...), preg_split('/\r?\n/', $result->output()) ?: []))) as $folder) {
+            if (rtrim(realpath($folder) ?: $folder, '/') !== $self) {
+                return $folder;
+            }
+        }
+
+        return null;
     }
 
     /**

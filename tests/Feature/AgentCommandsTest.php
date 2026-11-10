@@ -41,6 +41,7 @@ beforeEach(function () {
     $this->migrateStatus = Process::result("  2014_01_01_000000_a ........ [1] Ran\n  2026_01_01_000000_b ........ Pending\n");
     $this->started = [];
     $this->imageIds = [];
+    $this->owner = null;
     $this->execResult = Process::result();
     $this->fakeProcesses = function () {
         Process::fake([
@@ -65,6 +66,7 @@ beforeEach(function () {
                 fn (string $name, int $time) => "/{$name}|".gmdate('Y-m-d\TH:i:s.123456789\Z', $time).'|'.($this->imageIds[$name] ?? 'sha256:app'),
                 array_keys($this->started), $this->started,
             ))),
+            'docker ps -a --filter *' => fn () => Process::result($this->owner ?? $this->path),
             '*migrate:status*' => fn () => $this->migrateStatus,
             'docker compose exec *' => fn () => $this->execResult,
             '*' => Process::result(),
@@ -302,4 +304,29 @@ it('fixes native worktrees with the environment of the target', function () {
     app(Doctor::class)->fix('database', $target);
     Process::assertRan(fn (PendingProcess $p) => $p->command === 'php artisan migrate --force' && $p->path === $this->path
         && ($p->environment['DB_DATABASE'] ?? null) === false);
+});
+
+it('refuses a worktree whose compose project another checkout\'s containers carry', function () {
+    $this->owner = $this->base.'/elsewhere';
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])
+        ->expectsOutputToContain("belongs to the containers of {$this->base}/elsewhere")
+        ->assertFailed();
+    $this->artisan('worktree:services', ['profiles' => ['workers'], '--worktree' => 't9'])->assertFailed();
+});
+
+it('reads * in COMPOSE_PROFILES as every profile', function () {
+    File::append($this->path.'/.env', "COMPOSE_PROFILES=*\n");
+
+    $this->artisan('worktree:services', ['profiles' => ['tools'], '--worktree' => 't9', '--add' => true])->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' rm --stop --force'));
+});
+
+it('counts a deleted file as a code change', function () {
+    File::ensureDirectoryExists($this->path.'/app');
+    touch($this->path.'/app', time() + 100);
+    Process::fake(['git status --porcelain *' => Process::result(" D app/Gone.php\n")]);
+    ($this->fakeProcesses)();
+
+    expect(app(WorktreeInspector::class)->lastCodeChange($this->path))->toBe(time() + 100);
 });
