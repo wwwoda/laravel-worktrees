@@ -1,0 +1,295 @@
+<?php
+
+use Illuminate\Process\PendingProcess;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\Fast\AppImage;
+use Woda\Worktrees\Fast\BuildCache;
+use Woda\Worktrees\Fast\ContentKey;
+use Woda\Worktrees\Fast\DatabaseDump;
+use Woda\Worktrees\Fast\FastSetup;
+use Woda\Worktrees\SailBootstrapStrategy;
+use Woda\Worktrees\Shared\MainCheckout;
+
+/*
+ * The fast setup of the Sail strategy: shared app image, offline-first
+ * Composer, the node install in parallel, the frontend build cache and the
+ * database dump. Docker is faked; the build cache runs real git.
+ */
+beforeEach(function () {
+    $this->base = sys_get_temp_dir().'/worktrees-fast-'.uniqid();
+    File::ensureDirectoryExists($this->base);
+    $this->envBefore = File::exists(base_path('.env')) ? File::get(base_path('.env')) : null;
+    File::put(base_path('.env'), "APP_NAME=App\nAPP_URL=https://app.test\nCOMPOSE_PROJECT_NAME=app\nDB_DATABASE=app\n");
+    config()->set('app.url', 'https://app.test');
+    config()->set('worktrees.base_path', $this->base);
+    config()->set('worktrees.copy_files', ['.env']);
+    config()->set('worktrees.database.strategy', 'none');
+    config()->set('worktrees.bootstrap.strategy', 'sail');
+    config()->set('worktrees.bootstrap.build_frontend', false);
+    config()->set('worktrees.env_overrides', ['COMPOSE_PROJECT_NAME' => 'app-{name}']);
+    $this->path = $this->base.'/'.basename(base_path()).'-t9';
+    $this->images = [];
+    $this->composerOffline = Process::result();
+    $this->migrateStatus = Process::result(errorOutput: 'Migration table not found.', exitCode: 1);
+    $this->fake = function (array $extra = []) {
+        // The extra handlers win, also over a base handler of the same pattern.
+        Process::fake($extra + [
+            'git show-ref *' => Process::result(exitCode: 1),
+            'git worktree add *' => function () {
+                File::ensureDirectoryExists($this->path);
+                File::put($this->path.'/Dockerfile', 'FROM alpine');
+                File::ensureDirectoryExists($this->path.'/database/migrations');
+                File::put($this->path.'/database/migrations/0001_create.php', '<?php');
+
+                return Process::result();
+            },
+            'git worktree list --porcelain' => fn () => Process::result('worktree '.base_path()."\nHEAD 000\nbranch refs/heads/master\n\nworktree {$this->path}\nHEAD abc\nbranch refs/heads/t9\n\n"),
+            "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
+            'docker image inspect *' => function (PendingProcess $p) {
+                preg_match("/'([^']+)'$/", (string) $p->command, $m);
+
+                return Process::result(exitCode: in_array($m[1], $this->images, true) ? 0 : 1);
+            },
+            "docker compose build 'laravel.test'" => function () {
+                $this->images[] = 'app-image:'.ContentKey::of($this->path, ['Dockerfile', 'docker']);
+
+                return Process::result();
+            },
+            '*COMPOSER_DISABLE_NETWORK=1*composer install*' => fn () => $this->composerOffline,
+            '*migrate:status*' => fn () => $this->migrateStatus,
+            '*' => Process::result(),
+        ]);
+    };
+    MainCheckout::forget();
+});
+
+afterEach(function () {
+    File::deleteDirectory($this->base);
+    $this->envBefore === null ? File::delete(base_path('.env')) : File::put(base_path('.env'), $this->envBefore);
+    File::deleteDirectory(base_path('storage/app/worktrees'));
+    MainCheckout::forget();
+});
+
+$strategy = fn (FastSetup $fast) => app()->instance(BootstrapStrategy::class, new SailBootstrapStrategy('laravel.test', 'pnpm', false, fast: $fast));
+
+it('builds the shared app image once and writes its tag to .env', function () use ($strategy) {
+    ($this->fake)();
+    $strategy(new FastSetup(image: new AppImage('app-image')));
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
+    $tag = 'app-image:'.ContentKey::of($this->path, ['Dockerfile', 'docker']);
+    expect(File::get($this->path.'/.env'))->toContain("WORKTREE_APP_IMAGE={$tag}");
+    Process::assertRanTimes("docker compose build 'laravel.test'", 1);
+
+    // A second start finds the image.
+    app(BootstrapStrategy::class)->bringUp($this->path);
+    Process::assertRanTimes("docker compose build 'laravel.test'", 1);
+});
+
+it('stops when the build does not make the tag the compose file should name', function () use ($strategy) {
+    ($this->fake)(["docker compose build 'laravel.test'" => Process::result()]);
+    $strategy(new FastSetup(image: new AppImage('app-image')));
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])
+        ->expectsOutputToContain('must name the image as ${WORKTREE_APP_IMAGE}')
+        ->assertFailed();
+});
+
+it('installs Composer packages offline first and with the network after a cache miss', function () use ($strategy) {
+    ($this->fake)();
+    $strategy(new FastSetup(composerCacheDir: '/composer-cache'));
+    File::ensureDirectoryExists($this->path);
+
+    app(BootstrapStrategy::class)->installComposerDependencies($this->path);
+    Process::assertRan("docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' -e 'COMPOSER_CACHE_DIR=/composer-cache' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'");
+    Process::assertNotRan("docker compose exec -T -e 'COMPOSER_CACHE_DIR=/composer-cache' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'");
+
+    $this->composerOffline = Process::result(errorOutput: 'cache miss', exitCode: 1);
+    app(BootstrapStrategy::class)->installComposerDependencies($this->path);
+    Process::assertRan("docker compose exec -T -e 'COMPOSER_CACHE_DIR=/composer-cache' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'");
+});
+
+it('runs Composer on the host when configured', function () use ($strategy) {
+    ($this->fake)();
+    $strategy(new FastSetup(composerRunner: 'host'));
+    File::ensureDirectoryExists($this->path);
+
+    app(BootstrapStrategy::class)->installComposerDependencies($this->path);
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'COMPOSER_DISABLE_NETWORK=1 composer install --no-interaction --prefer-dist --ignore-platform-reqs' && $p->path === $this->path);
+});
+
+it('installs node packages while the containers start when no container mounts node_modules', function () use ($strategy) {
+    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => [['type' => 'bind', 'target' => '/var/www/html']]]]]))]);
+    $strategy(new FastSetup);
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();
+    $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->toContain('node');
+    Process::assertRan('pnpm install --prefer-offline');
+    expect(File::get($this->path.'/storage/logs/worktree-setup.log'))->toContain('node (in parallel)');
+});
+
+it('installs node packages first when a container mounts a volume at node_modules', function () use ($strategy) {
+    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => [['type' => 'volume', 'target' => '/var/www/html/node_modules']]]]]))]);
+    $strategy(new FastSetup);
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();
+    expect(File::get($this->path.'/storage/logs/worktree-setup.log'))->not->toContain('node (in parallel)');
+});
+
+it('restores the dump into an empty database and skips the seed', function () use ($strategy) {
+    ($this->fake)();
+    $dump = new DatabaseDump(true);
+    $strategy(new FastSetup(dump: $dump));
+    // The worktree's key is known after the checkout exists; store the dump for it then.
+    Process::fake(['git worktree add *' => function () use ($dump) {
+        File::ensureDirectoryExists($this->path.'/database/migrations');
+        File::put($this->path.'/database/migrations/0001_create.php', '<?php');
+        $file = $dump->path($dump->key($this->path));
+        File::ensureDirectoryExists(dirname($file));
+        File::put($file, gzencode('-- dump'));
+
+        return Process::result();
+    }]);
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "gunzip -c '".base_path('storage/app/worktrees/dumps/'))
+        && str_contains((string) $p->command, "docker compose exec -T 'mariadb' sh -c"));
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'db:seed'));
+    $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->toContain('dump')->not->toContain('seed');
+});
+
+it('seeds and saves a dump when none exists for the key', function () use ($strategy) {
+    ($this->fake)(["docker compose exec -T 'mariadb' sh -c * > *" => function (PendingProcess $p) {
+        preg_match("/> '([^']+)'$/", (string) $p->command, $m);
+        File::put($m[1], '-- dump');
+
+        return Process::result();
+    }, "'gzip' *" => function (PendingProcess $p) {
+        $file = end($p->command);
+        File::put($file.'.gz', gzencode(File::get($file)));
+        File::delete($file);
+
+        return Process::result();
+    }]);
+    $dump = new DatabaseDump(true, seedCommand: 'php artisan app:seed-test-data');
+    $strategy(new FastSetup(dump: $dump));
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+    Process::assertRan("docker compose exec -T 'laravel.test' sh -c 'php artisan app:seed-test-data'");
+    expect(File::exists($dump->path($dump->key($this->path))))->toBeTrue();
+    $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->toContain('dump', 'migrations', 'seed');
+});
+
+it('does not restore into a database with tables', function () use ($strategy) {
+    ($this->fake)();
+    $this->migrateStatus = Process::result('  0001_create ..... [1] Ran');
+    $strategy(new FastSetup(dump: new DatabaseDump(true)));
+    File::ensureDirectoryExists($this->path);
+
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBeFalse();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip'));
+});
+
+it('downloads a missing dump and keeps a failed download out of the way', function () {
+    config()->set('worktrees.base_path', $this->base);
+    File::ensureDirectoryExists($this->path.'/database/migrations');
+    $dump = new DatabaseDump(true, url: 'https://ci.example/dumps/{key}.sql.gz', urlHeader: 'Authorization: Bearer x');
+    $key = $dump->key($this->path);
+    Process::fake([
+        "'curl' *" => function (PendingProcess $p) {
+            $out = $p->command[array_search('-o', $p->command, true) + 1];
+            File::put($out, gzencode('-- dump'));
+
+            return Process::result();
+        },
+        '*' => Process::result(),
+    ]);
+
+    expect($dump->find($this->path))->toBe($dump->path($key));
+    Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array("https://ci.example/dumps/{$key}.sql.gz", $p->command, true) && in_array('Authorization: Bearer x', $p->command, true));
+
+    File::delete($dump->path($key));
+    Process::fake(["'curl' *" => Process::result(exitCode: 22), '*' => Process::result()]);
+    expect($dump->find($this->path))->toBeNull()
+        ->and(glob(dirname($dump->path($key)).'/*'))->toBe([]);
+});
+
+it('keys templates as before', function () {
+    File::ensureDirectoryExists($this->base.'/m/database/migrations');
+    File::put($this->base.'/m/database/migrations/a.php', 'x');
+    $context = hash_init('sha256');
+    hash_update($context, "seed:s\n");
+    hash_update($context, 'database/migrations/a.php'."\0".hash('sha256', 'x')."\n");
+
+    expect(ContentKey::of($this->base.'/m', ['database/migrations'], "seed:s\n"))->toBe(substr(hash_final($context), 0, 12));
+});
+
+describe('the frontend build cache', function () {
+    beforeEach(function () {
+        $this->main = $this->base.'/main';
+        $this->tree = $this->base.'/tree';
+        $git = fn (string $dir, string $cmd) => Process::path($dir)->run('git -c user.email=t@example.invalid -c user.name=t '.$cmd)->throw();
+        File::ensureDirectoryExists($this->main.'/resources/js');
+        File::put($this->main.'/resources/js/app.js', 'console.log(1)');
+        File::put($this->main.'/package.json', '{}');
+        File::put($this->main.'/.gitignore', "/public/build\n/storage\n");
+        $git($this->main, 'init -q -b main');
+        $git($this->main, 'add -A');
+        $git($this->main, 'commit -qm init');
+        $git($this->main, 'worktree add -q '.escapeshellarg($this->tree).' -b t');
+        $this->git = $git;
+        $this->cache = new BuildCache(true, ['resources', 'package.json'], 'sail:pnpm', mainCheckout: $this->main);
+    });
+
+    it('copies the main checkout\'s build when it is newer than its last checkout, and keeps it', function () {
+        File::ensureDirectoryExists($this->main.'/public/build');
+        File::put($this->main.'/public/build/manifest.json', '{"main":1}');
+        touch($this->main.'/public/build/manifest.json', time() + 5);
+
+        expect($this->cache->key($this->tree))->toBe($this->cache->key($this->main))
+            ->and($this->cache->restore($this->tree))->toBe('main checkout')
+            ->and(File::get($this->tree.'/public/build/manifest.json'))->toBe('{"main":1}');
+
+        File::deleteDirectory($this->tree.'/public/build');
+        File::deleteDirectory($this->main.'/public/build');
+        expect($this->cache->restore($this->tree))->toBe('cache');
+    });
+
+    it('does not use a build older than the main checkout\'s last checkout', function () {
+        File::ensureDirectoryExists($this->main.'/public/build');
+        File::put($this->main.'/public/build/manifest.json', '{}');
+        touch($this->main.'/public/build/manifest.json', time() - 3600);
+
+        expect($this->cache->restore($this->tree))->toBeNull();
+    });
+
+    it('has no key with uncommitted changes in the inputs, and a new key after a commit', function () {
+        $before = $this->cache->key($this->tree);
+        File::put($this->tree.'/resources/js/app.js', 'console.log(2)');
+        expect($this->cache->key($this->tree))->toBeNull();
+
+        ($this->git)($this->tree, 'commit -qam change');
+        expect($this->cache->key($this->tree))->not->toBeNull()->not->toBe($before);
+    });
+
+    it('stores a fresh build and prunes old entries', function () {
+        $cache = new BuildCache(true, ['resources', 'package.json'], 'sail:pnpm', keep: 1, mainCheckout: $this->main);
+        File::ensureDirectoryExists($this->tree.'/public/build');
+        File::put($this->tree.'/public/build/manifest.json', '{"tree":1}');
+        $cache->store($this->tree);
+        $key = $cache->key($this->tree);
+        expect(File::exists($this->main.'/storage/app/worktrees/builds/'.$key.'/manifest.json'))->toBeTrue();
+
+        File::put($this->tree.'/resources/js/app.js', 'console.log(3)');
+        ($this->git)($this->tree, 'commit -qam change');
+        touch($this->main.'/storage/app/worktrees/builds/'.$key, time() - 60);
+        $cache->store($this->tree);
+        expect(glob($this->main.'/storage/app/worktrees/builds/*'))->toHaveCount(1)
+            ->and(File::exists($this->main.'/storage/app/worktrees/builds/'.$key))->toBeFalse();
+    });
+});

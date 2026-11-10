@@ -69,6 +69,80 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Fast setup (bootstrap strategies 'sail' and 'shared')
+    |--------------------------------------------------------------------------
+    |
+    | A top-level section, so a published 'bootstrap' section does not hide it.
+    */
+
+    'fast' => [
+        // One app image per version of its build inputs, shared by all worktrees.
+        // The setup writes '{name}:{key}' to the worktree's .env as 'env'; the
+        // compose file must use it: `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}`.
+        // Empty name: off (each compose project keeps its own image).
+        'image' => [
+            'name' => env('WORKTREE_APP_IMAGE_NAME'),
+            'env' => 'WORKTREE_APP_IMAGE',
+            'hash_paths' => ['Dockerfile', 'docker'],
+            // The compose service that builds it. Empty: bootstrap.sail.app_service.
+            'service' => env('WORKTREE_APP_IMAGE_SERVICE'),
+        ],
+
+        'composer' => [
+            // Copy vendor from the main checkout with copy-on-write (APFS, Btrfs,
+            // XFS) when composer.lock is equal; the install then only checks.
+            'copy_vendor' => (bool) env('WORKTREE_COPY_VENDOR', true),
+            // First `composer install` without network (a warm cache needs none,
+            // and a container without internet would wait for time-outs), then
+            // with network when that fails.
+            'offline_first' => (bool) env('WORKTREE_COMPOSER_OFFLINE_FIRST', true),
+            // COMPOSER_CACHE_DIR in the app container: where the compose file
+            // mounts the host's Composer cache. Empty: Composer's default.
+            'cache_dir' => env('WORKTREE_COMPOSER_CACHE_DIR'),
+            // 'container' (the app service) or 'host'.
+            'runner' => env('WORKTREE_COMPOSER_RUNNER', 'container'),
+            'host_command' => env('WORKTREE_COMPOSER_HOST_COMMAND', 'composer install --no-interaction --prefer-dist --ignore-platform-reqs'),
+        ],
+
+        // Install node packages on the host while the containers start, when no
+        // container mounts a volume at node_modules.
+        'parallel_node' => (bool) env('WORKTREE_PARALLEL_NODE', true),
+
+        // Reuse a frontend build whose inputs (the git tree of these paths) are
+        // the same: from the cache in the main checkout's storage/app/worktrees/builds,
+        // or from the main checkout's own build.
+        'build_cache' => [
+            'enabled' => (bool) env('WORKTREE_BUILD_CACHE', true),
+            'paths' => [
+                'resources', 'package.json', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock',
+                'vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'tsconfig.json',
+                'tailwind.config.js', 'tailwind.config.ts', 'postcss.config.js', 'postcss.config.cjs',
+            ],
+            'output' => 'public/build',
+            'keep' => 5,
+        ],
+
+        // A ready-made database with test data ('sail': the worktree's own
+        // database service). Keyed by the content of 'hash_paths' and the seed
+        // command. Without a dump for the key: download it from 'url' ({key} is
+        // replaced), else migrate, run the seed command and save it.
+        'database_dump' => [
+            'enabled' => (bool) env('WORKTREE_DB_DUMP', false),
+            'service' => env('WORKTREE_DB_DUMP_SERVICE', 'mariadb'),
+            'hash_paths' => ['database/migrations', 'database/seeders'],
+            'seed_command' => env('WORKTREE_DB_DUMP_SEED_COMMAND', 'php artisan db:seed --force'),
+            // Run in the database service with `sh -c`; {database} is the worktree's DB_DATABASE.
+            'dump_command' => env('WORKTREE_DB_DUMP_COMMAND', 'mariadb-dump -uroot -p"$MARIADB_ROOT_PASSWORD" --single-transaction --routines --triggers --skip-dump-date {database}'),
+            'restore_command' => env('WORKTREE_DB_RESTORE_COMMAND', 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" {database}'),
+            'url' => env('WORKTREE_DB_DUMP_URL'),
+            // One header for the download, for example 'Authorization: Bearer ...'.
+            'url_header' => env('WORKTREE_DB_DUMP_URL_HEADER'),
+            'keep' => 3,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Shared services (bootstrap strategy 'shared')
     |--------------------------------------------------------------------------
     |

@@ -3,12 +3,17 @@
 namespace Woda\Worktrees;
 
 use Closure;
+use Illuminate\Contracts\Process\InvokedProcess;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
+use Woda\Worktrees\Contracts\UsesDatabaseDump;
+use Woda\Worktrees\Fast\FastSetup;
+use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\MainCheckout;
 
 /**
  * Sail / docker-compose bootstrap.
@@ -31,17 +36,20 @@ use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
  * every compose invocation; compose then falls back to the new worktree's
  * own `.env` for project name + everything else.
  */
-class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp
+class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp, UsesDatabaseDump
 {
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
         private readonly bool $buildFrontend,
         private readonly int $bringUpTimeout = 600,
+        protected readonly FastSetup $fast = new FastSetup,
+        private readonly ?Closure $onStep = null,
     ) {}
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
+        $this->useSharedImage($worktreePath, $output);
         $config = $this->composeConfig($worktreePath);
         $this->assertOwnComposeProject($worktreePath, $config);
         $lent = $this->lendVendorPaths($worktreePath, $config);
@@ -270,10 +278,28 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
     {
-        $result = $this->compose($worktreePath, 600)->run(
-            $this->execCommand('composer install --no-interaction --prefer-dist'),
-            $output,
-        );
+        // With an equal composer.lock, a copy-on-write copy of the main checkout's
+        // vendor makes the install below a check. The install still runs: the main
+        // checkout may have been installed with --no-dev, and the autoloader must
+        // describe this branch's classes.
+        $this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output, $this->fast->copyVendor);
+        $host = $this->fast->composerRunner === 'host';
+        $run = function (bool $offline) use ($worktreePath, $output, $host) {
+            $env = $offline ? ['COMPOSER_DISABLE_NETWORK' => '1'] : [];
+            if ($host) {
+                return $this->compose($worktreePath, 600)->run(($offline ? 'COMPOSER_DISABLE_NETWORK=1 ' : '').$this->fast->composerHostCommand, $output);
+            }
+            if ($this->fast->composerCacheDir !== null && $this->fast->composerCacheDir !== '') {
+                $env['COMPOSER_CACHE_DIR'] = $this->fast->composerCacheDir;
+            }
+
+            return $this->compose($worktreePath, 600)->run($this->execCommand('composer install --no-interaction --prefer-dist', $env), $output);
+        };
+        $result = $this->fast->composerOffline ? $run(true) : null;
+        if ($result === null || ! $result->successful()) {
+            // A cache miss: install with the network.
+            $result = $run(false);
+        }
 
         if (! $result->successful()) {
             throw new RuntimeException("Composer install failed: {$result->errorOutput()}");
@@ -283,11 +309,57 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
     {
         // Host-native — Vite + HMR are host concerns.
-        $result = Process::path($worktreePath)->timeout(300)->run("{$this->nodePackageManager} install", $output);
+        $result = Process::path($worktreePath)->timeout(300)->run($this->nodeInstallCommand(), $output);
 
         if (! $result->successful()) {
             throw new RuntimeException("Node dependency install failed: {$result->errorOutput()}");
         }
+    }
+
+    /**
+     * pnpm and npm install from their store or cache without asking the
+     * registry for every package; a missing package still comes from the network.
+     */
+    protected function nodeInstallCommand(): string
+    {
+        return in_array($this->nodePackageManager, ['pnpm', 'npm'], true)
+            ? "{$this->nodePackageManager} install --prefer-offline"
+            : "{$this->nodePackageManager} install";
+    }
+
+    /**
+     * The node install can run while the containers start when no service
+     * mounts a named volume at `node_modules`: a host install replaces that
+     * folder, which would detach such a volume (see InstallsNodeBeforeBringUp).
+     */
+    public function canInstallNodeInParallel(string $worktreePath): bool
+    {
+        if (! $this->fast->parallelNode) {
+            return false;
+        }
+        $config = $this->composeConfig($worktreePath);
+        if ($config === null) {
+            return false;
+        }
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        foreach ($services as $service) {
+            $volumes = is_array($service) && is_array($service['volumes'] ?? null) ? $service['volumes'] : [];
+            foreach ($volumes as $volume) {
+                if (is_array($volume) && ($volume['type'] ?? null) === 'volume' && is_string($volume['target'] ?? null) && str_ends_with(rtrim($volume['target'], '/'), '/node_modules')) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function startNodeInstall(string $worktreePath, ?Closure $output = null): InvokedProcess
+    {
+        return Process::path($worktreePath)->timeout(300)->start($this->nodeInstallCommand(), $output);
     }
 
     public function buildFrontend(string $worktreePath, ?Closure $output = null): void
@@ -313,6 +385,126 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         if (! $result->successful()) {
             throw new RuntimeException("Migration failed: {$result->errorOutput()}");
         }
+    }
+
+    /**
+     * The shared app image: write its tag into `.env` and build it once when it is missing.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function useSharedImage(string $worktreePath, ?Closure $output): void
+    {
+        $image = $this->fast->image;
+        if (! $image->enabled()) {
+            return;
+        }
+        $tag = $image->tag($worktreePath);
+        if (EnvFile::get($worktreePath.'/.env', $image->envKey()) !== $tag) {
+            EnvFile::upsert($worktreePath.'/.env', [$image->envKey() => $tag]);
+        }
+        $built = $image->ensure($tag, $this->appService, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output, $this->onStep);
+        if (! $built && $output) {
+            $output('out', "Using the app image {$tag}.\n");
+        }
+    }
+
+    public function databaseDumpEnabled(): bool
+    {
+        return $this->fast->dump->enabled();
+    }
+
+    public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): bool
+    {
+        $dump = $this->fast->dump;
+        // Only into an empty database: a restore over existing tables would replace them.
+        $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
+        if ($status->successful()) {
+            $onStep && $onStep('The database has tables; the dump is not restored.');
+
+            return false;
+        }
+        if (stripos($status->output().$status->errorOutput(), 'Migration table not found') === false) {
+            throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
+        }
+        $file = $dump->find($worktreePath, $onStep);
+        if ($file === null) {
+            $onStep && $onStep('No database dump for key '.$dump->key($worktreePath).' yet: this setup seeds and saves one.');
+
+            return false;
+        }
+        $onStep && $onStep('Restoring the database dump '.basename($file).'...');
+        $dump->restore($file, $worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output);
+
+        return true;
+    }
+
+    public function seedAndSaveDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): void
+    {
+        $dump = $this->fast->dump;
+        $result = $this->compose($worktreePath, 1800)->run($this->execCommand($dump->seedCommand()), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("The seed command failed: {$result->errorOutput()}");
+        }
+        $saved = $dump->save($worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout));
+        $onStep && $onStep('Saved the database dump '.basename($saved).' for the next worktrees.');
+    }
+
+    /**
+     * Copy `$directory` from the main checkout with copy-on-write when the
+     * lock files are equal. False when that is not possible.
+     *
+     * @param  list<string>  $lockFiles
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    protected function copyFromMain(string $worktreePath, string $directory, array $lockFiles, ?Closure $output, bool $enabled = true): bool
+    {
+        $main = MainCheckout::path();
+        $source = $main.'/'.$directory;
+        $target = $worktreePath.'/'.$directory;
+        if (! $enabled || ! is_dir($source) || file_exists($target) || ! $this->locksEqual($main, $worktreePath, $lockFiles)) {
+            return false;
+        }
+        $flags = PHP_OS_FAMILY === 'Darwin' ? ['-c'] : ['--reflink=always'];
+        // One file first: without copy-on-write (ext4), cp fails for each file of the tree.
+        $probe = $worktreePath.'/.worktree-cow-probe';
+        $lock = current(array_filter($lockFiles, static fn (string $file): bool => is_file($main.'/'.$file)));
+        $supported = $lock !== false && Process::timeout(30)->run(['cp', ...$flags, $main.'/'.$lock, $probe])->successful();
+        File::delete($probe);
+        if (! $supported) {
+            $output && $output('out', "No copy-on-write on this file system: {$directory} is installed.\n");
+
+            return false;
+        }
+        $result = Process::timeout(600)->run(['cp', ...$flags, '-R', $source, $target]);
+        if (! $result->successful()) {
+            // No copy-on-write on this filesystem: install normally.
+            File::deleteDirectory($target);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  list<string>  $lockFiles
+     */
+    private function locksEqual(string $main, string $worktreePath, array $lockFiles): bool
+    {
+        $compared = false;
+        foreach ($lockFiles as $file) {
+            $a = $main.'/'.$file;
+            $b = $worktreePath.'/'.$file;
+            if (! is_file($a) && ! is_file($b)) {
+                continue;
+            }
+            if (! is_file($a) || ! is_file($b) || hash_file('sha256', $a) !== hash_file('sha256', $b)) {
+                return false;
+            }
+            $compared = true;
+        }
+
+        return $compared;
     }
 
     public function tearDown(string $worktreePath, ?Closure $output = null): void
@@ -351,10 +543,19 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         return $this->appService;
     }
 
-    protected function execCommand(string $cmd): string
+    /**
+     * @param  array<string, string>  $env
+     */
+    protected function execCommand(string $cmd, array $env = []): string
     {
+        $options = '';
+        foreach ($env as $key => $value) {
+            $options .= ' -e '.escapeshellarg($key.'='.$value);
+        }
+
         return sprintf(
-            'docker compose exec -T %s sh -c %s',
+            'docker compose exec -T%s %s sh -c %s',
+            $options,
             escapeshellarg($this->appService),
             escapeshellarg($cmd),
         );
