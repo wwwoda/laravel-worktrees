@@ -13,6 +13,7 @@ Git worktrees for Laravel projects, each with its own environment.
 - [Configuration reference](#configuration-reference)
 - [Native and Sail](#native-and-sail)
 - [Shared services](#shared-services)
+- [Idle stacks](#idle-stacks)
 - [Files the package writes](#files-the-package-writes)
 - [ProcessManager contract](#processmanager-contract)
 - [Development](#development)
@@ -222,6 +223,20 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 
 `--remove` removes only volumes that are in the list.
 
+### `worktree:idle-stop` and `worktree:wake` (`sail`, `shared`)
+
+```bash
+php artisan worktree:idle-stop                 # stop stacks unused for idle.minutes (30)
+php artisan worktree:idle-stop --minutes=60 --dry-run
+php artisan worktree:wake t9                   # start a stopped stack and wait until it is healthy
+```
+
+`worktree:idle-stop` checks each registered worktree (the main checkout only with `--include-main`). A stack counts as used when the network traffic of its app container changed since the last check (any request does that), when its code changed (a commit, a checkout, an edited file), when a log in `storage/logs` was written, or when `worktree:wake` started it. The traffic of the last check is kept in the worktree's `storage/app/worktree/idle.json`, so the first check of a stack never stops it. An unused stack gets `docker compose stop` for every profile: the containers and volumes stay, so it starts again in seconds with its data. A worktree with the main checkout's compose project is skipped.
+
+`worktree:wake` runs `docker compose up -d --wait` (the services of the active profiles) and counts as use.
+
+See [Idle stacks](#idle-stacks) for the host timer and for starting stacks on the first request.
+
 ## Configuration reference
 
 Publish `config/worktrees.php` to change values, or set the environment variables. Defaults in brackets. Laravel merges a published file with the package's file at the top level only: a section that you publish (for example `bootstrap` or `shared`) must hold every key of that section that you want to set by environment variable.
@@ -248,6 +263,13 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `bootstrap.build_frontend` | | Build the frontend. [true] |
 | `bootstrap.run_migrations` | | Run the migrations. [true] |
 | `bootstrap.sail.app_service` | `WORKTREE_SAIL_APP_SERVICE` | The compose service that runs PHP (`sail` and `shared`). [`laravel.test`] |
+
+### Idle stack settings
+
+| Key | Env | Meaning |
+|---|---|---|
+| `idle.minutes` | `WORKTREE_IDLE_MINUTES` | Minutes without use before `worktree:idle-stop` stops a stack. [30] |
+| `idle.include_main` | `WORKTREE_IDLE_INCLUDE_MAIN` | Also stop the main checkout's stack. [false] |
 
 ### Database clone (`native`, `sail`)
 
@@ -522,6 +544,56 @@ A conversion that stops can run again: the first run records the old compose pro
 
 When one check fails, the delete stops and nothing is changed. Without a state file nothing is guessed: drop the databases by hand, or use `--keep-db`. After the checks, the delete reaches Redis first (so a Redis problem leaves the worktree complete), empties the Redis numbers with `FLUSHDB`, drops the databases and the user, and then removes the folder.
 
+## Idle stacks
+
+A stopped stack uses no memory. Two ways to stop idle stacks and start them again; they work together.
+
+### A host timer (any host)
+
+Run `worktree:idle-stop` every 10 minutes from the main checkout, for example with cron:
+
+```cron
+*/10 * * * * cd /srv/dev/shop/app && php artisan worktree:idle-stop >> storage/logs/worktree-idle.log 2>&1
+```
+
+or a systemd user timer that runs the same command. A stopped stack starts again with `php artisan worktree:wake <name>` (or `worktree:doctor --fix`, which starts stopped containers).
+
+### Start on the first request (Sablier)
+
+[Sablier](https://github.com/sablierapp/sablier) starts a group of containers when a request arrives, holds the request until they are ready, and stops them after a session without requests. Measured on srv4 with a stopped worktree stack (app, MariaDB, Redis): the first request waited 5.2 s, then the stack ran with its data; after the session ended, Sablier stopped it again.
+
+1. **Labels on every service of the worktree's stack** (one group per compose project):
+
+   ```yaml
+   x-sablier: &sablier
+     sablier.enable: "true"
+     sablier.group: ${COMPOSE_PROJECT_NAME}
+   services:
+     laravel.test:
+       labels:
+         <<: *sablier
+     mariadb:
+       labels:
+         <<: *sablier
+   ```
+
+2. **Sablier itself**, once per host, with the Docker socket: `sablierapp/sablier` with `start --provider.name=docker`, on the router's network.
+
+3. **The router.** Traefik (agent hosts): the [Sablier Traefik plugin](https://github.com/sablierapp/sablier-traefik-plugin) in the static config, and `providers.docker.allowEmptyServices=true`, so the route of a stopped container stays and its first request reaches the plugin. Then a middleware per worktree router, for example:
+
+   ```yaml
+   labels:
+     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.group=${COMPOSE_PROJECT_NAME}
+     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sablierUrl=http://sablier:10000
+     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sessionDuration=30m
+     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.blocking.timeout=60s
+     - traefik.http.routers.${DEV_SLUG_APP}.middlewares=${DEV_SLUG_APP}-sablier
+   ```
+
+   Caddy: Sablier needs a Caddy built with the [Sablier Caddy plugin](https://github.com/sablierapp/sablier-caddy-plugin) and routes that do not come from running containers (caddy-docker-proxy drops the labels of a stopped container). Where that is too much, use the host timer and `worktree:wake`.
+
+Sablier stops containers with `docker stop`, as `worktree:idle-stop` does, so both can run on the same host. Agent commands that need the stack (`worktree:exec`, tests) do not go through the router: wake the stack first.
+
 ## Files the package writes
 
 In a worktree:
@@ -533,6 +605,8 @@ In a worktree:
 | `storage/worktree-bootstrap.clone` | Marker of a running database clone (`native`, `sail`). |
 | `storage/logs/worktree-setup.log` | Log of each setup. |
 | `storage/app/worktree/state.json` | `shared`: the state file. |
+| `storage/app/worktree/idle.json` | The traffic of the last `worktree:idle-stop` check and when it changed. |
+| `storage/app/worktree/woken` | When `worktree:wake` last started the stack. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
 
