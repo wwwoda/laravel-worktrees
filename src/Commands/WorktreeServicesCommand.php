@@ -9,7 +9,6 @@ use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
 use Woda\Worktrees\ComposeProcess;
 use Woda\Worktrees\Shared\EnvFile;
-use Woda\Worktrees\Shared\MainCheckout;
 
 class WorktreeServicesCommand extends Command
 {
@@ -40,9 +39,7 @@ class WorktreeServicesCommand extends Command
                 return self::SUCCESS;
             }
             $profiles = $this->wanted($stack, $requested);
-            if (! $target->main) {
-                $stack->assertOwnProject(new ComposeStack(MainCheckout::path(), $stack->appService));
-            }
+            $inspector->assertOwnStack($target);
             EnvFile::upsert($target->path.'/.env', ['COMPOSE_PROFILES' => implode(',', $profiles)]);
             if ($this->option('no-apply')) {
                 $this->components->info('COMPOSE_PROFILES='.implode(',', $profiles).' written; containers unchanged.');

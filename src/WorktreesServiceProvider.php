@@ -327,6 +327,7 @@ class WorktreesServiceProvider extends ServiceProvider
             inspector: $app->make(WorktreeInspector::class),
             strategy: $app->make(BootstrapStrategy::class),
             buildFrontend: (bool) config('worktrees.bootstrap.build_frontend', true),
+            nodePackageManager: is_string($pm = config('worktrees.bootstrap.node_package_manager')) ? $pm : 'pnpm',
         ));
     }
 

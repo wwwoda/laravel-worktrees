@@ -18,12 +18,13 @@ use Woda\Worktrees\SharedServicesBootstrapStrategy;
  */
 final readonly class Doctor
 {
-    public const CHECKS = ['setup', 'env', 'app_url', 'containers', 'vendor', 'node_modules', 'build', 'hot', 'caches', 'database', 'workers'];
+    // `hot` before `build`: a stale hot file hides a missing build.
+    public const CHECKS = ['setup', 'env', 'compose_project', 'app_url', 'containers', 'vendor', 'node_modules', 'hot', 'build', 'caches', 'database', 'workers'];
 
     /**
      * @param  (Closure(string): bool)|null  $devServerAnswers
      */
-    public function __construct(private WorktreeInspector $inspector, private BootstrapStrategy $strategy, private bool $buildFrontend, private ?Closure $devServerAnswers = null) {}
+    public function __construct(private WorktreeInspector $inspector, private BootstrapStrategy $strategy, private bool $buildFrontend, private ?Closure $devServerAnswers = null, private string $nodePackageManager = 'pnpm') {}
 
     /**
      * @return array{state: string, message: string, fixable: bool}
@@ -37,6 +38,9 @@ final readonly class Doctor
             'env' => is_file($path.'/.env')
                 ? self::ok('.env exists')
                 : self::result('fail', 'No .env: run php artisan worktree:setup '.$path, false),
+            'compose_project' => ($problem = $this->inspector->ownStackProblem($target)) === null
+                ? self::ok($this->inspector->runner()->usesCompose() ? 'own compose project' : 'native strategy')
+                : self::result('fail', $problem, false),
             'app_url' => $this->checkUrl($target),
             'containers' => $this->checkContainers($target),
             'vendor' => is_file($path.'/vendor/autoload.php')
@@ -60,14 +64,20 @@ final readonly class Doctor
     public function fix(string $id, WorktreeTarget $target, ?Closure $output = null): void
     {
         $path = $target->path;
+        // A worktree with the main checkout's compose project would fix the main checkout's containers.
+        $this->inspector->assertOwnStack($target);
+        // The native strategy's own steps run with the environment of the checkout that
+        // runs artisan; the runner clears it, so the fix reaches the target's database.
+        $native = ! $this->inspector->runner()->usesCompose();
+        $pm = $this->nodePackageManager;
         match ($id) {
             'containers' => $this->startContainers($target, $output),
-            'vendor' => $this->strategy->installComposerDependencies($path, $output),
-            'node_modules' => $this->installNode($target, $output),
-            'build' => $this->strategy->buildFrontend($path, $output),
+            'vendor' => $native ? $this->artisan($path, 'composer install --no-interaction', $output) : $this->strategy->installComposerDependencies($path, $output),
+            'node_modules' => $native ? $this->artisan($path, "{$pm} install", $output) : $this->installNode($target, $output),
+            'build' => $native ? $this->artisan($path, "{$pm} run build", $output) : $this->strategy->buildFrontend($path, $output),
             'hot' => File::delete($path.'/public/hot'),
             'caches' => $this->artisan($path, 'php artisan config:clear && php artisan route:clear && php artisan event:clear', $output),
-            'database' => $this->strategy->runMigrations($path, $output),
+            'database' => $native ? $this->artisan($path, 'php artisan migrate --force', $output) : $this->strategy->runMigrations($path, $output),
             'workers' => $this->restartWorkers($target, $output),
             default => throw new RuntimeException("The check '{$id}' has no fix."),
         };
@@ -232,21 +242,36 @@ final readonly class Doctor
         if ($stack === null) {
             return null;
         }
-        $image = $stack->image($stack->appService);
-        $workers = [];
+        $running = [];
+        $app = null;
         foreach ($stack->containers() as $container) {
-            if ($container['state'] === 'running' && $container['service'] !== $stack->appService
-                && $image !== null && $stack->image($container['service']) === $image) {
-                $workers[$container['service']] = $container['name'];
+            if ($container['state'] !== 'running') {
+                continue;
+            }
+            if ($container['service'] === $stack->appService) {
+                $app = $container['name'];
+            } else {
+                $running[$container['service']] = $container['name'];
             }
         }
+        if ($running === []) {
+            return null;
+        }
+        // The image each container runs (also for services that only `build:`),
+        // compared with the app container's; without a running app container,
+        // with the image names of the compose file.
+        $details = $stack->inspect([...array_values($running), ...($app === null ? [] : [$app])]);
+        $appImage = $app === null ? null : ($details[$app]['image'] ?? null);
+        $configImage = $stack->image($stack->appService);
+        $workers = array_filter($running, static fn (string $name, string $service): bool => $appImage !== null
+            ? ($details[$name]['image'] ?? null) === $appImage
+            : $configImage !== null && $stack->image($service) === $configImage, ARRAY_FILTER_USE_BOTH);
         if ($workers === []) {
             return null;
         }
         $changed = $this->inspector->lastCodeChange($target->path);
-        $started = $stack->startTimes(array_values($workers));
 
-        return array_filter($workers, static fn (string $name): bool => isset($started[$name]) && $started[$name] < $changed);
+        return array_filter($workers, static fn (string $name): bool => isset($details[$name]['started']) && $details[$name]['started'] < $changed);
     }
 
     /**

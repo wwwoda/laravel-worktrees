@@ -42,6 +42,8 @@ class WorktreeExecCommand extends Command
         }
         try {
             $target = $this->resolveWorktree($inspector->manager(), $worktree);
+            // A worktree with the main checkout's compose project would run the command in the main checkout's container.
+            $inspector->assertOwnStack($target);
         } catch (RuntimeException|\JsonException $e) {
             $this->components->error($e->getMessage());
 

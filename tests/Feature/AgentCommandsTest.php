@@ -11,6 +11,7 @@ use Woda\Worktrees\Commands\WorktreeExecCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\SailBootstrapStrategy;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\WorktreeManager;
 
 /*
  * The agent commands: worktree:status, worktree:services, worktree:exec,
@@ -39,6 +40,7 @@ beforeEach(function () {
     ];
     $this->migrateStatus = Process::result("  2014_01_01_000000_a ........ [1] Ran\n  2026_01_01_000000_b ........ Pending\n");
     $this->started = [];
+    $this->imageIds = [];
     $this->execResult = Process::result();
     $this->fakeProcesses = function () {
         Process::fake([
@@ -60,7 +62,7 @@ beforeEach(function () {
             'docker compose ps --all --format json' => fn () => Process::result(implode("\n", array_map(json_encode(...), $this->containers))),
             'docker stats *' => Process::result("app-t9-laravel.test-1|37.5MiB / 1GiB\napp-t9-mariadb-1|36MiB / 256MiB\n"),
             'docker inspect *' => fn () => Process::result(implode("\n", array_map(
-                fn (string $name, int $time) => "/{$name}|".gmdate('Y-m-d\TH:i:s.123456789\Z', $time),
+                fn (string $name, int $time) => "/{$name}|".gmdate('Y-m-d\TH:i:s.123456789\Z', $time).'|'.($this->imageIds[$name] ?? 'sha256:app'),
                 array_keys($this->started), $this->started,
             ))),
             '*migrate:status*' => fn () => $this->migrateStatus,
@@ -219,7 +221,8 @@ it('restarts worker containers that started before the last code change', functi
     File::ensureDirectoryExists($this->path.'/app');
     File::put($this->path.'/app/User.php', '<?php');
     touch($this->path.'/app/User.php', time());
-    $this->started = ['app-t9-horizon-1' => time() - 3600, 'app-t9-phpmyadmin-1' => time() - 3600];
+    $this->started = ['app-t9-horizon-1' => time() - 3600, 'app-t9-phpmyadmin-1' => time() - 3600, 'app-t9-laravel.test-1' => time() - 3600];
+    $this->imageIds = ['app-t9-phpmyadmin-1' => 'sha256:pma'];
     $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'ready']);
     $doctor = app(Doctor::class);
 
@@ -258,4 +261,45 @@ it('reads compose ps output in both formats and memory units', function () {
         ->and(ComposeStack::parseBytes('1.5GiB'))->toBe(1610612736)
         ->and(ComposeStack::parseBytes('512kB'))->toBe(512000)
         ->and(ComposeStack::parseBytes('0B'))->toBe(0);
+});
+
+it('finds stale workers of services that only build their image', function () {
+    // No image names in the compose file: the image IDs of the containers count.
+    Process::fake([
+        "docker compose --profile '*' config --format json" => Process::result(json_encode(['name' => 'app-t9', 'services' => [
+            'laravel.test' => ['build' => ['context' => '.']], 'horizon' => ['build' => ['context' => '.']],
+        ]])),
+    ]);
+    ($this->fakeProcesses)();
+    $this->containers[] = ['Service' => 'horizon', 'Name' => 'app-t9-horizon-1', 'State' => 'running', 'Health' => ''];
+    File::ensureDirectoryExists($this->path.'/app');
+    File::put($this->path.'/app/User.php', '<?php');
+    $this->started = ['app-t9-horizon-1' => time() - 3600, 'app-t9-laravel.test-1' => time() - 3600];
+    $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'ready']);
+
+    expect(app(Doctor::class)->check('workers', $target))->toMatchArray(['state' => 'warn']);
+});
+
+it('refuses exec and doctor fixes in a worktree with the main checkout\'s compose project', function () {
+    $this->project = 'app';
+    File::delete($this->path.'/vendor/autoload.php');
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'migrate'], '--worktree' => 't9'])
+        ->expectsOutputToContain('compose project of the main checkout')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec'));
+
+    $this->artisan('worktree:doctor', ['worktree' => 't9', '--fix' => true])->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'composer install'));
+});
+
+it('fixes native worktrees with the environment of the target', function () {
+    config()->set('worktrees.bootstrap.strategy', 'native');
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
+    $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'ready']);
+
+    app(Doctor::class)->fix('database', $target);
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'php artisan migrate --force' && $p->path === $this->path
+        && ($p->environment['DB_DATABASE'] ?? null) === false);
 });

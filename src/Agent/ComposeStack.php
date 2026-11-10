@@ -216,31 +216,31 @@ final class ComposeStack
     }
 
     /**
-     * When each container started, as a Unix time, by container name.
+     * When each container started (Unix time) and the ID of the image it runs, by container name.
      *
      * @param  list<string>  $names
-     * @return array<string, int>
+     * @return array<string, array{started: int|null, image: string}>
      */
-    public function startTimes(array $names): array
+    public function inspect(array $names): array
     {
         if ($names === []) {
             return [];
         }
-        $result = Process::timeout(30)->run('docker inspect --format '.escapeshellarg('{{.Name}}|{{.State.StartedAt}}').' '.implode(' ', array_map(escapeshellarg(...), $names)));
+        $result = Process::timeout(30)->run('docker inspect --format '.escapeshellarg('{{.Name}}|{{.State.StartedAt}}|{{.Image}}').' '.implode(' ', array_map(escapeshellarg(...), $names)));
         if (! $result->successful()) {
             return [];
         }
-        $times = [];
+        $details = [];
         foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
-            [$name, $started] = array_pad(explode('|', $line, 2), 2, '');
+            [$name, $started, $image] = array_pad(explode('|', $line, 3), 3, '');
             // Docker prints nanoseconds; strtotime() reads up to microseconds.
             $time = strtotime((string) preg_replace('/(\.\d{6})\d+/', '$1', trim($started)));
-            if ($name !== '' && $time !== false) {
-                $times[ltrim($name, '/')] = $time;
+            if ($name !== '') {
+                $details[ltrim($name, '/')] = ['started' => $time === false ? null : $time, 'image' => trim($image)];
             }
         }
 
-        return $times;
+        return $details;
     }
 
     /**

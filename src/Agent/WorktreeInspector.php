@@ -39,6 +39,34 @@ final readonly class WorktreeInspector
         return $this->runner->usesCompose() ? new ComposeStack($path, $this->runner->appService()) : null;
     }
 
+    /**
+     * Why a mutating command must not act on the target's containers: a linked
+     * worktree with the main checkout's compose project would act on the main
+     * checkout's containers. Null when that is not the case.
+     */
+    public function ownStackProblem(WorktreeTarget $target): ?string
+    {
+        $stack = $this->stack($target->path);
+        if ($stack === null || $target->main) {
+            return null;
+        }
+        try {
+            $stack->assertOwnProject(new ComposeStack(MainCheckout::path(), $stack->appService));
+        } catch (RuntimeException $error) {
+            return $error->getMessage();
+        }
+
+        return null;
+    }
+
+    public function assertOwnStack(WorktreeTarget $target): void
+    {
+        $problem = $this->ownStackProblem($target);
+        if ($problem !== null) {
+            throw new RuntimeException($problem);
+        }
+    }
+
     public function url(string $path): ?string
     {
         $url = EnvFile::resolved($path.'/.env', 'APP_URL');

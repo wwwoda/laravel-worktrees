@@ -290,7 +290,7 @@ php artisan worktree:exec -w t9 --service=mariadb mariadb -e 'select 1'
 | `-w`, `--worktree=` | The worktree; before the command. |
 | `--service=` | The compose service. Default: `bootstrap.sail.app_service`. |
 
-The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one, and the exit code is the command's. Put `--` before the command when it uses `-h` or `--help` itself.
+The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one, and the exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. Put `--` before the command when it uses `-h` or `--help` itself.
 
 #### `worktree:doctor`
 
@@ -303,17 +303,18 @@ php artisan worktree:doctor --fix    # fix them, in this order
 |---|---|---|
 | `setup` | The bootstrap record says failed or running. | None: the hint names the command that continues the setup. |
 | `env` | No `.env`. | None. |
+| `compose_project` | A worktree has the main checkout's compose project. | None: no other fix runs then, as it would act on the main checkout's containers. |
 | `app_url` | No `APP_URL`, or the main checkout's URL. | None. |
 | `containers` | The app container or a service of an active profile does not run. | Starts them (the setup's start step, with its compose project check). |
 | `vendor` | No `vendor/autoload.php`. | `composer install` in the container. |
 | `node_modules` | `package.json` without `node_modules`. | The node install (then the container start again, for its volume). |
-| `build` | No `public/build/manifest.json` and no `public/hot`. | The frontend build. |
 | `hot` | `public/hot` names a dev server that does not answer. | Removes `public/hot`. |
+| `build` | No `public/build/manifest.json` and no `public/hot`. | The frontend build. |
 | `caches` | A config, route or event cache in `bootstrap/cache`. | `config:clear`, `route:clear`, `event:clear`. |
 | `database` | No migrations table, or pending migrations. | The migrations. |
-| `workers` | A running container with the app's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). | Restarts these containers. |
+| `workers` | A running container with the app container's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). | Restarts these containers. |
 
-A check that cannot tell (no running container) says `skip`. The exit code is 1 when a check fails. `--json` prints the results.
+With `native`, the fixes run on the host with the variables of the checkout that runs artisan cleared, so they reach the target's own database. A check that cannot tell (no running container) says `skip`. The exit code is 1 when a check fails. `--json` prints the results.
 
 #### `worktree:context`
 
