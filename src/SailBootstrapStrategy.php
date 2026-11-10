@@ -64,6 +64,45 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         // the first `exec` lands.
         $this->waitForService($worktreePath, $output);
         $this->ensureVolumesMounted($worktreePath, $config, $output);
+        $this->waitForHealthy($worktreePath, $output);
+    }
+
+    /**
+     * Wait while a service's healthcheck still says `starting`, so a test run
+     * right after the setup does not meet a database that is still starting.
+     * An unhealthy service is reported, not fatal: some healthchecks fail on a
+     * working service.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    protected function waitForHealthy(string $worktreePath, ?Closure $output = null, int $seconds = 120): void
+    {
+        $deadline = time() + $seconds;
+        do {
+            $starting = [];
+            $unhealthy = [];
+            $result = $this->compose($worktreePath, 30)->run('docker compose ps --format json');
+            foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
+                $decoded = json_decode($line, true);
+                // Compose before 2.21 prints one array; later versions one object per line.
+                foreach (is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded] as $row) {
+                    $health = is_array($row) && is_string($row['Health'] ?? null) ? $row['Health'] : '';
+                    $service = is_array($row) && is_string($row['Service'] ?? null) ? $row['Service'] : '?';
+                    if ($health === 'starting') {
+                        $starting[] = $service;
+                    } elseif ($health === 'unhealthy') {
+                        $unhealthy[] = $service;
+                    }
+                }
+            }
+            if ($starting === []) {
+                break;
+            }
+            usleep(500_000);
+        } while (time() < $deadline);
+        if ($output && ($starting !== [] || $unhealthy !== [])) {
+            $output('out', 'Not healthy yet: '.implode(', ', [...$starting, ...$unhealthy]).".\n");
+        }
     }
 
     /**
@@ -327,13 +366,69 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     private function down(string $worktreePath, bool $keepVolumes, ?Closure $output): void
     {
-        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
+        $config = $this->composeConfig($worktreePath);
+        $this->assertOwnComposeProject($worktreePath, $config);
         $result = $this->compose($worktreePath, 120)->run(
             'docker compose --profile "*" down'.($keepVolumes ? '' : ' -v'), $output,
         );
         if (! $result->successful()) {
             throw new RuntimeException('Worktree environment teardown failed; checkout retained.');
         }
+        $this->removeOwnImages($config, $output);
+    }
+
+    /**
+     * Remove the images that the worktree's compose project built for itself:
+     * services with a `build:` whose image name holds the project name (the
+     * per-worktree tag `{project}/app:latest`, or compose's default
+     * `{project}-{service}`). Shared images (another name, the main checkout's
+     * images) stay; an image that another container still uses stays too.
+     *
+     * @param  array<mixed>|null  $config
+     * @param  (Closure(string, string): void)|null  $output
+     * @return list<string> the removed images
+     */
+    protected function removeOwnImages(?array $config, ?Closure $output = null): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        if ($project === '') {
+            return [];
+        }
+        $keep = $this->imagesOf($this->composeConfig(base_path()));
+        $removed = [];
+        foreach (array_diff($this->imagesOf($config, builtOnly: true), $keep) as $image) {
+            if (! str_contains($image, $project)) {
+                continue;
+            }
+            if (Process::timeout(120)->run('docker image rm '.escapeshellarg($image))->successful()) {
+                $removed[] = $image;
+                $output && $output('out', "Removed the image {$image}.\n");
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * @param  array<mixed>|null  $config
+     * @return list<string>
+     */
+    private function imagesOf(?array $config, bool $builtOnly = false): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $images = [];
+        foreach ($services as $name => $service) {
+            if (! is_array($service) || ($builtOnly && ! isset($service['build']))) {
+                continue;
+            }
+            $image = is_string($service['image'] ?? null) ? $service['image'] : (isset($service['build']) && $project !== '' ? $project.'-'.$name : null);
+            if ($image !== null) {
+                $images[] = $image;
+            }
+        }
+
+        return array_values(array_unique($images));
     }
 
     /**
