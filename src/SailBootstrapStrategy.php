@@ -390,6 +390,7 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      * per-worktree tag `{project}/app:latest`, or compose's default
      * `{project}-{service}`). Shared images (another name, the main checkout's
      * images) stay; an image that another container still uses stays too.
+     * When the main checkout's compose config cannot be read, no image is removed.
      *
      * @param  array<mixed>|null  $config
      * @param  (Closure(string, string): void)|null  $output
@@ -401,7 +402,14 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         if ($project === '') {
             return [];
         }
-        $keep = $this->imagesOf($this->composeConfig(base_path()));
+        $main = $this->composeConfig(base_path());
+        if ($main === null) {
+            // Without the main checkout's images, a worktree image with the same name is not known: remove none.
+            $output && $output('out', "Kept the images of {$project}: the compose config of the main checkout could not be read.\n");
+
+            return [];
+        }
+        $keep = $this->imagesOf($main);
         $removed = [];
         foreach (array_diff($this->imagesOf($config, builtOnly: true), $keep) as $image) {
             if (! str_contains($image, $project)) {

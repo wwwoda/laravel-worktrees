@@ -159,11 +159,11 @@ The order:
 2. `shared` without `--keep-db`: the state file is checked (see [Safe delete](#safe-delete)). A problem stops the delete before anything changes.
 3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete.
 4. The `ProcessManager` stops the worktree's processes.
-5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` whose name holds the compose project name (`shop-t9/app:latest`, or compose's default `shop-t9-worker`). Shared images, the main checkout's images and images that another container uses stay.
+5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` whose name holds the compose project name (`shop-t9/app:latest`, or compose's default `shop-t9-worker`). Shared images, the main checkout's images and images that another container uses stay. When the main checkout's compose config cannot be read, no image is removed.
 6. `shared`: the worktree's own databases and user are dropped, and its Redis numbers are emptied.
 7. The folder is removed and `git worktree prune` runs. The command fails when the folder is still there or `git worktree list` still names it (for example files that belong to the container's user).
 8. `native` and `sail`: the database clone is dropped.
-9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`. A branch counts as merged when it is part of the base branch, or when GitHub (`gh`) reports a merged pull request whose head is the branch's commit: a squash or rebase merge. Such a branch is deleted with `git branch -D`; a branch with commits after the merge stays.
+9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`. A branch counts as merged when it is part of the base branch, or when GitHub (`gh`) reports a pull request into the base branch, merged, whose head is the branch's commit: a squash or rebase merge. For the branch `pr-{number}` of a fork's pull request (`worktree:create --pr`), `gh` is asked for that pull request by its number. Such a branch is deleted with `git branch -D`; a branch with commits after the merge stays.
 
 The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes. The setup also lists the bootstrap files in the repository's `.git/info/exclude`, so a plain `git status` in a new worktree is clean.
 
@@ -536,7 +536,7 @@ In a worktree:
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
 
-In the repository's git folder: a block in `info/exclude` (shared by all worktrees, never committed) that names `/storage/worktree-bootstrap.json`, `.lock` and `.clone`.
+In the repository's git folder: a block in `info/exclude` (shared by all worktrees, never committed) that names `/storage/worktree-bootstrap.json`, `.lock` and `.clone`, and next to it `info/exclude.lw-lock`, the lock that lets only one setup write the block.
 
 ## ProcessManager contract
 

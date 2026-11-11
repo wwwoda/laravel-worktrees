@@ -85,7 +85,7 @@ class WorktreeDeleteCommand extends Command
             $worktreeManager->tearDown($name, function (string $type, string $buffer) use ($verbose): void {
                 if ($verbose) {
                     $this->output->write($buffer);
-                } elseif (str_starts_with($buffer, 'Removed the image')) {
+                } elseif (str_starts_with($buffer, 'Removed the image') || str_starts_with($buffer, 'Kept the images')) {
                     $this->line('  '.trim($buffer));
                 }
             }, keepDatabase: (bool) $this->option('keep-db'));

@@ -225,6 +225,15 @@ class WorktreeManager
                 return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
             }
         }
+        // `worktree:create --pr` puts a fork's head into `pr-{number}`: GitHub knows
+        // the fork's own branch name, so ask for the pull request by its number.
+        if ($head !== '' && preg_match('/^pr-(\d+)$/', $branch, $match) === 1) {
+            $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr view %s --json state,baseRefName,headRefOid', escapeshellarg($match[1])));
+            $pull = $result->successful() ? json_decode($result->output(), true) : null;
+            if (is_array($pull) && ($pull['state'] ?? null) === 'MERGED' && ($pull['baseRefName'] ?? null) === $this->baseBranch && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
 
         return ['exists' => true, 'merged' => false, 'via' => null];
     }
@@ -701,12 +710,25 @@ class WorktreeManager
             return;
         }
         $exclude = $common.'/info/exclude';
-        $content = File::exists($exclude) ? File::get($exclude) : '';
-        if (str_contains($content, self::EXCLUDE_MARKER)) {
+        if (File::exists($exclude) && str_contains(File::get($exclude), self::EXCLUDE_MARKER)) {
             return;
         }
         File::ensureDirectoryExists(dirname($exclude));
-        File::append($exclude, ($content === '' || str_ends_with($content, "\n") ? '' : "\n").self::EXCLUDE_MARKER."\n".implode("\n", self::PACKAGE_FILES)."\n");
+        // All worktrees share the file: two setups at the same time must not both append.
+        $lock = fopen($exclude.'.lw-lock', 'c');
+        if ($lock === false) {
+            return;
+        }
+        try {
+            flock($lock, LOCK_EX);
+            $content = File::exists($exclude) ? File::get($exclude) : '';
+            if (! str_contains($content, self::EXCLUDE_MARKER)) {
+                File::append($exclude, ($content === '' || str_ends_with($content, "\n") ? '' : "\n").self::EXCLUDE_MARKER."\n".implode("\n", self::PACKAGE_FILES)."\n");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     private function applyEnvReplacements(string $path, string $name): void

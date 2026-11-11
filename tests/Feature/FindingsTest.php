@@ -145,3 +145,63 @@ it('offers a branch that a pull request squashed, and only with the same head co
     'same head' => ['abc123', true],
     'commits after the merge' => ['def456', false],
 ]);
+
+it('removes no image when the main checkout\'s compose config cannot be read', function () {
+    ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => $p->path === $this->path
+        ? Process::result(json_encode(['name' => 'app-t9', 'services' => ['laravel.test' => ['build' => ['context' => '.'], 'image' => 'app-t9/app:latest']]]))
+        : Process::result(errorOutput: 'daemon down', exitCode: 1)]);
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])
+        ->expectsOutputToContain('Kept the images of app-t9')
+        ->assertSuccessful();
+
+    Process::assertNotRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker image rm'));
+});
+
+it('offers the branch of a merged fork pull request by its number and head commit', function (array $pr, bool $deleted) {
+    $this->path = $this->base.'/'.basename(base_path()).'-pr-12';
+    ($this->fake)([
+        "git show-ref --verify --quiet 'refs/heads/pr-12'" => Process::result(),
+        'git merge-base --is-ancestor *' => Process::result(exitCode: 1),
+        "git rev-parse 'refs/heads/pr-12'" => Process::result("abc123\n"),
+        "gh pr list --head 'pr-12' *" => Process::result('[]'),
+        "gh pr view '12' --json state,baseRefName,headRefOid" => Process::result(json_encode($pr)),
+        'git worktree list --porcelain' => fn () => Process::result('worktree '.base_path()."\nHEAD 000\nbranch refs/heads/master\n\n"
+            .(is_dir($this->path) ? "worktree {$this->path}\nHEAD abc\nbranch refs/heads/pr-12\n\n" : '')),
+    ]);
+    File::ensureDirectoryExists($this->path.'/storage');
+    app()->singleton(BootstrapStrategy::class, fn () => new NativeBootstrapStrategy('pnpm'));
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:delete', ['name' => 'pr-12', '--force' => true, '--delete-branch' => true])->assertSuccessful();
+
+    $deleted ? Process::assertRan("git branch -D 'pr-12'") : Process::assertNotRan("git branch -D 'pr-12'");
+})->with([
+    'merged, same head' => [['state' => 'MERGED', 'baseRefName' => 'master', 'headRefOid' => 'abc123'], true],
+    'merged into another branch' => [['state' => 'MERGED', 'baseRefName' => 'develop', 'headRefOid' => 'abc123'], false],
+    'commits after the merge' => [['state' => 'MERGED', 'baseRefName' => 'master', 'headRefOid' => 'def456'], false],
+    'open' => [['state' => 'OPEN', 'baseRefName' => 'master', 'headRefOid' => 'abc123'], false],
+]);
+
+it('writes the exclude block once when another setup wrote it after the first read', function () {
+    ($this->fake)();
+    File::ensureDirectoryExists($this->common.'/info');
+    // A lock that another setup holds: the write waits for it and reads the file again.
+    $lock = fopen($this->common.'/info/exclude.lw-lock', 'c');
+    flock($lock, LOCK_EX);
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        usleep(300_000);
+        file_put_contents($this->common.'/info/exclude', "# laravel-worktrees: files the package writes into each worktree\n/storage/worktree-bootstrap.json\n", FILE_APPEND);
+        flock($lock, LOCK_UN);
+        // No shutdown handlers of the test run in the child.
+        posix_kill(getmypid(), SIGKILL);
+    }
+    fclose($lock);
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
+    pcntl_waitpid($pid, $status);
+
+    expect(substr_count(File::get($this->common.'/info/exclude'), '# laravel-worktrees:'))->toBe(1);
+})->skip(! function_exists('pcntl_fork'), 'needs pcntl');
