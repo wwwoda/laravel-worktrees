@@ -78,7 +78,7 @@ test('teardown includes profiles and clears parent variables without printing cr
     $directory = sys_get_temp_dir().'/worktrees-compose-'.uniqid();
     File::ensureDirectoryExists($directory);
     File::put($directory.'/.env', "COMPOSE_PROJECT_NAME=child\nAPP_PORT=9999\nFAKE_SECRET=synthetic\n");
-    Process::fake();
+    Process::fake(['docker compose config --format json' => composeConfigPerCheckout(), '*' => Process::result()]);
     try {
         (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($directory);
         Process::assertRan(fn (PendingProcess $process) => $process->command === 'docker compose --profile "*" down -v'
@@ -92,14 +92,20 @@ test('teardown includes profiles and clears parent variables without printing cr
 });
 
 test('retaining the database keeps compose volumes', function () {
-    Process::fake();
+    Process::fake(['docker compose config --format json' => composeConfigPerCheckout(), '*' => Process::result()]);
     (new SailBootstrapStrategy('app', 'pnpm', false))->tearDownKeepingVolumes('/tmp/nonexistent');
     Process::assertRan('docker compose --profile "*" down');
     Process::assertNotRan('docker compose --profile "*" down -v');
 });
 
 test('failed teardown does not report success', function () {
-    Process::fake(['*' => Process::result(exitCode: 1)]);
+    // The ownership checks pass; compose down fails.
+    Process::fake([
+        'docker compose config --format json' => composeConfigPerCheckout(),
+        'git worktree list --porcelain' => Process::result(),
+        'docker ps -a *' => Process::result(),
+        '*' => Process::result(exitCode: 1),
+    ]);
     expect(fn () => (new SailBootstrapStrategy('app', 'pnpm', false))->tearDown('/tmp/nonexistent'))
         ->toThrow(RuntimeException::class, 'checkout retained');
 });

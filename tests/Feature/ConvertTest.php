@@ -144,6 +144,7 @@ beforeEach(function () {
                 return Process::result();
             },
             'docker compose --profile "*" down*' => fn () => ($this->downFails ?? false) ? Process::result(errorOutput: 'down failed', exitCode: 1) : Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };

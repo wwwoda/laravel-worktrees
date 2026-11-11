@@ -1,5 +1,8 @@
 <?php
 
+use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\PendingProcess;
+use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Tests\TestCase;
 
@@ -23,4 +26,15 @@ function deleteCommandWithStdin(bool $terminal): void
             return $this->terminal;
         }
     });
+}
+
+/**
+ * A fake `docker compose config` that gives each checkout its own compose
+ * project: the start and stop guards refuse a worktree whose project is unknown.
+ *
+ * @return Closure(PendingProcess): ProcessResult
+ */
+function composeConfigPerCheckout(): Closure
+{
+    return fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path), 'services' => []]));
 }

@@ -110,3 +110,24 @@ it('does not start a worktree that carries another worktree\'s compose project',
         ->toThrow(RuntimeException::class, 'same compose project');
     Process::assertNotRan('docker compose up -d');
 });
+
+it('refuses to start or stop a worktree whose own compose project cannot be read', function (string $action) {
+    unset($this->projects[$this->a]);
+    File::put($this->a.'/compose.yaml', "services: {}\n");
+    ($this->fake)();
+
+    expect(fn () => (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->{$action}($this->a))
+        ->toThrow(RuntimeException::class, "Cannot read the compose project of {$this->a}");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' up '));
+})->with(['tearDown', 'tearDownKeepingVolumes', 'bringUp']);
+
+it('passes a compose project without containers', function () {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a', $this->b => 'app-b'];
+    $this->owners = "\n";
+    ($this->fake)();
+
+    (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($this->a);
+
+    Process::assertRan('docker compose --profile "*" down -v');
+});

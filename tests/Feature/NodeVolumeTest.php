@@ -89,7 +89,7 @@ beforeEach(function () {
 
             return Process::result();
         },
-        'docker compose config --format json' => fn () => Process::result(json_encode($this->composeConfig)),
+        'docker compose config --format json' => fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path)] + $this->composeConfig)),
         'docker compose up -d' => $once('up', fn () => Process::result()),
         // The host install makes node_modules, as pnpm does.
         'pnpm install' => $once('node', function (PendingProcess $process) {

@@ -59,16 +59,16 @@ test('Sail build contexts and bind-mount files under a missing vendor are lent f
     File::put($source.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
     File::ensureDirectoryExists($source.'/vendor/laravel/sail/database/mysql');
     File::put($source.'/vendor/laravel/sail/database/mysql/create-testing-database.sh', '#!/bin/sh');
-    $config = json_encode(['services' => [
+    $config = ['services' => [
         'laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']],
         'mysql' => ['image' => 'mysql:8.4', 'volumes' => [
             ['type' => 'bind', 'source' => $worktree.'/vendor/laravel/sail/database/mysql/create-testing-database.sh', 'target' => '/docker-entrypoint-initdb.d/10-create-testing-database.sh'],
             ['type' => 'volume', 'source' => 'sail-mysql', 'target' => '/var/lib/mysql'],
         ]],
-    ]]);
+    ]];
     $seenAtUp = null;
     Process::fake([
-        'docker compose config --format json' => Process::result($config),
+        'docker compose config --format json' => fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path)] + $config)),
         'docker compose up -d' => function () use ($worktree, &$seenAtUp) {
             $seenAtUp = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile')
                 && is_file($worktree.'/vendor/laravel/sail/database/mysql/create-testing-database.sh');
@@ -144,7 +144,7 @@ test('compose runs without any inherited COMPOSE_ variable', function () {
     File::ensureDirectoryExists($worktree);
     putenv('COMPOSE_DISABLE_ENV_FILE=1');
     $_ENV['COMPOSE_ENV_FILES'] = '/parent/.env';
-    Process::fake(['*' => Process::result()]);
+    Process::fake(['docker compose config --format json' => composeConfigPerCheckout(), '*' => Process::result()]);
 
     try {
         (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($worktree);

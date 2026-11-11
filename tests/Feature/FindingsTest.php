@@ -53,6 +53,7 @@ beforeEach(function () {
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->common."\n"),
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'docker compose ps --format json' => fn () => array_shift($this->psResults) ?? Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };

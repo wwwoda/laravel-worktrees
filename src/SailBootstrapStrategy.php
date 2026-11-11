@@ -222,7 +222,7 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     {
         $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
         if ($ours === null) {
-            return;
+            throw new RuntimeException("Cannot read the compose project of {$worktreePath} (docker compose config failed or gave no project name), so it is not known which containers and volumes starting or stopping it would act on. Fix its compose setup, then run again.");
         }
         $self = realpath($worktreePath) ?: $worktreePath;
         $registered = $this->registeredCheckouts();
