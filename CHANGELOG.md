@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-11-11)
 
 Lean separate worktree stacks and commands for agent sessions ([#25](https://github.com/wwwoda/laravel-worktrees/issues/25)). New commands and config sections only act when you call or set them. Some changes are on by default for existing setups; they are listed under "On by default" and "Changed".
 
@@ -34,7 +34,7 @@ These need no setting and act in existing setups:
 
 ### Upgrade notes
 
-1. Update the package to the release that holds these changes.
+1. `composer require --dev woda/laravel-worktrees:^0.3`.
 2. A published `config/worktrees.php` keeps working; copy the new sections (`services`, `exec`, `context`, `fast`) only to change their defaults.
 3. For lean stacks, put optional services behind compose profiles (`profiles: [workers]`) and give healthchecks a short first check (`start_interval: 1s`).
 4. To share the app image: `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`.
