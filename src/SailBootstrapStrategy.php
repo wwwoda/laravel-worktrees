@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
+use Woda\Worktrees\Shared\EnvFile;
 
 /**
  * Sail / docker-compose bootstrap.
@@ -210,6 +211,11 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      * an unchanged COMPOSE_PROJECT_NAME gives it the project of the checkout it came
      * from; then they would act on that checkout's containers and volumes.
      *
+     * The project must not be the one of the main checkout or of any other
+     * registered worktree (by their compose config), and no container of the
+     * project may belong to another folder (by its owner label). When one of
+     * these cannot be read, the project's owner is unknown: refuse.
+     *
      * @param  array<mixed>|null  $config
      */
     protected function assertOwnComposeProject(string $worktreePath, ?array $config): void
@@ -219,19 +225,103 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             return;
         }
         $self = realpath($worktreePath) ?: $worktreePath;
-        foreach (array_unique($this->protectedCheckouts()) as $checkout) {
+        $registered = $this->registeredCheckouts();
+        foreach (array_unique([...$this->protectedCheckouts(), ...$registered]) as $checkout) {
             if ((realpath($checkout) ?: $checkout) === $self) {
                 continue;
             }
-            $theirs = $this->composeConfig($checkout)['name'] ?? null;
+            $theirs = $this->projectOf($checkout);
             if ($theirs === $ours) {
                 throw new RuntimeException("The worktree has the same compose project as {$checkout} ('{$ours}'): starting or stopping it would act on that checkout's containers and volumes. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
+            }
+        }
+        $this->assertContainersOwned($ours, $self, $registered);
+    }
+
+    /**
+     * The compose project of another checkout; null when it has no compose file.
+     */
+    private function projectOf(string $checkout): ?string
+    {
+        if (! is_dir($checkout)) {
+            throw new RuntimeException("Cannot read the compose project of {$checkout}: git registers it, but its folder is missing. Run git worktree prune, then run again.");
+        }
+        $name = $this->composeConfig($checkout)['name'] ?? null;
+        if (is_string($name) && $name !== '') {
+            return $name;
+        }
+        if (! $this->hasComposeFile($checkout)) {
+            return null;
+        }
+
+        throw new RuntimeException("Cannot read the compose project of {$checkout} (docker compose config failed): a worktree with the same project would act on its containers and volumes. Fix its compose setup, then run again.");
+    }
+
+    private function hasComposeFile(string $checkout): bool
+    {
+        foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $file) {
+            if (is_file($checkout.'/'.$file)) {
+                return true;
+            }
+        }
+        $env = EnvFile::get($checkout.'/.env', 'COMPOSE_FILE');
+
+        return $env !== null && $env !== '';
+    }
+
+    /**
+     * Every container of the project must belong to this worktree: its
+     * compose working folder (the folder of the compose file, also a
+     * subfolder) lies in the worktree and in no other registered checkout
+     * inside it.
+     *
+     * @param  list<string>  $registered
+     */
+    private function assertContainersOwned(string $project, string $self, array $registered): void
+    {
+        $result = Process::timeout(30)->run(sprintf(
+            'docker ps -a --filter %s --format %s',
+            escapeshellarg('label=com.docker.compose.project='.$project),
+            escapeshellarg('{{.Label "com.docker.compose.project.working_dir"}}'),
+        ));
+        if (! $result->successful()) {
+            throw new RuntimeException("Cannot list the containers of the compose project '{$project}', so their owner is unknown: ".trim($result->errorOutput()));
+        }
+        $checkouts = array_map(static fn (string $c): string => rtrim(realpath($c) ?: $c, '/'), [$self, ...$registered]);
+        foreach (array_unique(array_filter(array_map(trim(...), explode("\n", $result->output())))) as $folder) {
+            $real = rtrim(realpath($folder) ?: $folder, '/');
+            $owner = null;
+            foreach ($checkouts as $checkout) {
+                if (($real === $checkout || str_starts_with($real, $checkout.'/')) && strlen($checkout) > strlen((string) $owner)) {
+                    $owner = $checkout;
+                }
+            }
+            if ($owner !== $self) {
+                throw new RuntimeException("Containers of the compose project '{$project}' belong to {$folder}: starting or stopping the worktree would act on them. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
             }
         }
     }
 
     /**
-     * Checkouts whose compose project a worktree must not share.
+     * The folders of all checkouts git registers for the repository (the main
+     * checkout first).
+     *
+     * @return list<string>
+     */
+    private function registeredCheckouts(): array
+    {
+        $result = Process::path(base_path())->timeout(30)->run('git worktree list --porcelain');
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot list the worktrees of the repository, so the owners of compose projects are unknown: '.trim($result->errorOutput()));
+        }
+        preg_match_all('/^worktree (.+)$/m', $result->output(), $matches);
+
+        return array_map(trim(...), $matches[1]);
+    }
+
+    /**
+     * Checkouts whose compose project a worktree must not share, besides the
+     * registered ones.
      *
      * @return list<string>
      */
