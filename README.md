@@ -304,7 +304,7 @@ php artisan worktree:doctor --fix    # fix them, in this order
 
 | Check | Problem | Fix |
 |---|---|---|
-| `setup` | The bootstrap record says failed or running. | None: the hint names the command that continues the setup. |
+| `setup` | The bootstrap record says failed, or running while no setup holds the setup lock. | None: the hint names the command that continues the setup. |
 | `env` | No `.env`. | None. |
 | `compose_project` | A worktree has the main checkout's compose project. | None: no other fix runs then, as it would act on the main checkout's containers. |
 | `app_url` | No `APP_URL`, or the main checkout's URL. | None. |
@@ -315,7 +315,9 @@ php artisan worktree:doctor --fix    # fix them, in this order
 | `build` | No `public/build/manifest.json` and no `public/hot`. | The frontend build. |
 | `caches` | A config, route or event cache in `bootstrap/cache`. | `config:clear`, `route:clear`, `event:clear`. |
 | `database` | No migrations table, or pending migrations. | The migrations. |
-| `workers` | A running container with the app container's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). | Restarts these containers. |
+| `workers` | A running container with the app container's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). With `shared` and `WORKTREE_QUEUE_WORKER=horizon`, the app container itself. | Restarts these containers. |
+
+`--fix` takes the setup lock (`storage/worktree-bootstrap.lock`) and refuses while a setup runs, as the setup installs and migrates itself. In the main checkout it fixes only when named (`worktree:doctor main --fix`): without an argument it refuses, as its fixes would migrate the main database. The `containers` fix takes the stack lock that the idle stop takes, and marks the stack as used.
 
 With `native`, the fixes run on the host with the variables of the checkout that runs artisan cleared, so they reach the target's own database. A check that cannot tell (no running container) says `skip`. The exit code is 1 when a check fails. `--json` prints the results.
 
