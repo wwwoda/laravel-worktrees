@@ -235,7 +235,7 @@ php artisan worktree:wake t9                   # start a stopped stack and wait 
 
 `worktree:wake` takes a worktree name, a folder or `main` (a folder that exists wins over a name). It refuses a worktree whose compose project another checkout has too (the main checkout or another worktree, for example after a copied `.env`). It runs `docker compose up -d --wait` (the services of the active profiles) and counts as use. A wake and the stop of an idle stack hold the lock `storage/app/worktree/idle.lock`, so a stop never follows a wake that it did not see.
 
-See [Idle stacks](#idle-stacks) for the host timer and for starting stacks on the first request.
+See [Idle stacks](#idle-stacks) for the host timer, the user that runs it, and the Sablier option.
 
 ## Configuration reference
 
@@ -545,7 +545,7 @@ When one check fails, the delete stops and nothing is changed. Without a state f
 
 ## Idle stacks
 
-A stopped stack uses no memory. Two ways to stop idle stacks and start them again; they work together.
+A stopped stack uses no memory. The default way to stop idle stacks is a host timer that runs `worktree:idle-stop`; `worktree:exec` and `worktree:doctor --fix` start a stopped stack again by themselves, and `worktree:wake` starts one by hand. Sablier is an option for stacks that a person uses in the browser.
 
 ### A host timer (any host)
 
@@ -555,15 +555,27 @@ Run `worktree:idle-stop` every 10 minutes from the main checkout, for example wi
 */10 * * * * cd /srv/dev/shop/app && php artisan worktree:idle-stop >> storage/logs/worktree-idle.log 2>&1
 ```
 
-or a systemd user timer that runs the same command. A stopped stack starts again with `php artisan worktree:wake <name>`.
+or a systemd user timer that runs the same command. Run it as the user that owns the checkouts and runs the agents, never as root: the command writes `storage/app/worktree/idle.json` and `idle.lock` into each worktree, and files that root creates there cannot be opened by that user later. With rootless Docker, the user's own Docker is the one that runs the stacks anyway.
 
-### Start on the first request (Sablier)
+The main checkout is never stopped. A stopped worktree stack starts again with its next `worktree:exec` or `worktree:doctor --fix` (they take the same lock as the stop), or with `php artisan worktree:wake <name>`.
 
-[Sablier](https://github.com/sablierapp/sablier) starts a group of containers when a request arrives, holds the request until they are ready, and stops them after a session without requests. Measured on srv4 with a stopped worktree stack (app, MariaDB, Redis): the first request waited 5.2 s, then the stack ran with its data; after the session ended, Sablier stopped it again.
+### Option: start on the first request (Sablier)
 
-1. **Labels on every service of the worktree's stack** (one group per compose project):
+[Sablier](https://github.com/sablierapp/sablier) starts a group of containers when an HTTP request arrives, holds the request until they are ready, and stops them after a session without requests. Measured on srv4 with a stopped worktree stack (app, MariaDB, Redis): the first request waited 5.2 s, then the stack ran with its data.
+
+Use it only for stacks that a person uses in the browser. By default, Sablier counts only the HTTP requests that pass the router: it does not see `worktree:exec`, test runs, queue jobs or code edits. (Its optional activity tracking counts traffic on the containers' ports with eBPF and needs extra capabilities; it still does not see code edits or a command without network traffic.) An agent that works in a worktree for longer than the session would lose its stack in the middle of its work. For agent stacks, use the host timer, which counts code edits, log writes and the agent commands too.
+
+1. **Labels only on worktree stacks.** Put the labels into a compose file of their own, for example `compose.sablier.yaml`, and load it only in worktrees through `env_overrides`. The main checkout's stack then never carries them and is never stopped:
+
+   ```php
+   // config/worktrees.php
+   'env_overrides' => [
+       'COMPOSE_FILE' => 'compose.yaml:compose.sablier.yaml',
+   ],
+   ```
 
    ```yaml
+   # compose.sablier.yaml: one Sablier group per compose project
    x-sablier: &sablier
      sablier.enable: "true"
      sablier.group: ${COMPOSE_PROJECT_NAME}
@@ -576,23 +588,25 @@ or a systemd user timer that runs the same command. A stopped stack starts again
          <<: *sablier
    ```
 
-2. **Sablier itself**, once per host, with the Docker socket: `sablierapp/sablier` with `start --provider.name=docker`, on the router's network.
+   With `shared`, label only the worktree's app container: the shared database belongs to the main checkout.
 
-3. **The router.** Traefik (agent hosts): the [Sablier Traefik plugin](https://github.com/sablierapp/sablier-traefik-plugin) in the static config, and `providers.docker.allowEmptyServices=true`, so the route of a stopped container stays and its first request reaches the plugin. The plugin documents label configuration for Traefik 3.6 or later with the label `traefik.docker.allownonrunning=true` on each routed service, so that Traefik keeps the routes of stopped containers. Then a middleware per worktree router, for example:
+2. **Sablier itself**, once per host, with the Docker socket: `sablierapp/sablier` with `start --provider.name=docker --provider.auto-stop-on-startup=false`, on the router's network. Without `auto-stop-on-startup=false`, each start of Sablier (an update, a reboot) stops every labelled stack that has no session, also the stacks that agents use at that moment.
+
+3. **The router.** Traefik (agent hosts): the [Sablier Traefik plugin](https://github.com/sablierapp/sablier-traefik-plugin) in the static config, and `providers.docker.allowEmptyServices=true`, so the route of a stopped container stays and its first request reaches the plugin. The plugin documents label configuration for Traefik 3.6 or later with the label `traefik.docker.allownonrunning=true` on each routed service, so that Traefik keeps the routes of stopped containers. Then a middleware per worktree router, also in `compose.sablier.yaml`, for example:
 
    ```yaml
    labels:
      - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.group=${COMPOSE_PROJECT_NAME}
      - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sablierUrl=http://sablier:10000
-     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sessionDuration=30m
+     - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sessionDuration=2h
      - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.blocking.timeout=60s
      - traefik.http.routers.${DEV_SLUG_APP}.middlewares=${DEV_SLUG_APP}-sablier
      - traefik.docker.allownonrunning=true
    ```
 
-   Caddy: Sablier needs a Caddy built with the [Sablier Caddy plugin](https://github.com/sablierapp/sablier-caddy-plugin) and routes that do not come from running containers (caddy-docker-proxy drops the labels of a stopped container). Where that is too much, use the host timer and `worktree:wake`.
+   Caddy: Sablier needs a Caddy built with the [Sablier Caddy plugin](https://github.com/sablierapp/sablier-caddy-plugin) and routes that do not come from running containers (caddy-docker-proxy drops the labels of a stopped container). Where that is too much, use the host timer alone.
 
-Sablier stops containers with `docker stop`, as `worktree:idle-stop` does, so both can run on the same host. Agent commands that need the stack (`worktree:exec`, tests) do not go through the router: wake the stack first.
+Sablier stops containers with `docker stop`, as `worktree:idle-stop` does, so both can run on the same host. Agent commands do not go through the router, but `worktree:exec` and `worktree:doctor --fix` start a stack that Sablier stopped.
 
 ## Files the package writes
 
@@ -606,7 +620,7 @@ In a worktree:
 | `storage/logs/worktree-setup.log` | Log of each setup. |
 | `storage/app/worktree/state.json` | `shared`: the state file. |
 | `storage/app/worktree/idle.json` | The traffic and a hash of the git status of the last `worktree:idle-stop` check, and when each changed. |
-| `storage/app/worktree/woken` | When `worktree:wake` last started the stack. |
+| `storage/app/worktree/woken` | When `worktree:wake` last started the stack (and, with the agent commands, when `worktree:exec` or `worktree:doctor --fix` last used or started it). |
 | `storage/app/worktree/idle.lock` | The lock of a wake and of the stop of an idle stack. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
