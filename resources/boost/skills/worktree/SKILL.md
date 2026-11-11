@@ -9,7 +9,7 @@ Each worktree of the project is a git checkout. With the `sail` or `shared` stra
 
 Where to run the commands:
 
-- `worktree:context`, `worktree:status`, `worktree:exec`, `worktree:services`, `worktree:doctor` and `worktree:wake`: in the worktree, with `php artisan`. Without a name they act on the checkout you are in. In the main checkout, that is the main checkout: `worktree:exec -- artisan migrate` there changes the main database. Check the first line of `worktree:context` (it says "main checkout") before you run anything that writes.
+- `worktree:context`, `worktree:status`, `worktree:exec`, `worktree:services` and `worktree:doctor`: in the worktree, with `php artisan`. Without a name they act on the checkout you are in. In the main checkout, that is the main checkout: `worktree:exec -- artisan migrate` there changes the main database. Check the first line of `worktree:context` (it says "main checkout") before you run anything that writes.
 - `worktree:create`, `worktree:delete` and `worktree:list`: anywhere. Run in a worktree, they run again in the main checkout, so `worktree:create fix-x` makes the same folder and branch from every checkout.
 
 ## Start of a session
@@ -30,7 +30,7 @@ If the session-start hook is set up, this summary is already in your context. Re
 | Run a shell command in the container | `php artisan worktree:exec -- "php -i \| grep memory"` (one quoted word) |
 | Use another service | `php artisan worktree:exec --service=<service> -- <command>`, for example `--service=mariadb -- mariadb -e 'select 1'` (the service names are in `worktree:status`) |
 | Fix a broken setup | `php artisan worktree:doctor`, then `php artisan worktree:doctor --fix` |
-| Start a stopped stack | Nothing to do for `worktree:exec` and `worktree:doctor --fix`: they start it. By hand: `php artisan worktree:wake` |
+| Start a stopped stack (after a reboot) | Nothing to do: `worktree:exec` starts it, and `worktree:doctor --fix` starts it too. |
 | Create another worktree | `php artisan worktree:create my-feature` (prints each step's time and the URL) |
 | Remove a worktree | `php artisan worktree:delete my-feature --delete-branch` (see "Deleting" below) |
 
@@ -51,7 +51,7 @@ With the `sail` or `shared` strategy (a Docker stack per worktree, the usual cas
 ## Memory rules
 
 - Optional services (workers, Horizon, scheduler, phpMyAdmin) run only when their compose profile is on. A new worktree gets the profiles of `services.default` (`WORKTREE_DEFAULT_PROFILES`); when that is not set, it keeps the main checkout's `COMPOSE_PROFILES`. Check `php artisan worktree:services` at the start, turn on only what the task needs, and turn it off again (`worktree:services none`).
-- Where the host runs `worktree:idle-stop` from a timer, an unused worktree stack is stopped after two hours without use (`idle.minutes`); the main checkout is never stopped. Where Sablier is set up, a stack that gets no browser requests stops after its session. Nothing stops a stack without such a setup. A stopped stack is normal: `worktree:exec` and `worktree:doctor --fix` start it again in seconds, with its data.
+- A stopped worktree stack (after a reboot) is normal: `worktree:exec` and `worktree:doctor --fix` start it again in seconds, with its data.
 - Delete a worktree when its branch is merged (see "Deleting" below). With `sail`, the delete stops the containers and removes their volumes (the worktree's database) and the images the worktree built for itself. With `shared`, it stops the app container and drops the worktree's databases, its database user and its Redis numbers on the shared server. With `native`, it drops the cloned database.
 - Do not start a second stack of the same worktree by hand (`docker compose -p ...`), and never change `COMPOSE_PROJECT_NAME` in a worktree's `.env`: the package refuses to act on a worktree whose compose project another checkout uses.
 

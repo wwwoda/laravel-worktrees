@@ -8,7 +8,6 @@ Lean separate worktree stacks and commands for agent sessions ([#25](https://git
 
 - **Agent commands:** `worktree:status` (URL, services with memory, compose profiles, database state, git state; `--json`), `worktree:services` (switch optional services by compose profile: `workers`, `tools`, `none`, `--add`, `--remove`), `worktree:exec` (run a command or an alias such as `test` in the app container, with its options, piped input and exit code passed on; write `--` before the command), `worktree:doctor [--fix]` (stopped containers, missing `vendor` or `node_modules`, a missing build or a stale `public/hot`, cached config, pending migrations or an empty database, workers on old code, a compose project of another checkout), and `worktree:context` (a short summary for the start of an agent session, with a documented session-start hook). New config sections `services`, `exec` and `context`.
 - **Fast creation** (`sail`, top-level config section `fast`): one app image per version of its build inputs, shared by all worktrees and built once under a lock (on when `WORKTREE_APP_IMAGE_NAME` is set); a Composer cache folder in the container or Composer on the host; a copy-on-write `vendor` copy when `composer.lock` is equal (off by default); a frontend build cache keyed by the git tree of the build inputs and the `VITE_*` values (off by default: switch it on with `WORKTREE_BUILD_CACHE=true` and list every input of the build); a database dump with test data keyed by migrations, seeders and seed command (off by default; restored at creation, downloaded from a URL that CI publishes, or seeded and saved by the first worktree). Measured on srv4: a warm worktree in 8.3 s.
-- **Idle stacks:** `worktree:idle-stop` stops worktree stacks without use for `idle.minutes` (120) for a host timer; it never stops the main checkout. `worktree:wake` starts a stopped stack (also `main`). The README describes Sablier as an option for stacks that a person uses in the browser.
 - **The `worktree` skill** in `resources/boost/skills/worktree/SKILL.md`, published with `php artisan vendor:publish --tag=worktrees-skill`.
 
 ### On by default
@@ -21,7 +20,7 @@ These need no setting and act in existing setups:
 - The setup lists the package's bootstrap files in the repository's `.git/info/exclude` (shared by all its worktrees; nothing is committed).
 - `worktree:delete` with `sail` or `shared` removes the images that the worktree's compose project built for itself (`{project}/…` or `{project}-{service}`); shared images and the main checkout's images stay.
 - `worktree:delete` offers a branch whose merged pull request into the base branch has the same head commit (squash or rebase merges), and deletes such a branch with `git branch -D` when you confirm or pass `--delete-branch`.
-- `worktree:exec` and `worktree:doctor --fix` start a stopped worktree stack under the lock that `worktree:idle-stop` takes, and mark it as used.
+- `worktree:exec` and `worktree:doctor --fix` start a stopped worktree stack (after a reboot) with the stack lock held exclusively, hold it shared while they run, and mark the stack as used.
 
 ### Changed
 
@@ -34,13 +33,12 @@ These need no setting and act in existing setups:
 ### Upgrade notes
 
 1. Update the package to the release that holds these changes.
-2. A published `config/worktrees.php` keeps working; copy the new sections (`services`, `exec`, `context`, `fast`, `idle`) only to change their defaults.
+2. A published `config/worktrees.php` keeps working; copy the new sections (`services`, `exec`, `context`, `fast`) only to change their defaults.
 3. For lean stacks, put optional services behind compose profiles (`profiles: [workers]`) and give healthchecks a short first check (`start_interval: 1s`).
 4. To share the app image: `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`.
 5. For a ready-made database: `WORKTREE_DB_DUMP=true` and `WORKTREE_DB_DUMP_SEED_COMMAND`. The default dump commands read the root password from `MARIADB_ROOT_PASSWORD` or Sail's `MYSQL_ROOT_PASSWORD`.
 6. For the frontend build cache: `WORKTREE_BUILD_CACHE=true`, and every path the build reads in `fast.build_cache.paths` (for example `routes` for Wayfinder, `app` for Tailwind's class scan, `vendor` for Flux). A missing input gives a stale bundle without a warning.
-7. For idle stacks: run `php artisan worktree:idle-stop` from a timer as the user that owns the checkouts, not as root.
-8. For agents: `php artisan vendor:publish --tag=worktrees-skill` and the session-start hook from the README. Scripts that call `worktree:exec` write `--` before the command.
+7. For agents: `php artisan vendor:publish --tag=worktrees-skill` and the session-start hook from the README. Scripts that call `worktree:exec` write `--` before the command.
 
 ## v0.2.2 (2026-11-09)
 

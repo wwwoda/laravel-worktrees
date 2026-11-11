@@ -225,7 +225,7 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 
 ## Skill for agents
 
-The package ships a skill for Claude Code and other agents that read `SKILL.md` files: `resources/boost/skills/worktree/SKILL.md`. It names the `worktree:*` commands, which container runs what, a decision tree (something is broken, queued jobs, the scheduler, the database, a browser check, workers on old code, tests) and the memory rules (optional services only when needed, idle stacks, delete merged worktrees).
+The package ships a skill for Claude Code and other agents that read `SKILL.md` files: `resources/boost/skills/worktree/SKILL.md`. It names the `worktree:*` commands, which container runs what, a decision tree (something is broken, queued jobs, the scheduler, the database, a browser check, workers on old code, tests) and the memory rules (optional services only when needed, delete merged worktrees).
 
 ```bash
 php artisan vendor:publish --tag=worktrees-skill   # copies it to .claude/skills/worktree/SKILL.md
