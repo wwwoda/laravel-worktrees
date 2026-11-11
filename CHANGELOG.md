@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 (2026-11-11)
+
+Two fixes. No breaking change.
 
 ### Fixed
 
