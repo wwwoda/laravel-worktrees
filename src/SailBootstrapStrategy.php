@@ -41,6 +41,9 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     // Written before a dump restore and removed after it: a restore that stopped half way.
     private const RESTORE_MARKER = 'storage/app/worktree/dump-restore.pending';
 
+    // The output of the node install that runs while the containers start.
+    public const NODE_INSTALL_LOG = 'storage/logs/worktree-node-install.log';
+
     protected readonly FastSetup $fast;
 
     /**
@@ -371,11 +374,34 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     }
 
     /**
+     * Start the node install in the background. Its output goes into a file,
+     * not a pipe: nothing reads a pipe while the containers start, and an
+     * install would block once the pipe holds 64 KiB.
+     */
+    public function startNodeInstall(string $worktreePath): InvokedProcess
+    {
+        File::ensureDirectoryExists(dirname($worktreePath.'/'.self::NODE_INSTALL_LOG));
+        File::delete($worktreePath.'/'.self::NODE_INSTALL_LOG);
+
+        return Process::path($worktreePath)->timeout(300)->quietly()
+            ->start($this->nodeInstallCommand().' > '.escapeshellarg(self::NODE_INSTALL_LOG).' 2>&1');
+    }
+
+    /**
+     * Wait for the node install of startNodeInstall(); its output goes to `$output` then.
+     *
      * @param  (Closure(string, string): void)|null  $output
      */
-    public function startNodeInstall(string $worktreePath, ?Closure $output = null): InvokedProcess
+    public function finishNodeInstall(InvokedProcess $process, string $worktreePath, ?Closure $output = null): void
     {
-        return Process::path($worktreePath)->timeout(300)->start($this->nodeInstallCommand(), $output);
+        $result = $process->wait();
+        $log = is_file($worktreePath.'/'.self::NODE_INSTALL_LOG) ? File::get($worktreePath.'/'.self::NODE_INSTALL_LOG) : '';
+        if ($output && $log !== '') {
+            $output('out', $log);
+        }
+        if (! $result->successful()) {
+            throw new RuntimeException('Node dependency install failed (see '.self::NODE_INSTALL_LOG.'): '.trim(substr($log, -2000)));
+        }
     }
 
     public function buildFrontend(string $worktreePath, ?Closure $output = null): void

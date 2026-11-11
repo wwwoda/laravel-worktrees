@@ -131,8 +131,25 @@ it('installs node packages while the containers start when no container mounts n
     $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();
     $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
     expect($record['completed'])->toContain('node');
-    Process::assertRan('pnpm install --prefer-offline');
+    // Into a file: a pipe that nothing reads would block the install at 64 KiB.
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "pnpm install --prefer-offline > 'storage/logs/worktree-node-install.log' 2>&1" && $p->quietly);
     expect(File::get($this->path.'/storage/logs/worktree-setup.log'))->toContain('node (in parallel)');
+});
+
+it('fails the node stage of a parallel install with the end of its log', function () {
+    File::ensureDirectoryExists($this->base.'/n/storage/logs');
+    File::put($this->base.'/n/'.SailBootstrapStrategy::NODE_INSTALL_LOG, "resolving\nERR_PNPM_FETCH_404 left-pad\n");
+    ($this->fake)(['pnpm install *' => Process::result(exitCode: 1)]);
+    $strategy = new SailBootstrapStrategy('laravel.test', 'pnpm', false, fast: new FastSetup);
+    $process = Process::path($this->base.'/n')->start('pnpm install --prefer-offline');
+    $seen = '';
+
+    $collect = function (string $type, string $buffer) use (&$seen): void {
+        $seen .= $buffer;
+    };
+
+    expect(fn () => $strategy->finishNodeInstall($process, $this->base.'/n', $collect))->toThrow(RuntimeException::class, 'ERR_PNPM_FETCH_404');
+    expect($seen)->toContain('resolving');
 });
 
 it('installs node packages first when a container mounts a volume at node_modules', function () use ($strategy) {

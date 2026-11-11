@@ -409,23 +409,18 @@ class WorktreeManager
                 if ($pending && $this->bootstrapStrategy instanceof SailBootstrapStrategy && $this->bootstrapStrategy->canInstallNodeInParallel($path)) {
                     // No container mounts node_modules: install while the containers start.
                     $step('node (in parallel)');
-                    $parallelNode = [$this->bootstrapStrategy->startNodeInstall($path, $processOutput), microtime(true)];
+                    $parallelNode = [$this->bootstrapStrategy, $this->bootstrapStrategy->startNodeInstall($path), microtime(true)];
                 } else {
                     $node();
                 }
             }
-            $finishNode = function () use (&$parallelNode, $run): void {
+            $finishNode = function () use (&$parallelNode, $run, $path, $processOutput): void {
                 if ($parallelNode === null) {
                     return;
                 }
-                [$process, $since] = $parallelNode;
+                [$strategy, $process, $since] = $parallelNode;
                 $parallelNode = null;
-                $run('node', function () use ($process): void {
-                    $result = $process->wait();
-                    if (! $result->successful()) {
-                        throw new RuntimeException("Node dependency install failed: {$result->errorOutput()}");
-                    }
-                }, true, $since);
+                $run('node', fn () => $strategy->finishNodeInstall($process, $path, $processOutput), true, $since);
             };
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
@@ -496,8 +491,8 @@ class WorktreeManager
             throw $error;
         } finally {
             // A failed setup does not leave the node install running.
-            if ($parallelNode !== null && $parallelNode[0]->running()) {
-                $parallelNode[0]->signal(15);
+            if ($parallelNode !== null && $parallelNode[1]->running()) {
+                $parallelNode[1]->signal(15);
             }
             flock($handle, LOCK_UN);
             fclose($handle);
