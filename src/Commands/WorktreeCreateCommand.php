@@ -3,10 +3,10 @@
 namespace Woda\Worktrees\Commands;
 
 use Illuminate\Console\Command;
-use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Woda\Worktrees\Commands\Concerns\RunsBootstrap;
+use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Woda\Worktrees\WorktreeManager;
 
 use function Laravel\Prompts\search;
@@ -15,9 +15,8 @@ use function Laravel\Prompts\text;
 
 class WorktreeCreateCommand extends Command
 {
-    use RunsInMainCheckout;
-
     use RunsBootstrap;
+    use RunsInMainCheckout;
 
     protected $signature = 'worktree:create
         {name? : Worktree name (interactive if omitted)}
