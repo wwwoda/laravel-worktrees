@@ -4,6 +4,7 @@ namespace Woda\Worktrees;
 
 use Closure;
 use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
@@ -219,8 +220,7 @@ class WorktreeManager
         }
         $head = trim($this->git('rev-parse '.escapeshellarg('refs/heads/'.$branch))->output());
         // Only a pull request into the base branch: one merged into another branch did not reach it.
-        $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr list --head %s --base %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch), escapeshellarg($this->baseBranch)));
-        $pulls = $result->successful() ? json_decode($result->output(), true) : null;
+        $pulls = $this->ghJson(sprintf('gh pr list --head %s --base %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch), escapeshellarg($this->baseBranch)));
         foreach (is_array($pulls) ? $pulls : [] as $pull) {
             if (is_array($pull) && $head !== '' && ($pull['headRefOid'] ?? null) === $head) {
                 return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
@@ -229,14 +229,28 @@ class WorktreeManager
         // `worktree:create --pr` puts a fork's head into `pr-{number}`: GitHub knows
         // the fork's own branch name, so ask for the pull request by its number.
         if ($head !== '' && preg_match('/^pr-(\d+)$/', $branch, $match) === 1) {
-            $result = Process::path(base_path())->timeout(30)->run(sprintf('gh pr view %s --json state,baseRefName,headRefOid', escapeshellarg($match[1])));
-            $pull = $result->successful() ? json_decode($result->output(), true) : null;
+            $pull = $this->ghJson(sprintf('gh pr view %s --json state,baseRefName,headRefOid', escapeshellarg($match[1])));
             if (is_array($pull) && ($pull['state'] ?? null) === 'MERGED' && ($pull['baseRefName'] ?? null) === $this->baseBranch && ($pull['headRefOid'] ?? null) === $head) {
                 return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
             }
         }
 
         return ['exists' => true, 'merged' => false, 'via' => null];
+    }
+
+    /**
+     * The decoded JSON of a `gh` call; null when gh fails, is missing or does
+     * not answer in time (the branch then counts as not merged).
+     */
+    private function ghJson(string $command): mixed
+    {
+        try {
+            $result = Process::path(base_path())->timeout(30)->run($command);
+        } catch (ProcessTimedOutException) {
+            return null;
+        }
+
+        return $result->successful() ? json_decode($result->output(), true) : null;
     }
 
     /**

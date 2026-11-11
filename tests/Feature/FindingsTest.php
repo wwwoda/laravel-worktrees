@@ -1,8 +1,11 @@
 <?php
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Symfony\Component\Process\Exception\ProcessTimedOutException as SymfonyTimeout;
+use Symfony\Component\Process\Process as SymfonyProcess;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\NativeBootstrapStrategy;
 use Woda\Worktrees\SailBootstrapStrategy;
@@ -177,6 +180,21 @@ it('offers a branch that a pull request squashed, and only with the same head co
     'same head' => ['abc123', true],
     'commits after the merge' => ['def456', false],
 ]);
+
+it('keeps the branch when gh does not answer in time', function () {
+    ($this->fake)([
+        "git show-ref --verify --quiet 'refs/heads/t9'" => Process::result(),
+        'git merge-base --is-ancestor *' => Process::result(exitCode: 1),
+        "git rev-parse 'refs/heads/t9'" => Process::result("abc123\n"),
+        'gh pr list *' => fn () => throw new ProcessTimedOutException(new SymfonyTimeout(new SymfonyProcess(['gh']), SymfonyTimeout::TYPE_GENERAL), Process::result()),
+    ]);
+    File::ensureDirectoryExists($this->path.'/storage');
+    app()->singleton(BootstrapStrategy::class, fn () => new NativeBootstrapStrategy('pnpm'));
+    app()->forgetInstance(WorktreeManager::class);
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true, '--delete-branch' => true])->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git branch -'));
+});
 
 it('removes no image when the main checkout\'s compose config cannot be read', function () {
     ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => $p->path === $this->path
