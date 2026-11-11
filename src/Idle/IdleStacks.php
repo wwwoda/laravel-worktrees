@@ -106,7 +106,7 @@ final readonly class IdleStacks
     }
 
     /**
-     * Bytes in and out of each container so far, by container name. The exact
+     * Bytes that each container sent so far, by container name. The exact
      * counters of `/proc/net/dev` in the container; `docker stats` (rounded to
      * three digits, so 1 GB moves in 10 MB steps) only where that fails.
      *
@@ -132,10 +132,8 @@ final readonly class IdleStacks
         $result = Process::timeout(60)->run('docker stats --no-stream --format '.escapeshellarg('{{.Name}}|{{.NetIO}}').' '.implode(' ', array_map(escapeshellarg(...), $rest)));
         foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
             [$name, $io] = array_pad(explode('|', $line, 2), 2, '');
-            $bytes = 0;
-            foreach (explode('/', $io) as $part) {
-                $bytes += self::bytes(trim($part)) ?? 0;
-            }
+            // `received / sent`: only what the container sent.
+            $bytes = self::bytes(trim(explode('/', $io)[1] ?? '')) ?? 0;
             if (in_array($name, $rest, true)) {
                 $traffic[$name] = $bytes;
             }
@@ -145,7 +143,10 @@ final readonly class IdleStacks
     }
 
     /**
-     * Received plus sent bytes of all interfaces but `lo`; null without an interface line.
+     * Sent bytes of all interfaces but `lo`; null without an interface line.
+     * Received bytes do not count: ARP broadcasts and other containers'
+     * broadcasts arrive at an idle container too. A request is answered, so
+     * the container sends.
      */
     private static function netDevBytes(string $output): ?int
     {
@@ -156,7 +157,7 @@ final readonly class IdleStacks
             }
             $fields = preg_split('/\s+/', trim($match[2])) ?: [];
             if (count($fields) >= 9 && ctype_digit($fields[0]) && ctype_digit($fields[8])) {
-                $bytes = ($bytes ?? 0) + (int) $fields[0] + (int) $fields[8];
+                $bytes = ($bytes ?? 0) + (int) $fields[8];
             }
         }
 

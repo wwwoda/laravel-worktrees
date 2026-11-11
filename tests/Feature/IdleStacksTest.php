@@ -36,7 +36,7 @@ beforeEach(function () {
 
             return Process::result($name === 'off' ? '' : json_encode(['Service' => 'laravel.test', 'Name' => "app-{$name}-app-1", 'State' => 'running']));
         },
-        'docker stats *' => Process::result("app-busy-app-1|1.5kB / 2kB\napp-idle-app-1|600B / 400B\napp-twin-app-1|1kB / 1kB\n"),
+        'docker stats *' => Process::result("app-busy-app-1|1.5kB / 2kB\napp-idle-app-1|1.6kB / 1kB\napp-twin-app-1|1kB / 1kB\n"),
         'git --no-optional-locks status *' => fn () => Process::result($this->gitStatus),
         'docker exec *' => function (PendingProcess $p) {
             preg_match("/^docker exec '([^']+)'/", (string) $p->command, $m);
@@ -63,7 +63,7 @@ it('stops only the stacks without traffic, code changes or log writes for the gi
 
     Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose --profile '*' stop" && $p->path === $this->paths['idle']);
     Process::assertNotRan(fn (PendingProcess $p) => str_ends_with((string) $p->command, ' stop') && $p->path !== $this->paths['idle']);
-    expect(json_decode(File::get($this->paths['busy'].'/storage/app/worktree/idle.json'), true)['traffic'])->toBe(3500);
+    expect(json_decode(File::get($this->paths['busy'].'/storage/app/worktree/idle.json'), true)['traffic'])->toBe(2000);
 });
 
 it('counts a log write as use, and stops nothing in a dry run', function () {
@@ -142,8 +142,21 @@ it('reads exact byte counters of the app container, and docker stats only where 
         ."  eth0: 1073741825    1200    0    0    0     0          0         0  2147483650    1100    0    0    0     0       0          0\n"];
 
     expect(app(IdleStacks::class)->traffic(['app-busy-app-1', 'app-idle-app-1']))
-        ->toBe(['app-busy-app-1' => 3221225475, 'app-idle-app-1' => 1000]);
+        // Sent bytes only (eth0's 2147483650; idle sent 1kB).
+        ->toBe(['app-busy-app-1' => 2147483650, 'app-idle-app-1' => 1000]);
     Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker stats') && str_contains((string) $p->command, "'app-idle-app-1'") && ! str_contains((string) $p->command, 'app-busy'));
+});
+
+it('does not count received broadcasts as use', function () {
+    $header = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n";
+    $line = fn (int $received) => $header."  eth0: {$received}    12    0    0    0     0          0         0  5000    11    0    0    0     0       0          0\n";
+    $this->netDev = ['app-idle-app-1' => $line(1000)];
+    $stacks = app(IdleStacks::class);
+    $before = $stacks->traffic(['app-idle-app-1']);
+    // ARP broadcasts of other containers arrive; the idle container sends nothing.
+    $this->netDev = ['app-idle-app-1' => $line(1840)];
+
+    expect($stacks->traffic(['app-idle-app-1']))->toBe($before);
 });
 
 it('counts a deleted file as use', function () {
