@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\File;
  *
  * The key is the first 12 hex characters of SHA-256 over `$prefix`, then,
  * for each file in the order of its relative path, `path NUL sha256(file) LF`.
- * Hidden files (names that start with a dot) in folders do not count.
+ * Hidden files (names that start with a dot) in folders do not count, unless
+ * `$hidden` is true (the shared app image: `.dockerignore` and dot files that
+ * a Dockerfile copies change the image).
  * CI can compute the same key (see the README).
  */
 final class ContentKey
@@ -19,7 +21,7 @@ final class ContentKey
     /**
      * @param  list<string>  $paths  files and folders, relative to `$root`
      */
-    public static function of(string $root, array $paths, string $prefix = ''): string
+    public static function of(string $root, array $paths, string $prefix = '', bool $hidden = false): string
     {
         $context = hash_init('sha256');
         hash_update($context, $prefix);
@@ -29,7 +31,7 @@ final class ContentKey
             if (is_file($path)) {
                 $files[$relative] = $path;
             } elseif (is_dir($path)) {
-                foreach (File::allFiles($path) as $file) {
+                foreach (File::allFiles($path, $hidden) as $file) {
                     $files[$relative.'/'.$file->getRelativePathname()] = $file->getPathname();
                 }
             }

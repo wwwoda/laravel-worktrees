@@ -75,12 +75,12 @@ final readonly class AppImage
                     $paths[] = $relative;
                 }
             } elseif ($context !== null && is_dir($context)) {
-                $build['context_content'] = ContentKey::of($context, ['.']);
+                $build['context_content'] = ContentKey::of($context, ['.'], hidden: true);
             }
             $prefix = 'build:'.json_encode(self::sorted($build), JSON_UNESCAPED_SLASHES)."\n";
         }
 
-        return $this->name.':'.ContentKey::of($worktreePath, array_values(array_unique($paths)), $prefix);
+        return $this->name.':'.ContentKey::of($worktreePath, array_values(array_unique($paths)), $prefix, hidden: true);
     }
 
     /**

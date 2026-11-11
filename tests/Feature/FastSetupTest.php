@@ -497,6 +497,33 @@ it('does not copy vendor from the main checkout by default', function () {
     expect(app(FastSetup::class)->copyVendor)->toBeTrue();
 });
 
+it('counts hidden files of the build context and the hash paths in the image key', function () {
+    $worktree = $this->base.'/wt';
+    $outside = $this->base.'/outside-context';
+    File::ensureDirectoryExists($worktree.'/docker');
+    File::put($worktree.'/docker/Dockerfile', 'FROM php');
+    File::ensureDirectoryExists($outside);
+    File::put($outside.'/Dockerfile', 'FROM php');
+    $image = new AppImage('app-image', hashPaths: ['docker']);
+    $inside = $image->tag($worktree, ['context' => $worktree.'/docker']);
+    $external = $image->tag($worktree, ['context' => $outside]);
+
+    File::put($worktree.'/docker/.dockerignore', 'vendor');
+    File::put($outside.'/.dockerignore', 'vendor');
+
+    expect($image->tag($worktree, ['context' => $worktree.'/docker']))->not->toBe($inside)
+        ->and($image->tag($worktree, ['context' => $outside]))->not->toBe($external);
+});
+
+it('keeps hidden files out of the template and dump keys', function () {
+    File::ensureDirectoryExists($this->base.'/m/database/migrations');
+    File::put($this->base.'/m/database/migrations/a.php', 'x');
+    $key = ContentKey::of($this->base.'/m', ['database/migrations']);
+    File::put($this->base.'/m/database/migrations/.gitkeep', '');
+
+    expect(ContentKey::of($this->base.'/m', ['database/migrations']))->toBe($key);
+});
+
 it('has every node lock file in the default build inputs', function () {
     $published = require __DIR__.'/../../config/worktrees.php';
 
