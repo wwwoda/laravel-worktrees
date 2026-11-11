@@ -196,7 +196,7 @@ class WorktreesServiceProvider extends ServiceProvider
         $keep = config('worktrees.fast.build_cache.keep', 5);
 
         return new BuildCache(
-            enabled: (bool) config('worktrees.fast.build_cache.enabled', true),
+            enabled: (bool) config('worktrees.fast.build_cache.enabled', false),
             paths: is_array($paths) ? array_values(array_filter($paths, is_string(...))) : [],
             buildCommand: (is_string($strategy = config('worktrees.bootstrap.strategy')) ? $strategy : 'native').':'.$nodePackageManager,
             output: is_string($output) && $output !== '' ? $output : 'public/build',

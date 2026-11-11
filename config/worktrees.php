@@ -113,9 +113,12 @@ return [
 
         // Reuse a frontend build whose inputs (the git tree of these paths) are
         // the same: from the cache in the main checkout's storage/app/worktrees/builds,
-        // or from the main checkout's own build.
+        // or from the main checkout's own build. Off by default: a build that
+        // reads a path missing here (routes/ for Wayfinder, app/ for Tailwind's
+        // class scan, vendor/ for Flux) would get a stale bundle without a
+        // warning. Switch it on and list every input of your build.
         'build_cache' => [
-            'enabled' => (bool) env('WORKTREE_BUILD_CACHE', true),
+            'enabled' => (bool) env('WORKTREE_BUILD_CACHE', false),
             'paths' => [
                 'resources', 'package.json', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
                 'vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'tsconfig.json',

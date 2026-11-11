@@ -14,6 +14,7 @@ use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\SharedServicesBootstrapStrategy;
+use Woda\Worktrees\WorktreesServiceProvider;
 
 /*
  * The fast setup of the Sail strategy: shared app image, offline-first
@@ -528,4 +529,12 @@ it('has every node lock file in the default build inputs', function () {
     $published = require __DIR__.'/../../config/worktrees.php';
 
     expect($published['fast']['build_cache']['paths'])->toContain('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb');
+});
+
+it('has the frontend build cache off by default', function () {
+    $published = require __DIR__.'/../../config/worktrees.php';
+    config()->set('worktrees.fast', []);
+
+    expect($published['fast']['build_cache']['enabled'])->toBeFalse()
+        ->and(WorktreesServiceProvider::buildCache('pnpm')->enabled())->toBeFalse();
 });
