@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Throwable;
 use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
+use Woda\Worktrees\SetupLock;
 
 /**
  * A short summary of the checkout for the start of an agent session. A
@@ -62,7 +63,9 @@ class WorktreeContextCommand extends Command
             '- URL: '.($text($status['url']) ?: 'not set'),
         ];
         if ($status['setup'] !== null && $status['setup'] !== 'ready') {
-            $lines[] = '- Setup: '.$text($status['setup']).' (see php artisan worktree:doctor)';
+            $lines[] = '- Setup: '.$text($status['setup']).($status['setup'] === 'running' && SetupLock::isHeld($text($status['path']))
+                ? ' (a setup runs now: wait until it ends before you run commands here)'
+                : ' (see php artisan worktree:doctor)');
         }
         /** @var list<array{service: string, state: string}> $services */
         $services = $status['services'];

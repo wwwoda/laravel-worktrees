@@ -315,14 +315,8 @@ class WorktreeManager
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
         $this->assertNameFree($name, $path);
-        File::ensureDirectoryExists($path.'/storage');
-        $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
-        if ($handle === false) {
-            throw new RuntimeException('Cannot open the worktree bootstrap lock.');
-        }
-        if (! flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-
+        $handle = SetupLock::tryAcquire($path);
+        if ($handle === null) {
             throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
@@ -443,8 +437,7 @@ class WorktreeManager
             }
             throw $error;
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            SetupLock::release($handle);
         }
     }
 

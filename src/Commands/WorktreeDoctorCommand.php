@@ -8,6 +8,7 @@ use Woda\Worktrees\Agent\Doctor;
 use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Agent\WorktreeTarget;
 use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
+use Woda\Worktrees\SetupLock;
 
 class WorktreeDoctorCommand extends Command
 {
@@ -30,6 +31,25 @@ class WorktreeDoctorCommand extends Command
             return self::FAILURE;
         }
         $fix = (bool) $this->option('fix');
+        // A setup that still runs installs and migrates itself: fixes would run in parallel with it.
+        $lock = null;
+        if ($fix && ! $target->main) {
+            $lock = SetupLock::tryAcquire($target->path);
+            if ($lock === null) {
+                $this->components->error('A worktree setup runs in '.$target->path.' (storage/worktree-bootstrap.lock). Wait until it ends, then run worktree:doctor --fix again.');
+
+                return self::FAILURE;
+            }
+        }
+        try {
+            return $this->diagnose($doctor, $target, $fix);
+        } finally {
+            $lock === null || SetupLock::release($lock);
+        }
+    }
+
+    private function diagnose(Doctor $doctor, WorktreeTarget $target, bool $fix): int
+    {
         $output = $this->output->isVerbose() ? fn (string $type, string $buffer) => $this->output->write($buffer) : null;
         $results = [];
         // In order: a later check sees what an earlier fix changed.

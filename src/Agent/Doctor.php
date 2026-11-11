@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\File;
 use RuntimeException;
 use Woda\Worktrees\ComposeProcess;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\SetupLock;
 use Woda\Worktrees\SharedServicesBootstrapStrategy;
 
 /**
@@ -95,7 +96,9 @@ final readonly class Doctor
         return match ($target->setupStatus()) {
             'ready' => self::ok('setup complete'),
             null => self::result('warn', 'no bootstrap record: set up by hand or by an older version', false),
-            'running' => self::result('warn', 'a setup runs, or one stopped without a record; see storage/logs/worktree-setup.log', false),
+            'running' => SetupLock::isHeld($target->path)
+                ? self::result('warn', 'a setup runs now: wait until it ends (storage/logs/worktree-setup.log)', false)
+                : self::result('fail', 'the setup stopped before it ended; continue it: php artisan worktree:setup '.$target->path, false),
             default => self::result('fail', 'the setup failed; continue it: php artisan worktree:setup '.$target->path, false),
         };
     }

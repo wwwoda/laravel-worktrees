@@ -10,6 +10,7 @@ use Woda\Worktrees\Agent\WorktreeTarget;
 use Woda\Worktrees\Commands\WorktreeExecCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\SailBootstrapStrategy;
+use Woda\Worktrees\SetupLock;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\WorktreeManager;
 
@@ -346,4 +347,23 @@ it('counts a deleted file as a code change', function () {
     Process::fake(['git status --porcelain *' => Process::result(" D app/Gone.php\n")]);
 
     expect(app(WorktreeInspector::class)->lastCodeChange($this->path))->toBe(time() + 100);
+});
+
+it('refuses doctor fixes while a worktree setup holds its lock', function () {
+    File::delete($this->path.'/vendor/autoload.php');
+    $lock = SetupLock::tryAcquire($this->path);
+
+    try {
+        $this->artisan('worktree:doctor', ['worktree' => 't9', '--fix' => true])
+            ->expectsOutputToContain('A worktree setup runs')
+            ->assertFailed();
+        Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'composer install'));
+
+        File::put($this->path.'/storage/worktree-bootstrap.json', json_encode(['completed' => [], 'name' => 't9', 'status' => 'running']));
+        $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'running']);
+        expect(app(Doctor::class)->check('setup', $target))->toMatchArray(['state' => 'warn']);
+    } finally {
+        SetupLock::release($lock);
+    }
+    expect(app(Doctor::class)->check('setup', $target))->toMatchArray(['state' => 'fail']);
 });
