@@ -558,3 +558,13 @@ it('keys the shared image by a Dockerfile outside the hash paths', function () {
     File::put($outside, 'FROM php:8.5');
     expect($image->tag($worktree, ['context' => $worktree, 'dockerfile' => $outside]))->not->toBe($external);
 });
+
+it('reads the root password of Sail\'s MariaDB service in the default dump commands', function () {
+    $published = require __DIR__.'/../../config/worktrees.php';
+
+    foreach ([DatabaseDump::DUMP_COMMAND, DatabaseDump::RESTORE_COMMAND, $published['fast']['database_dump']['dump_command'], $published['fast']['database_dump']['restore_command']] as $command) {
+        expect($command)->toContain('${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}')->not->toContain('-p"');
+    }
+    expect($published['fast']['database_dump']['dump_command'])->toBe(DatabaseDump::DUMP_COMMAND)
+        ->and($published['fast']['database_dump']['restore_command'])->toBe(DatabaseDump::RESTORE_COMMAND);
+});

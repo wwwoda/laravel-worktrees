@@ -25,6 +25,13 @@ use Woda\Worktrees\Shared\MainCheckout;
  */
 final readonly class DatabaseDump
 {
+    // The MariaDB image's root password, or Sail's name for it. MYSQL_PWD: an
+    // empty password never makes the client wait for one, and the password
+    // stays out of the process list.
+    public const DUMP_COMMAND = 'MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" mariadb-dump -uroot --single-transaction --routines --triggers --skip-dump-date {database}';
+
+    public const RESTORE_COMMAND = 'MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" mariadb -uroot {database}';
+
     /**
      * @param  list<string>  $hashPaths
      */
@@ -33,8 +40,8 @@ final readonly class DatabaseDump
         private string $service = 'mariadb',
         private array $hashPaths = ['database/migrations', 'database/seeders'],
         private string $seedCommand = 'php artisan db:seed --force',
-        private string $dumpCommand = 'mariadb-dump -uroot -p"$MARIADB_ROOT_PASSWORD" --single-transaction --routines --triggers --skip-dump-date {database}',
-        private string $restoreCommand = 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" {database}',
+        private string $dumpCommand = self::DUMP_COMMAND,
+        private string $restoreCommand = self::RESTORE_COMMAND,
         private ?string $url = null,
         private ?string $urlHeader = null,
         private int $keep = 3,

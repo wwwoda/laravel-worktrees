@@ -138,8 +138,9 @@ return [
             'hash_paths' => ['database/migrations', 'database/seeders'],
             'seed_command' => env('WORKTREE_DB_DUMP_SEED_COMMAND', 'php artisan db:seed --force'),
             // Run in the database service with `sh -c`; {database} is the worktree's DB_DATABASE.
-            'dump_command' => env('WORKTREE_DB_DUMP_COMMAND', 'mariadb-dump -uroot -p"$MARIADB_ROOT_PASSWORD" --single-transaction --routines --triggers --skip-dump-date {database}'),
-            'restore_command' => env('WORKTREE_DB_RESTORE_COMMAND', 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" {database}'),
+            // The root password comes from MARIADB_ROOT_PASSWORD or, as in Sail's compose file, MYSQL_ROOT_PASSWORD.
+            'dump_command' => env('WORKTREE_DB_DUMP_COMMAND', 'MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" mariadb-dump -uroot --single-transaction --routines --triggers --skip-dump-date {database}'),
+            'restore_command' => env('WORKTREE_DB_RESTORE_COMMAND', 'MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" mariadb -uroot {database}'),
             'url' => env('WORKTREE_DB_DUMP_URL'),
             // One header for the download, for example 'Authorization: Bearer ...'.
             'url_header' => env('WORKTREE_DB_DUMP_URL_HEADER'),

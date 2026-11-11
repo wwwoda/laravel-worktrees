@@ -413,7 +413,7 @@ With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree star
 3. Else, with `WORKTREE_DB_DUMP_URL` (for example `https://ci.example.com/dumps/{key}.sql.gz`, with one header in `WORKTREE_DB_DUMP_URL_HEADER`), the dump is downloaded. A missing download is not an error.
 4. Else the worktree migrates, runs the seed command, and saves its database as the dump of the key for the next worktrees.
 
-The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image (`$MARIADB_ROOT_PASSWORD` in the container). For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
+The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image: they read the root password from `MARIADB_ROOT_PASSWORD` or, as Sail's compose file sets it, `MYSQL_ROOT_PASSWORD`, and pass it as `MYSQL_PWD`. For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
 
 **CI can publish the dump.** The key is the first 12 hex characters of SHA-256 over `seed:{seed command}\n`, then for each file under the hash paths, sorted by relative path (hidden files left out), `{relative path}\0{sha256 of the file}\n`. A CI job that migrates and seeds anyway can compute it the same way, dump the database to `{key}.sql.gz` and publish it where `WORKTREE_DB_DUMP_URL` points.
 
