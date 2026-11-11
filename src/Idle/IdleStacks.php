@@ -141,10 +141,19 @@ final readonly class IdleStacks
         if ($reflog->successful() && is_file($head = trim($reflog->output()))) {
             $times[] = (int) filemtime($head);
         }
-        $status = Process::path($path)->timeout(10)->run('git status --porcelain --untracked-files=all');
-        foreach (preg_split('/\r?\n/', rtrim($status->output())) ?: [] as $line) {
-            $file = $path.'/'.trim(substr($line, 3), '"');
-            if (strlen($line) > 3 && file_exists($file)) {
+        // -z: paths as they are (no quotes, no escapes); a rename or copy gives the new path, then the old one.
+        $status = Process::path($path)->timeout(10)->run('git status --porcelain -z --untracked-files=all');
+        $entries = explode("\0", $status->output());
+        for ($i = 0; $i < count($entries); $i++) {
+            $entry = $entries[$i];
+            if (strlen($entry) < 4) {
+                continue;
+            }
+            if (str_contains('RC', $entry[0]) || str_contains('RC', $entry[1])) {
+                $i++;
+            }
+            $file = $path.'/'.substr($entry, 3);
+            if (file_exists($file)) {
                 $times[] = (int) filemtime($file);
             }
         }

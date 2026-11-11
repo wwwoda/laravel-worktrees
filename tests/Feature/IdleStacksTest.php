@@ -14,6 +14,7 @@ beforeEach(function () {
     config()->set('worktrees.bootstrap.strategy', 'sail');
     config()->set('worktrees.database.strategy', 'none');
     $this->paths = [];
+    $this->gitStatus = '';
     foreach (['busy', 'idle', 'off', 'twin'] as $name) {
         $this->paths[$name] = $this->base.'/'.basename(base_path()).'-'.$name;
         File::ensureDirectoryExists($this->paths[$name].'/storage');
@@ -35,6 +36,7 @@ beforeEach(function () {
             return Process::result($name === 'off' ? '' : json_encode(['Service' => 'laravel.test', 'Name' => "app-{$name}-app-1", 'State' => 'running']));
         },
         'docker stats *' => Process::result("app-busy-app-1|1.5kB / 2kB\napp-idle-app-1|600B / 400B\napp-twin-app-1|1kB / 1kB\n"),
+        'git status *' => fn () => Process::result($this->gitStatus),
         '*' => Process::result(),
     ]);
 });
@@ -98,5 +100,18 @@ it('reads each file inside untracked folders', function () {
     // An edit inside an untracked folder does not change the folder's time: git must list the files.
     app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
 
-    Process::assertRan(fn (PendingProcess $p) => $p->command === 'git status --porcelain --untracked-files=all' && $p->path === $this->paths['idle']);
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'git status --porcelain -z --untracked-files=all' && $p->path === $this->paths['idle']);
 });
+
+it('reads the edit time of files with quoted names and of renamed files', function (string $file, string $status) {
+    $path = $this->paths['idle'];
+    File::put($path.'/'.$file, '<?php');
+    $this->gitStatus = $status;
+
+    // The traffic and the state are 40 minutes old; only the edited file is new.
+    expect(app(IdleStacks::class)->lastActivity($path, 1000, time()))->toBeGreaterThan(time() - 5);
+})->with([
+    'non-ASCII name' => ['übersicht.php', " M übersicht.php\0"],
+    'name with a space' => ['my file.php', "?? my file.php\0"],
+    'staged rename' => ['new.php', "RM new.php\0old.php\0 M other.php\0"],
+]);
