@@ -7,15 +7,17 @@ description: Work in a git worktree of a Laravel project that uses woda/laravel-
 
 Each worktree of the project is a git checkout. With the `sail` or `shared` strategy it has its own Docker stack: an app container (PHP), its own database and Redis (or its own databases on a shared server), and optional services behind compose profiles. With `native`, PHP runs on the host and the container parts of this skill do not apply.
 
+Give every call `-n` (`php artisan -n worktree:...`), as in the examples below. You have no terminal: without `-n`, a command that asks a question could take its default answer.
+
 Where to run the commands:
 
-- `worktree:context`, `worktree:status`, `worktree:exec`, `worktree:services` and `worktree:doctor`: in the worktree, with `php artisan`. Without a name they act on the checkout you are in. In the main checkout, that is the main checkout: `worktree:exec -- artisan migrate` there changes the main database. Check the first line of `worktree:context` (it says "main checkout") before you run anything that writes.
+- `worktree:context`, `worktree:status`, `worktree:exec`, `worktree:services` and `worktree:doctor`: in the worktree, with `php artisan -n`. Without a name they act on the checkout you are in. In the main checkout, that is the main checkout: `worktree:exec -- artisan migrate` there changes the main database. Check the first line of `worktree:context` (it says "main checkout") before you run anything that writes.
 - `worktree:create`, `worktree:delete` and `worktree:list`: anywhere. Run in a worktree, they run again in the main checkout, so `worktree:create fix-x` makes the same folder and branch from every checkout.
 
 ## Start of a session
 
 ```bash
-php artisan worktree:context      # URL, what runs, database state, test login, last errors
+php artisan -n worktree:context      # URL, what runs, database state, test login, last errors
 ```
 
 If the session-start hook is set up, this summary is already in your context. Read it before you change anything.
@@ -24,15 +26,15 @@ If the session-start hook is set up, this summary is already in your context. Re
 
 | You want to | Run |
 |---|---|
-| Know the URL, the services, memory and database state | `php artisan worktree:status` |
-| Run tests | `php artisan worktree:exec -- test --filter=UserTest` (in the app container) |
-| Run artisan or Composer | `php artisan worktree:exec -- artisan migrate`, `php artisan worktree:exec -- composer require x/y` |
-| Run a shell command in the container | `php artisan worktree:exec -- "php -i \| grep memory"` (one quoted word) |
-| Use another service | `php artisan worktree:exec --service=<service> -- <command>`, for example `--service=mariadb -- mariadb -e 'select 1'` (the service names are in `worktree:status`) |
-| Fix a broken setup | `php artisan worktree:doctor`, then `php artisan worktree:doctor --fix` |
+| Know the URL, the services, memory and database state | `php artisan -n worktree:status` |
+| Run tests | `php artisan -n worktree:exec -- test --filter=UserTest` (in the app container) |
+| Run artisan or Composer | `php artisan -n worktree:exec -- artisan migrate`, `php artisan -n worktree:exec -- composer require x/y` |
+| Run a shell command in the container | `php artisan -n worktree:exec -- "php -i \| grep memory"` (one quoted word) |
+| Use another service | `php artisan -n worktree:exec --service=<service> -- <command>`, for example `--service=mariadb -- mariadb -e 'select 1'` (the service names are in `worktree:status`) |
+| Fix a broken setup | `php artisan -n worktree:doctor`, then `php artisan -n worktree:doctor --fix` |
 | Start a stopped stack (after a reboot) | Nothing to do: `worktree:exec` starts it, and `worktree:doctor --fix` starts it too. |
-| Create another worktree | `php artisan worktree:create my-feature` (prints each step's time and the URL) |
-| Remove a worktree | `php artisan worktree:delete my-feature --delete-branch` (see "Deleting" below) |
+| Create another worktree | `php artisan -n worktree:create my-feature` (prints each step's time and the URL) |
+| Remove a worktree | `php artisan -n worktree:delete my-feature --delete-branch` (see "Deleting" below) |
 
 Always put `--` between `worktree:exec` (and its `-w` or `--service`) and the command. Without it, artisan reads options such as `-h`, `-V` or `-q` of the command as its own; `worktree:exec` then refuses the call (exit code 2).
 
@@ -40,24 +42,24 @@ With the `sail` or `shared` strategy (a Docker stack per worktree, the usual cas
 
 ## Decision tree
 
-1. **Something does not work** (500 error, missing assets, "Vite manifest not found", connection refused, old behaviour): run `php artisan worktree:doctor`. It names the problem; `--fix` repairs it in the right order (containers, Composer, node, build, caches, migrations, stale workers). While the worktree's setup still runs, `--fix` refuses: wait for the setup. In the main checkout, `--fix` runs only as `worktree:doctor main --fix`, and it then migrates the main database: do that only when the user asks.
-2. **The code needs queued jobs** (mails, notifications, imports): run `php artisan worktree:services` to see the project's profiles, then turn on the worker profile it lists, for example `php artisan worktree:services workers` (the names come from the project's compose file; the project's notes may name them). Turn them off when you are done: `php artisan worktree:services none`. Do not start Horizon unless the task is about Horizon.
-3. **The scheduler must run**: `php artisan worktree:services` shows which profile holds it.
-4. **You need to look at the database**: `php artisan worktree:exec --service=<database service> -- <client> ...` (the service is in `worktree:status`; the client is `mariadb`, `mysql` or `psql`). With `shared`, the database server is the shared stack's, not a service of the worktree. Or turn on the project's admin profile, when it has one (`php artisan worktree:services phpmyadmin --add`; `phpmyadmin` is an alias of `tools`), and turn it off again afterwards.
+1. **Something does not work** (500 error, missing assets, "Vite manifest not found", connection refused, old behaviour): run `php artisan -n worktree:doctor`. It names the problem; `--fix` repairs it in the right order (containers, Composer, node, build, caches, migrations, stale workers). While the worktree's setup still runs, `--fix` refuses: wait for the setup. In the main checkout, `--fix` runs only as `worktree:doctor main --fix`, and it then migrates the main database: do that only when the user asks.
+2. **The code needs queued jobs** (mails, notifications, imports): run `php artisan -n worktree:services` to see the project's profiles, then turn on the worker profile it lists, for example `php artisan -n worktree:services workers` (the names come from the project's compose file; the project's notes may name them). Turn them off when you are done: `php artisan -n worktree:services none`. Do not start Horizon unless the task is about Horizon.
+3. **The scheduler must run**: `php artisan -n worktree:services` shows which profile holds it.
+4. **You need to look at the database**: `php artisan -n worktree:exec --service=<database service> -- <client> ...` (the service is in `worktree:status`; the client is `mariadb`, `mysql` or `psql`). With `shared`, the database server is the shared stack's, not a service of the worktree. Or turn on the project's admin profile, when it has one (`php artisan -n worktree:services phpmyadmin --add`; `phpmyadmin` is an alias of `tools`), and turn it off again afterwards.
 5. **You check a page in the browser**: the URL is in `worktree:context`. The test login is in the project's notes in that output (or in the project's skills). A fresh worktree starts with the test data of the project's seed command when the project has the database dump switched on.
-6. **Workers run old code** after you changed code (`worktree:doctor` says `workers: started before the last code change`): `php artisan worktree:doctor --fix` restarts them.
-7. **Tests**: `php artisan worktree:exec -- test --parallel` uses the host's process limit (`exec.test_processes`). Run the tests you touched first (`--filter`), the full suite before you push.
+6. **Workers run old code** after you changed code (`worktree:doctor` says `workers: started before the last code change`): `php artisan -n worktree:doctor --fix` restarts them.
+7. **Tests**: `php artisan -n worktree:exec -- test --parallel` uses the host's process limit (`exec.test_processes`). Run the tests you touched first (`--filter`), the full suite before you push.
 
 ## Memory rules
 
-- Optional services (workers, Horizon, scheduler, phpMyAdmin) run only when their compose profile is on. A new worktree gets the profiles of `services.default` (`WORKTREE_DEFAULT_PROFILES`); when that is not set, it keeps the main checkout's `COMPOSE_PROFILES`. Check `php artisan worktree:services` at the start, turn on only what the task needs, and turn it off again (`worktree:services none`).
+- Optional services (workers, Horizon, scheduler, phpMyAdmin) run only when their compose profile is on. A new worktree gets the profiles of `services.default` (`WORKTREE_DEFAULT_PROFILES`); when that is not set, it keeps the main checkout's `COMPOSE_PROFILES`. Check `php artisan -n worktree:services` at the start, turn on only what the task needs, and turn it off again (`worktree:services none`).
 - A stopped worktree stack (after a reboot) is normal: `worktree:exec` and `worktree:doctor --fix` start it again in seconds, with its data.
 - Delete a worktree when its branch is merged (see "Deleting" below). With `sail`, the delete stops the containers and removes their volumes (the worktree's database) and the images the worktree built for itself. With `shared`, it stops the app container and drops the worktree's databases, its database user and its Redis numbers on the shared server. With `native`, it drops the cloned database.
 - Do not start a second stack of the same worktree by hand (`docker compose -p ...`), and never change `COMPOSE_PROJECT_NAME` in a worktree's `.env`: the package refuses to act on a worktree whose compose project another checkout uses.
 
 ## Deleting
 
-Run `php artisan worktree:delete <name> --delete-branch`.
+Run `php artisan -n worktree:delete <name> --delete-branch`.
 
 - You have no terminal, so the delete asks no questions. Without `--delete-branch` it keeps the merged branch; with it, the branch is deleted when it is merged (also by a squashed pull request with the same head commit).
 - When the worktree has uncommitted changes or unpushed commits, the delete stops with exit code 1, names what is in the way and deletes nothing. Commit and push the work, or ask the user.

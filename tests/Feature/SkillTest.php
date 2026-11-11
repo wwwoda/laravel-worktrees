@@ -34,7 +34,7 @@ it('names only commands the package registers', function () {
 
 it('writes -- before the command in every worktree:exec example', function () {
     $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
-    preg_match_all('/`php artisan worktree:exec[^`]*`/', $skill, $matches);
+    preg_match_all('/`php artisan (?:-n )?worktree:exec[^`]*`/', $skill, $matches);
 
     expect($matches[0])->not->toBeEmpty();
     foreach ($matches[0] as $example) {
@@ -66,4 +66,11 @@ it('names nothing of the idle stop, which is not in this release', function () {
     foreach ([$files[0], $files[2]] as $file) {
         expect((string) file_get_contents($file))->not->toContain('idle stacks')->not->toContain('idle.minutes');
     }
+});
+
+it('gives -n to every call, as an agent has no terminal', function () {
+    // Without -n and without a terminal, a question would get its default answer.
+    $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
+    expect($skill)->toContain('php artisan -n worktree:')
+        ->and($skill)->not->toContain('php artisan worktree:');
 });
