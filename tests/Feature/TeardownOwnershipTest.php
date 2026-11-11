@@ -53,13 +53,121 @@ it('does not tear down a worktree that carries another worktree\'s compose proje
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
 });
 
-it('refuses when the compose config of a registered worktree cannot be read', function () {
+it('passes a registered worktree whose compose config cannot be read and whose project is another', function () {
+    // B has a compose file but no .env, so its config fails: an old, unrelated worktree.
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::put($this->b.'/compose.yaml', "name: \${COMPOSE_PROJECT_NAME:-app}\nservices: {}\n");
+    ($this->fake)();
+
+    app(WorktreeManager::class)->tearDown('a');
+
+    Process::assertRan('docker compose --profile "*" down -v');
+});
+
+it('refuses when the .env of an unreadable worktree names the compose project', function () {
     $this->projects = [base_path() => 'app', $this->a => 'app-a'];
     File::put($this->b.'/compose.yaml', "services: {}\n");
+    File::put($this->b.'/.env', "COMPOSE_PROJECT_NAME=app-a\n");
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('app-a')");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
+});
+
+it('refuses when the compose file of an unreadable worktree names the compose project', function (string $name) {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::ensureDirectoryExists($this->b.'/docker');
+    File::put($this->b.'/.env', "COMPOSE_FILE=docker/compose.yml\n");
+    File::put($this->b.'/docker/compose.yml', "name: {$name}\nservices: {}\n");
+    ($this->fake)();
+
+    expect(fn () => (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->bringUp($this->a))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('app-a')");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' up '));
+})->with([
+    'literal' => 'app-a',
+    'quoted' => '"app-a"',
+    'default of a variable' => '${COMPOSE_PROJECT_NAME:-app-a}',
+    'default of an unset variable' => "'\${PROJECT-app-a}'",
+    'nested default' => '${PROJECT:-${FALLBACK:-app-a}}',
+]);
+
+it('refuses when the compose file of an unreadable worktree has a name that cannot be resolved', function () {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::put($this->b.'/compose.yaml', "name: \${PROJECT:?set PROJECT}\nservices: {}\n");
     ($this->fake)();
 
     expect(fn () => app(WorktreeManager::class)->tearDown('a'))
         ->toThrow(RuntimeException::class, "Cannot read the compose project of {$this->b}");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
+});
+
+it('reads a quoted name with a # as compose does', function () {
+    // Compose names the project "app-a #1", normalised to app-a1.
+    $this->projects = [base_path() => 'app', $this->a => 'app-a1'];
+    File::put($this->b.'/compose.yaml', "name: \"app-a #1\" # the project\nservices: {}\n");
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('app-a1')");
+});
+
+it('refuses when the project folder of an unreadable worktree is its parent folder', function () {
+    // COMPOSE_FILE=../compose.yml: compose's project folder is the parent, named after it.
+    $project = strtolower(basename($this->base));
+    $this->projects = [base_path() => 'app', $this->a => $project];
+    File::put($this->base.'/compose.yml', "services: {}\n");
+    File::put($this->b.'/.env', "COMPOSE_FILE=../compose.yml\n");
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('{$project}')");
+});
+
+it('reads only the compose file that compose picks and its override', function () {
+    // compose.yaml comes first: compose does not read an old docker-compose.yml next to it.
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::put($this->b.'/compose.yaml', "services: {}\n");
+    File::put($this->b.'/docker-compose.yml', "name: app-a\nservices: {}\n");
+    ($this->fake)();
+
+    app(WorktreeManager::class)->tearDown('a');
+
+    Process::assertRan('docker compose --profile "*" down -v');
+});
+
+it('refuses when the override file of an unreadable worktree names the project', function () {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::put($this->b.'/compose.yaml', "services: {}\n");
+    File::put($this->b.'/compose.override.yaml', "name: app-a\n");
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('app-a')");
+});
+
+it('refuses when the folder name of an unreadable worktree gives the compose project', function () {
+    // Compose names a project after its folder: lower case, only a-z, 0-9, _ and -.
+    $this->b = $this->base.'/.My.App-A';
+    File::ensureDirectoryExists($this->b);
+    File::put($this->b.'/docker-compose.yml', "services: {}\n");
+    $this->projects = [base_path() => 'app', $this->a => 'myapp-a'];
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "{$this->b} could have the same compose project ('myapp-a')");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
+});
+
+it('refuses when a container of the compose project belongs to an unreadable worktree', function () {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a'];
+    File::put($this->b.'/compose.yaml', "services: {}\n");
+    $this->owners = "c1 {$this->a}\nc2 {$this->b}\n";
+    ($this->fake)();
+
+    expect(fn () => app(WorktreeManager::class)->tearDown('a'))
+        ->toThrow(RuntimeException::class, "Containers of the compose project 'app-a' belong to {$this->b}");
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
 });
 

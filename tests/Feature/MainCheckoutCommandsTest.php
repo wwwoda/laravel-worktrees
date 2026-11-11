@@ -2,6 +2,7 @@
 
 use Composer\InstalledVersions;
 use Illuminate\Process\PendingProcess;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
@@ -152,11 +153,21 @@ it('passes --env on and clears the keys of the selected environment file', funct
 
 it('refuses to hand over to a main checkout with another version of the package', function () {
     ($this->installMain)('v0.1.0', 'abc1234');
+    // One line: the error box wraps at the terminal width.
+    putenv('COLUMNS=1000');
+    $this->withoutMockingConsoleOutput();
+    try {
+        $exit = Artisan::call('worktree:delete', ['name' => 'fix-x', '--force' => true, '--no-interaction' => true]);
+    } finally {
+        putenv('COLUMNS');
+    }
 
-    $this->artisan('worktree:delete', ['name' => 'fix-x', '--force' => true, '--no-interaction' => true])
+    expect($exit)->not->toBe(0)
         // One message: it names both versions and the update of the main checkout.
-        ->expectsOutputToContain('The main checkout has woda/laravel-worktrees v0.1.0, this checkout has')
-        ->assertFailed();
+        ->and(Artisan::output())->toContain('The main checkout has woda/laravel-worktrees v0.1.0, this checkout has')
+        // After a merge the main checkout needs the version of its lock file, not a newer one.
+        ->toContain("git pull and composer install in {$this->main}")
+        ->not->toContain('composer update');
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
 });
 

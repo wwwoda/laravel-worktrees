@@ -118,7 +118,7 @@ trait RunsInMainCheckout
             return "Cannot read the version of {$package} in {$where}, so it is unknown whether the main checkout runs the same code. Run composer install in the main checkout {$main}, or run the command there.";
         }
         if ($ours !== $theirs) {
-            return "The main checkout has {$package} {$theirs}, this checkout has {$ours}: the command would run there with other code. Update the main checkout first (cd {$main} && composer update {$package}), or run the command there.";
+            return "The main checkout has {$package} {$theirs}, this checkout has {$ours}: the command would run there with other code. Update the main checkout first: git pull and composer install in {$main} (in its app container, if it has one), so it installs the version of its lock file; or run the command there.";
         }
 
         return null;
