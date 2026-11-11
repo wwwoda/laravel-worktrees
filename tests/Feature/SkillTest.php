@@ -42,10 +42,11 @@ it('writes -- before the command in every worktree:exec example', function () {
     }
 });
 
-it('sends worktree:create and worktree:delete to the main checkout', function () {
+it('names --delete-branch and keeps agents away from --force', function () {
     $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
 
-    expect($skill)->toContain('`worktree:create`, `worktree:delete` and `worktree:list`: in the **main checkout**')
-        ->and($skill)->toContain('--delete-branch')
-        ->and($skill)->toContain('Never add `--force` on your own');
+    expect($skill)->toContain('--delete-branch')
+        ->and($skill)->toContain('Never add `--force` on your own')
+        ->and($skill)->toContain('stops with exit code 1')
+        ->and($skill)->not->toContain('(`cd` there first)');
 });

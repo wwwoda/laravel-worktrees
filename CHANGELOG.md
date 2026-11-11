@@ -25,6 +25,8 @@ These need no setting and act in existing setups:
 
 ### Changed
 
+- **`worktree:delete` exits with 1 when it stops** without a terminal (`-n`, an agent, a script) at uncommitted changes or unpushed commits; the message names them and `--force`. Before, it exited with 0. A person who answers no at the terminal still ends it with 0. Scripts that read the exit code now see the stop.
+- **`worktree:create`, `worktree:delete` and `worktree:list` give the same result in every checkout.** Run in a linked worktree, they run again in the main checkout (which git names). Before, `worktree:create fix-x` in a worktree `feat` made `app-feat-fix-x` with the worktree's `.env` values.
 - **`copy_files` no longer overwrites files that git tracks in the worktree.** They keep the branch's version, so a copied folder such as `.claude` no longer makes every new worktree show changes. A project that copied tracked files on purpose must move them out of the tracked tree. Symlinked folders are still copied with their files.
 - With `sail` and `shared`, the node install runs as `pnpm install --prefer-offline` (or `npm install --prefer-offline`).
 - The Sail host build runs without the variables of the checkout that runs artisan, so Vite reads the worktree's own `VITE_*` values.

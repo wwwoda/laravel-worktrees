@@ -10,7 +10,7 @@ Each worktree of the project is a git checkout. With the `sail` or `shared` stra
 Where to run the commands:
 
 - `worktree:context`, `worktree:status`, `worktree:exec`, `worktree:services`, `worktree:doctor` and `worktree:wake`: in the worktree, with `php artisan`. Without a name they act on the checkout you are in. In the main checkout, that is the main checkout: `worktree:exec -- artisan migrate` there changes the main database. Check the first line of `worktree:context` (it says "main checkout") before you run anything that writes.
-- `worktree:create`, `worktree:delete` and `worktree:list`: in the **main checkout** (`cd` there first). They build the folder name from the folder that artisan runs in: from a worktree `feat`, `worktree:create fix-x` would make `app-feat-fix-x` next to it.
+- `worktree:create`, `worktree:delete` and `worktree:list`: anywhere. Run in a worktree, they run again in the main checkout, so `worktree:create fix-x` makes the same folder and branch from every checkout.
 
 ## Start of a session
 
@@ -31,8 +31,8 @@ If the session-start hook is set up, this summary is already in your context. Re
 | Use another service | `php artisan worktree:exec --service=<service> -- <command>`, for example `--service=mariadb -- mariadb -e 'select 1'` (the service names are in `worktree:status`) |
 | Fix a broken setup | `php artisan worktree:doctor`, then `php artisan worktree:doctor --fix` |
 | Start a stopped stack | Nothing to do for `worktree:exec` and `worktree:doctor --fix`: they start it. By hand: `php artisan worktree:wake` |
-| Create another worktree | In the main checkout: `php artisan worktree:create my-feature` (prints each step's time and the URL) |
-| Remove a worktree | In the main checkout: `php artisan worktree:delete my-feature --delete-branch` (see "Deleting" below) |
+| Create another worktree | `php artisan worktree:create my-feature` (prints each step's time and the URL) |
+| Remove a worktree | `php artisan worktree:delete my-feature --delete-branch` (see "Deleting" below) |
 
 Always put `--` between `worktree:exec` (and its `-w` or `--service`) and the command. Without it, artisan reads options such as `-h`, `-V` or `-q` of the command as its own; `worktree:exec` then refuses the call (exit code 2).
 
@@ -57,10 +57,10 @@ With the `sail` or `shared` strategy (a Docker stack per worktree, the usual cas
 
 ## Deleting
 
-Run `php artisan worktree:delete <name> --delete-branch` in the main checkout.
+Run `php artisan worktree:delete <name> --delete-branch`.
 
 - You have no terminal, so the delete asks no questions. Without `--delete-branch` it keeps the merged branch; with it, the branch is deleted when it is merged (also by a squashed pull request with the same head commit).
-- When the worktree has uncommitted changes or unpushed commits, the delete stops, says so, and still exits with 0. Read its output: "has uncommitted changes" or "has unpushed commits" means that nothing was deleted. Commit and push the work, or ask the user.
+- When the worktree has uncommitted changes or unpushed commits, the delete stops with exit code 1, names what is in the way and deletes nothing. Commit and push the work, or ask the user.
 - Never add `--force` on your own: it skips these checks and deletes uncommitted work.
 
 ## Files you must not commit
