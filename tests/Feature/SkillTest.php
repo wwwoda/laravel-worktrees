@@ -31,3 +31,21 @@ it('names only commands the package registers', function () {
     $pending = ['worktree:context', 'worktree:status', 'worktree:exec', 'worktree:doctor', 'worktree:services', 'worktree:wake', 'worktree:idle-stop'];
     expect(array_diff(array_unique($matches[0]), $known, $pending))->toBe([]);
 });
+
+it('writes -- before the command in every worktree:exec example', function () {
+    $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
+    preg_match_all('/`php artisan worktree:exec[^`]*`/', $skill, $matches);
+
+    expect($matches[0])->not->toBeEmpty();
+    foreach ($matches[0] as $example) {
+        expect($example)->toContain(' -- ');
+    }
+});
+
+it('sends worktree:create and worktree:delete to the main checkout', function () {
+    $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
+
+    expect($skill)->toContain('`worktree:create`, `worktree:delete` and `worktree:list`: in the **main checkout**')
+        ->and($skill)->toContain('--delete-branch')
+        ->and($skill)->toContain('Never add `--force` on your own');
+});
