@@ -67,6 +67,7 @@ beforeEach(function () {
             '*COMPOSER_DISABLE_NETWORK=1*composer install*' => fn () => $this->composerOffline,
             '*migrate:status*' => fn () => $this->migrateStatus,
             '*db:show --json*' => fn () => $this->dbShow,
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };
@@ -129,7 +130,7 @@ it('runs Composer on the host when configured', function () use ($strategy) {
 });
 
 it('installs node packages while the containers start when no container mounts node_modules', function () use ($strategy) {
-    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => [['type' => 'bind', 'target' => '/var/www/html']]]]]))]);
+    ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode(['name' => 'project-'.md5((string) $p->path)] + ['services' => ['laravel.test' => ['volumes' => [['type' => 'bind', 'target' => '/var/www/html']]]]]))]);
     $strategy(new FastSetup);
 
     $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();
@@ -141,7 +142,7 @@ it('installs node packages while the containers start when no container mounts n
 });
 
 it('installs node packages first when the strategy has its own node install', function () {
-    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => []]]]))]);
+    ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode(['name' => 'project-'.md5((string) $p->path)] + ['services' => ['laravel.test' => ['volumes' => []]]]))]);
     app()->instance(BootstrapStrategy::class, new class('laravel.test', 'pnpm', false, fast: new FastSetup) extends SailBootstrapStrategy
     {
         public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
@@ -172,7 +173,7 @@ it('fails the node stage of a parallel install with the end of its log', functio
 });
 
 it('installs node packages first when a container mounts a volume at node_modules', function () use ($strategy) {
-    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => [['type' => 'volume', 'target' => '/var/www/html/node_modules']]]]]))]);
+    ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode(['name' => 'project-'.md5((string) $p->path)] + ['services' => ['laravel.test' => ['volumes' => [['type' => 'volume', 'target' => '/var/www/html/node_modules']]]]]))]);
     $strategy(new FastSetup);
 
     $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();

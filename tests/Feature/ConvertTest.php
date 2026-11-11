@@ -144,6 +144,7 @@ beforeEach(function () {
                 return Process::result();
             },
             'docker compose --profile "*" down*' => fn () => ($this->downFails ?? false) ? Process::result(errorOutput: 'down failed', exitCode: 1) : Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };
@@ -437,6 +438,8 @@ test('a name that several worktrees share is refused; a path picks one', functio
 });
 
 test('a failed delete makes convert fail', function () {
+    // convert asks at a terminal, and so does the delete it calls.
+    deleteCommandWithStdin(terminal: true);
     sailWorktree($this, 'old1', 'merged-branch');
     $this->downFails = true;
 
@@ -731,6 +734,8 @@ test('a temporary database whose removal cannot be checked fails the conversion'
 });
 
 test('convert deletes an unconverted Sail worktree and keeps its old volume as backup', function () {
+    // convert asks at a terminal, and so does the delete it calls.
+    deleteCommandWithStdin(terminal: true);
     $path = sailWorktree($this, 'old1', 'merged-branch');
 
     $this->artisan('worktree:convert')

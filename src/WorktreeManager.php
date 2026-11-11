@@ -4,9 +4,11 @@ namespace Woda\Worktrees;
 
 use Closure;
 use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Symfony\Component\Finder\Finder;
 use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
@@ -27,6 +29,10 @@ class WorktreeManager
     private const STATUS_COMMAND = "git status --porcelain -- . ':(exclude)storage/worktree-bootstrap.json' ':(exclude)storage/worktree-bootstrap.lock' ':(exclude)storage/worktree-bootstrap.clone' ':(exclude)storage/app/worktree' ':(exclude)storage/logs/worktree-setup.log'";
 
     private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
+
+    private const EXCLUDE_MARKER = '# laravel-worktrees: files the package writes into each worktree';
+
+    private const PACKAGE_FILES = ['/storage/worktree-bootstrap.json', '/storage/worktree-bootstrap.lock', '/storage/worktree-bootstrap.clone'];
 
     public function __construct(
         private readonly string $basePath,
@@ -118,6 +124,8 @@ class WorktreeManager
 
     public function create(string $name, ?string $branch = null, ?string $baseBranch = null): string
     {
+        $named = $branch !== null;
+        $tracked = false;
         $branch ??= $this->branchPrefix.$name;
         $baseBranch ??= $this->baseBranch;
         $path = $this->pathFor($name);
@@ -127,19 +135,61 @@ class WorktreeManager
         }
 
         $local = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch));
-        $remote = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/remotes/origin/'.$branch));
-
-        $command = $local->successful()
-            ? sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch))
-            : sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path),
-                escapeshellarg($remote->successful() ? 'origin/'.$branch : $baseBranch));
+        if ($local->successful()) {
+            $command = sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch));
+        } elseif ($this->fetchRemoteBranch($branch, $named)) {
+            // The remote's head: not a new branch from the base branch. Tracking is set below.
+            $tracked = true;
+            $command = sprintf('worktree add --no-track -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg('origin/'.$branch));
+        } else {
+            $command = sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg($baseBranch));
+        }
         $result = $this->git($command);
 
         if (! $result->successful()) {
             throw new RuntimeException("Failed to create worktree: {$result->errorOutput()}");
         }
+        // Track origin's branch through the branch config: `--track` refuses a
+        // remote ref outside the clone's fetch refspec (a single-branch clone).
+        if ($tracked && $this->git('remote get-url origin')->successful()) {
+            $this->git(sprintf('config %s origin', escapeshellarg('branch.'.$branch.'.remote')));
+            $this->git(sprintf('config %s %s', escapeshellarg('branch.'.$branch.'.merge'), escapeshellarg('refs/heads/'.$branch)));
+            // A clone whose fetch refspec does not cover the branch would never update
+            // origin/{branch}: a push would then still count as unpushed on delete.
+            if (! $this->git('rev-parse --symbolic-full-name '.escapeshellarg($branch.'@{upstream}'))->successful()) {
+                $this->git('remote set-branches --add origin '.escapeshellarg($branch));
+            }
+        }
 
         return $path;
+    }
+
+    /**
+     * Fetch the branch from origin into `origin/{branch}`, with an explicit
+     * refspec (a clone may fetch only some branches). True when origin has it.
+     * False when origin does not have it. Without an origin remote, an
+     * existing `origin/{branch}` ref counts. A fetch that
+     * fails otherwise (no network) stops a branch that was named: a new branch
+     * from the base would hide the remote one. For the default branch of a
+     * name, the last fetched `origin/{branch}` counts.
+     */
+    public function fetchRemoteBranch(string $branch, bool $required = true): bool
+    {
+        $ref = 'refs/remotes/origin/'.$branch;
+        // Without an origin remote, only a ref that is already there can count.
+        if ($this->git('remote get-url origin')->successful()) {
+            $fetch = Process::path(base_path())->timeout(60)->run('git fetch origin '.escapeshellarg('+refs/heads/'.$branch.':'.$ref));
+            if (! $fetch->successful()) {
+                if (stripos($fetch->errorOutput(), "couldn't find remote ref") !== false) {
+                    return false;
+                }
+                if ($required) {
+                    throw new RuntimeException("Cannot fetch the branch {$branch} from origin, so it is unknown whether origin has it: ".trim($fetch->errorOutput()));
+                }
+            }
+        }
+
+        return $this->git('show-ref --verify --quiet '.escapeshellarg($ref))->successful();
     }
 
     public function remove(string $name): void
@@ -200,23 +250,64 @@ class WorktreeManager
     }
 
     /**
-     * After a delete: is the local branch still there, and is it merged into the base branch?
+     * After a delete: is the local branch still there, and is it merged into the
+     * base branch? A branch whose pull request was squashed or rebased is not an
+     * ancestor of the base branch; it counts as merged when GitHub reports a merged
+     * pull request whose head is the local branch's commit (`via` is then `pull request`).
      *
-     * @return array{exists: bool, merged: bool}
+     * @return array{exists: bool, merged: bool, via: string|null}
      */
     public function branchStatus(string $branch): array
     {
         $exists = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful();
+        if (! $exists) {
+            return ['exists' => false, 'merged' => false, 'via' => null];
+        }
+        if ($this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful()) {
+            return ['exists' => true, 'merged' => true, 'via' => 'ancestor'];
+        }
+        $head = trim($this->git('rev-parse '.escapeshellarg('refs/heads/'.$branch))->output());
+        // Only a pull request into the base branch: one merged into another branch did not reach it.
+        $pulls = $this->ghJson(sprintf('gh pr list --head %s --base %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch), escapeshellarg($this->baseBranch)));
+        foreach (is_array($pulls) ? $pulls : [] as $pull) {
+            if (is_array($pull) && $head !== '' && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
+        // `worktree:create --pr` puts a fork's head into `pr-{number}`: GitHub knows
+        // the fork's own branch name, so ask for the pull request by its number.
+        if ($head !== '' && preg_match('/^pr-(\d+)$/', $branch, $match) === 1) {
+            $pull = $this->ghJson(sprintf('gh pr view %s --json state,baseRefName,headRefOid', escapeshellarg($match[1])));
+            if (is_array($pull) && ($pull['state'] ?? null) === 'MERGED' && ($pull['baseRefName'] ?? null) === $this->baseBranch && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
 
-        return [
-            'exists' => $exists,
-            'merged' => $exists && $this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful(),
-        ];
+        return ['exists' => true, 'merged' => false, 'via' => null];
     }
 
-    public function deleteMergedBranch(string $branch): bool
+    /**
+     * The decoded JSON of a `gh` call; null when gh fails, is missing or does
+     * not answer in time (the branch then counts as not merged).
+     */
+    private function ghJson(string $command): mixed
     {
-        return $this->git('branch -d '.escapeshellarg($branch))->successful();
+        try {
+            $result = Process::path(base_path())->timeout(30)->run($command);
+        } catch (ProcessTimedOutException) {
+            return null;
+        }
+
+        return $result->successful() ? json_decode($result->output(), true) : null;
+    }
+
+    /**
+     * Delete a merged branch: `git branch -d`, or `-D` for a branch that a merged
+     * pull request with the same head commit squashed or rebased.
+     */
+    public function deleteMergedBranch(string $branch, bool $mergedByPullRequest = false): bool
+    {
+        return $this->git('branch '.($mergedByPullRequest ? '-D' : '-d').' '.escapeshellarg($branch))->successful();
     }
 
     public function exists(string $name): bool
@@ -327,6 +418,7 @@ class WorktreeManager
         $parallelNode = null;
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
+            $this->excludePackageFiles($path);
             $decoded = File::exists($statePath)
                 ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
                 : ['completed' => []];
@@ -696,20 +788,94 @@ class WorktreeManager
     {
         $sourcePath = base_path();
 
-        foreach ($this->copyFiles as $file) {
+        foreach ($this->copyFiles as $entry) {
+            // `.claude/` and `./.claude` name the same folder as git's `.claude`.
+            $file = (string) preg_replace('#^(\./)+#', '', trim($entry));
+            $file = rtrim($file, '/');
+            if ($file === '') {
+                continue;
+            }
             $source = $sourcePath.'/'.$file;
             $target = $targetPath.'/'.$file;
 
             if (! File::exists($source) || ($keepExisting && File::exists($target))) {
                 continue;
             }
+            // Files that git tracks in the worktree keep the branch's version: a copy of the
+            // main checkout's working file (a folder such as .claude holds tracked skills)
+            // would show as a change in every new worktree. Without the list of tracked
+            // files, no file that exists in the worktree is replaced.
+            $tracked = $this->trackedFiles($targetPath, $file);
+            $keep = fn (string $relative): bool => $tracked === null
+                ? File::exists($targetPath.'/'.$relative)
+                : isset($tracked[$relative]);
 
             if (File::isDirectory($source)) {
-                File::copyDirectory($source, $target);
-            } else {
+                // Symlinked folders count with their files (skills are often installed as links), as copyDirectory() did.
+                $items = Finder::create()->files()->ignoreDotFiles(false)->ignoreVCS(false)->followLinks()->ignoreUnreadableDirs()->in($source);
+                foreach ($items as $item) {
+                    $relative = $file.'/'.str_replace(DIRECTORY_SEPARATOR, '/', $item->getRelativePathname());
+                    if ($keep($relative)) {
+                        continue;
+                    }
+                    File::ensureDirectoryExists(dirname($targetPath.'/'.$relative));
+                    File::copy($item->getPathname(), $targetPath.'/'.$relative);
+                }
+            } elseif (! $keep($file)) {
                 File::ensureDirectoryExists(dirname($target));
                 File::copy($source, $target);
             }
+        }
+    }
+
+    /**
+     * The files under `$pathspec` that git tracks in the checkout, as a set of
+     * relative paths; null when git cannot tell.
+     *
+     * @return array<string, true>|null
+     */
+    private function trackedFiles(string $checkout, string $pathspec): ?array
+    {
+        $result = Process::path($checkout)->timeout(30)->run('git ls-files -z -- '.escapeshellarg($pathspec));
+        if (! $result->successful()) {
+            return null;
+        }
+        $files = array_filter(explode("\0", $result->output()), static fn (string $file): bool => $file !== '');
+
+        return array_fill_keys($files, true);
+    }
+
+    /**
+     * The files the package writes into a worktree are untracked: list them in the
+     * repository's `info/exclude` (shared by all its worktrees), so `git status`
+     * stays clean. Nothing is committed.
+     */
+    private function excludePackageFiles(string $path): void
+    {
+        $result = Process::path($path)->timeout(10)->run('git rev-parse --path-format=absolute --git-common-dir');
+        $common = trim($result->output());
+        if (! $result->successful() || $common === '' || ! is_dir($common)) {
+            return;
+        }
+        $exclude = $common.'/info/exclude';
+        if (File::exists($exclude) && str_contains(File::get($exclude), self::EXCLUDE_MARKER)) {
+            return;
+        }
+        File::ensureDirectoryExists(dirname($exclude));
+        // All worktrees share the file: two setups at the same time must not both append.
+        $lock = fopen($exclude.'.lw-lock', 'c');
+        if ($lock === false) {
+            return;
+        }
+        try {
+            flock($lock, LOCK_EX);
+            $content = File::exists($exclude) ? File::get($exclude) : '';
+            if (! str_contains($content, self::EXCLUDE_MARKER)) {
+                File::append($exclude, ($content === '' || str_ends_with($content, "\n") ? '' : "\n").self::EXCLUDE_MARKER."\n".implode("\n", self::PACKAGE_FILES)."\n");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
     }
 

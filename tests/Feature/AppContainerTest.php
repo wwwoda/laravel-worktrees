@@ -77,7 +77,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
-            'docker compose config --format json' => Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             'docker compose up -d' => fn () => isset($this->onUp) ? ($this->onUp)() : Process::result(),
             '*' => Process::result(),
         ]);
@@ -327,7 +327,7 @@ test('missing Sail build contexts are lent from the main checkout', function () 
     File::ensureDirectoryExists($this->main.'/vendor/laravel/sail/runtimes/8.4');
     File::put($this->main.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
     $seen = null;
-    Process::fake(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
+    Process::fake(['docker compose config --format json' => fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path), 'services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
     $this->onUp = function () use ($worktree, &$seen) {
         $seen = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
 

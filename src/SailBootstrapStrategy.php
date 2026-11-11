@@ -8,6 +8,7 @@ use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
 use Woda\Worktrees\Contracts\UsesDatabaseDump;
@@ -91,6 +92,47 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         // the first `exec` lands.
         $this->waitForService($worktreePath, $output);
         $this->ensureVolumesMounted($worktreePath, $config, $output);
+        $this->waitForHealthy($worktreePath, $output);
+    }
+
+    /**
+     * Wait while a service's healthcheck still says `starting`, so a test run
+     * right after the setup does not meet a database that is still starting.
+     * An unhealthy service is reported, not fatal: some healthchecks fail on a
+     * working service.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    protected function waitForHealthy(string $worktreePath, ?Closure $output = null, int $seconds = 120): void
+    {
+        $deadline = time() + $seconds;
+        do {
+            $starting = [];
+            $unhealthy = [];
+            $result = $this->compose($worktreePath, 30)->run('docker compose ps --format json');
+            if (! $result->successful()) {
+                // Unknown is not ready: ask again until the deadline.
+                $starting = ['(docker compose ps failed: '.trim($result->errorOutput()).')'];
+                usleep(500_000);
+
+                continue;
+            }
+            foreach (ComposeStack::parsePs($result->output()) as $container) {
+                $service = $container['service'] !== '' ? $container['service'] : '?';
+                if ($container['health'] === 'starting') {
+                    $starting[] = $service;
+                } elseif ($container['health'] === 'unhealthy') {
+                    $unhealthy[] = $service;
+                }
+            }
+            if ($starting === []) {
+                break;
+            }
+            usleep(500_000);
+        } while (time() < $deadline);
+        if ($output && ($starting !== [] || $unhealthy !== [])) {
+            $output('out', 'Not healthy yet: '.implode(', ', [...$starting, ...$unhealthy]).".\n");
+        }
     }
 
     /**
@@ -191,28 +233,129 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      * an unchanged COMPOSE_PROJECT_NAME gives it the project of the checkout it came
      * from; then they would act on that checkout's containers and volumes.
      *
+     * The project must not be the one of the main checkout or of any other
+     * registered worktree (by their compose config), and no container of the
+     * project may belong to another folder (by its owner label). When one of
+     * these cannot be read, the project's owner is unknown: refuse.
+     *
      * @param  array<mixed>|null  $config
      */
     protected function assertOwnComposeProject(string $worktreePath, ?array $config): void
     {
         $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
         if ($ours === null) {
-            return;
+            throw new RuntimeException("Cannot read the compose project of {$worktreePath} (docker compose config failed or gave no project name), so it is not known which containers and volumes starting or stopping it would act on. Fix its compose setup, then run again.");
         }
         $self = realpath($worktreePath) ?: $worktreePath;
-        foreach (array_unique($this->protectedCheckouts()) as $checkout) {
+        $registered = $this->registeredCheckouts();
+        foreach (array_unique([...$this->protectedCheckouts(), ...$registered]) as $checkout) {
             if ((realpath($checkout) ?: $checkout) === $self) {
                 continue;
             }
-            $theirs = $this->composeConfig($checkout)['name'] ?? null;
+            $theirs = $this->projectOf($checkout);
             if ($theirs === $ours) {
                 throw new RuntimeException("The worktree has the same compose project as {$checkout} ('{$ours}'): starting or stopping it would act on that checkout's containers and volumes. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
+            }
+        }
+        $this->assertContainersOwned($ours, $self, $registered);
+    }
+
+    /**
+     * The compose project of another checkout; null when it has no compose file.
+     */
+    private function projectOf(string $checkout): ?string
+    {
+        if (! is_dir($checkout)) {
+            throw new RuntimeException("Cannot read the compose project of {$checkout}: git registers it, but its folder is missing. Run git worktree prune, then run again.");
+        }
+        $name = $this->composeConfig($checkout)['name'] ?? null;
+        if (is_string($name) && $name !== '') {
+            return $name;
+        }
+        if (! $this->hasComposeFile($checkout)) {
+            return null;
+        }
+
+        throw new RuntimeException("Cannot read the compose project of {$checkout} (docker compose config failed): a worktree with the same project would act on its containers and volumes. Fix its compose setup, then run again.");
+    }
+
+    private function hasComposeFile(string $checkout): bool
+    {
+        foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $file) {
+            if (is_file($checkout.'/'.$file)) {
+                return true;
+            }
+        }
+        $env = EnvFile::get($checkout.'/.env', 'COMPOSE_FILE');
+
+        return $env !== null && $env !== '';
+    }
+
+    /**
+     * Every container of the project must belong to this worktree: its
+     * compose working folder (the folder of the compose file, also a
+     * subfolder) lies in the worktree and in no other registered checkout
+     * inside it.
+     *
+     * @param  list<string>  $registered
+     */
+    private function assertContainersOwned(string $project, string $self, array $registered): void
+    {
+        $result = Process::timeout(30)->run(sprintf(
+            'docker ps -a --filter %s --format %s',
+            escapeshellarg('label=com.docker.compose.project='.$project),
+            escapeshellarg('{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}'),
+        ));
+        if (! $result->successful()) {
+            throw new RuntimeException("Cannot list the containers of the compose project '{$project}', so their owner is unknown: ".trim($result->errorOutput()));
+        }
+        $folders = [];
+        // One line per container: its ID, a space, its owner label (empty when the label is missing).
+        foreach (preg_split('/\r?\n/', $result->output()) ?: [] as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            [$id, $folder] = array_pad(explode(' ', $line, 2), 2, '');
+            if (trim($folder) === '') {
+                throw new RuntimeException("Container {$id} of the compose project '{$project}' has no owner label (com.docker.compose.project.working_dir), so its owner is unknown: starting or stopping the worktree could act on it. Remove the container or give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides), then run again.");
+            }
+            $folders[] = trim($folder);
+        }
+        $checkouts = array_map(static fn (string $c): string => rtrim(realpath($c) ?: $c, '/'), [$self, ...$registered]);
+        foreach (array_unique($folders) as $folder) {
+            $real = rtrim(realpath($folder) ?: $folder, '/');
+            $owner = null;
+            foreach ($checkouts as $checkout) {
+                if (($real === $checkout || str_starts_with($real, $checkout.'/')) && strlen($checkout) > strlen((string) $owner)) {
+                    $owner = $checkout;
+                }
+            }
+            if ($owner !== $self) {
+                throw new RuntimeException("Containers of the compose project '{$project}' belong to {$folder}: starting or stopping the worktree would act on them. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
             }
         }
     }
 
     /**
-     * Checkouts whose compose project a worktree must not share.
+     * The folders of all checkouts git registers for the repository (the main
+     * checkout first).
+     *
+     * @return list<string>
+     */
+    private function registeredCheckouts(): array
+    {
+        $result = Process::path(base_path())->timeout(30)->run('git worktree list --porcelain');
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot list the worktrees of the repository, so the owners of compose projects are unknown: '.trim($result->errorOutput()));
+        }
+        preg_match_all('/^worktree (.+)$/m', $result->output(), $matches);
+
+        return array_map(trim(...), $matches[1]);
+    }
+
+    /**
+     * Checkouts whose compose project a worktree must not share, besides the
+     * registered ones.
      *
      * @return list<string>
      */
@@ -644,13 +787,95 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     private function down(string $worktreePath, bool $keepVolumes, ?Closure $output): void
     {
-        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
+        $config = $this->composeConfig($worktreePath);
+        $this->assertOwnComposeProject($worktreePath, $config);
         $result = $this->compose($worktreePath, 120)->run(
             'docker compose --profile "*" down'.($keepVolumes ? '' : ' -v'), $output,
         );
         if (! $result->successful()) {
             throw new RuntimeException('Worktree environment teardown failed; checkout retained.');
         }
+        $this->removeOwnImages($config, $output);
+    }
+
+    /**
+     * Remove the images that the worktree's compose project built for itself:
+     * services with a `build:` whose image name holds the project name (the
+     * per-worktree tag `{project}/app:latest`, or compose's default
+     * `{project}-{service}`). Shared images (another name, the main checkout's
+     * images) stay; an image that another container still uses stays too.
+     * When the main checkout's compose config cannot be read, no image is removed.
+     *
+     * @param  array<mixed>|null  $config
+     * @param  (Closure(string, string): void)|null  $output
+     * @return list<string> the removed images
+     */
+    protected function removeOwnImages(?array $config, ?Closure $output = null): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        if ($project === '') {
+            return [];
+        }
+        $main = $this->composeConfig(base_path());
+        if ($main === null) {
+            // Without the main checkout's images, a worktree image with the same name is not known: remove none.
+            $output && $output('out', "Kept the images of {$project}: the compose config of the main checkout could not be read.\n");
+
+            return [];
+        }
+        $keep = $this->imagesOf($main);
+        $removed = [];
+        foreach ($this->imagesOf($config, builtOnly: true) as $service => $image) {
+            // Worker services often share the app service's image: remove it once.
+            if (in_array($image, $keep, true) || in_array($image, $removed, true) || ! self::isProjectImage($image, $project, (string) $service)) {
+                continue;
+            }
+            if (Process::timeout(120)->run('docker image rm '.escapeshellarg($image))->successful()) {
+                $removed[] = $image;
+                $output && $output('out', "Removed the image {$image}.\n");
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * An image of the compose project itself: `{project}/…` (the per-worktree
+     * tag `{project}/app:latest`) or compose's default `{project}-{service}`,
+     * with any tag. A name that only contains the project name is not one: a
+     * worktree named `app` must not remove the shared `hungryport-app:{key}`.
+     */
+    private static function isProjectImage(string $image, string $project, string $service): bool
+    {
+        $slash = strrpos($image, '/');
+        $colon = strrpos($image, ':');
+        $name = $colon !== false && ($slash === false || $colon > $slash) ? substr($image, 0, $colon) : $image;
+
+        return str_starts_with($name, $project.'/') || $name === $project.'-'.$service;
+    }
+
+    /**
+     * The image of each service, by service name.
+     *
+     * @param  array<mixed>|null  $config
+     * @return array<string, string>
+     */
+    private function imagesOf(?array $config, bool $builtOnly = false): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $images = [];
+        foreach ($services as $name => $service) {
+            if (! is_array($service) || ($builtOnly && ! isset($service['build']))) {
+                continue;
+            }
+            $image = is_string($service['image'] ?? null) ? $service['image'] : (isset($service['build']) && $project !== '' ? $project.'-'.$name : null);
+            if ($image !== null) {
+                $images[(string) $name] = $image;
+            }
+        }
+
+        return $images;
     }
 
     /**

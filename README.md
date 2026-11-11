@@ -57,7 +57,7 @@ The **legacy** database clone strategies (`database.strategy`) work with `native
 
 ## Commands
 
-All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only.
+All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only. `worktree:create`, `worktree:delete` and `worktree:list` give the same result wherever artisan runs: run in a linked worktree, they run again with the same arguments in the main checkout (the folder that git names as the home of the common `.git`), with the variables of the worktree's `.env` cleared (and those of `.env.{environment}` for `--env` or `APP_ENV`). `--env` is passed on, and so is an `APP_ENV` from outside (one that differs from the worktree's `.env`), as `--env`. The main checkout runs its own installed copy of this package: when its version (in `vendor/composer/installed.json`; for a branch install also the commit) differs from the one in the worktree, or cannot be read, the command stops and names both versions. Update the main checkout first.
 
 ### `worktree:create`
 
@@ -75,7 +75,7 @@ php artisan worktree:create                            # interactive: issue, PR,
 | Option | Meaning |
 |---|---|
 | `name` | The worktree name. Without it and without `--branch`, `--issue` or `--pr`, the command asks. |
-| `--branch=` | The branch. A local branch is used as it is, else `origin/<branch>`, else a new branch from the base branch. Default: `{branch_prefix}{name}`. |
+| `--branch=` | The branch. A local branch is used as it is. Else the branch is fetched from origin (with its own refspec, so also in a clone that fetches only some branches); when origin has it, the new local branch starts at origin's head and tracks it (in such a clone, the branch is added to origin's fetched branches, so `origin/<branch>` follows each push). Else a new branch from the base branch. When origin cannot be asked (no network), a named `--branch` stops instead. Default: `{branch_prefix}{name}`. |
 | `--base=` | The base branch for a new branch. Default: `base_branch`. |
 | `--issue=` | Use the branch that is linked to this GitHub issue, or create one with `gh issue develop`. Stops when the issue has several linked branches: give `--branch`. Not together with `--pr`. |
 | `--pr=` | Use the head branch of this pull request. The head of a pull request from a fork is fetched into the local branch `pr-{number}`. |
@@ -157,15 +157,15 @@ The order:
 
 1. The folder must be a worktree that git registers for this repository; any other folder is refused.
 2. `shared` without `--keep-db`: the state file is checked (see [Safe delete](#safe-delete)). A problem stops the delete before anything changes.
-3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete.
+3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete. Without a terminal (`-n`, or a stdin that is a pipe or a file, as for an agent or a script) there are no questions: uncommitted changes or unpushed commits stop the delete with exit code 1 and a message that names them and `--force`; nothing is deleted. A clean worktree is deleted. Without a name, the delete stops with exit code 1 instead of asking which worktree. A person who answers no at the terminal ends the command with exit code 0.
 4. The `ProcessManager` stops the worktree's processes.
-5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays.
+5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` named `{project}/…` (`shop-t9/app:latest`) or exactly compose's default `{project}-{service}` (`shop-t9-worker`). A name that only contains the project name stays: a worktree named `app` keeps the shared `shop-app:{key}`. Shared images, the main checkout's images and images that another container uses stay. When the main checkout's compose config cannot be read, no image is removed.
 6. `shared`: the worktree's own databases and user are dropped, and its Redis numbers are emptied.
 7. The folder is removed and `git worktree prune` runs. The command fails when the folder is still there or `git worktree list` still names it (for example files that belong to the container's user).
 8. `native` and `sail`: the database clone is dropped.
-9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`.
+9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`. A branch counts as merged when it is part of the base branch, or when GitHub (`gh`) reports a pull request into the base branch, merged, whose head is the branch's commit: a squash or rebase merge. For the branch `pr-{number}` of a fork's pull request (`worktree:create --pr`), `gh` is asked for that pull request by its number. Such a branch is deleted with `git branch -D`; a branch with commits after the merge stays.
 
-The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes.
+The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes. The setup also lists the bootstrap files in the repository's `.git/info/exclude`, so a plain `git status` in a new worktree is clean.
 
 ### `worktree:cleanup`
 
@@ -354,7 +354,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `base_path` | `WORKTREE_BASE_PATH` | Folder for new worktrees. [the parent folder of the project] |
 | `branch_prefix` | `WORKTREE_BRANCH_PREFIX` | Prefix of a new branch, for example `agent/`. [empty] |
 | `base_branch` | `WORKTREE_BASE_BRANCH` | Base branch for new branches, and the branch that "merged" refers to. [`master`] |
-| `copy_files` | | Files and folders copied from the main checkout into a new worktree. [`['.env']`] |
+| `copy_files` | | Files and folders copied from the main checkout into a new worktree. Files that git tracks in the worktree are not overwritten: they keep the branch's version. [`['.env']`] |
 | `ports.app_base` | `WORKTREE_APP_PORT_BASE` | Base of the worktree's `APP_PORT`. [8100] |
 | `ports.vite_base` | `WORKTREE_VITE_PORT_BASE` | Base of the worktree's `VITE_PORT`. [5200] |
 | `env_overrides` | | `.env` values for each worktree (see [Env overrides](#env-overrides)). [`[]`] |
@@ -472,7 +472,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
    - With the `mysql` or `pgsql` clone, `DB_DATABASE` becomes `{database}_{name}` (`-` changed to `_`).
    - `APP_PORT` and `VITE_PORT`, only when the key is in `.env` (see [Ports](#ports)).
    - The `env_overrides` values.
-3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP. When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
+3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP and no healthcheck says `starting` any more (at most 2 minutes; an unhealthy service is reported, not fatal). When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
 4. Composer install, and with `native` the node install after it.
 5. The database: the clone. A database that exists already is kept. A clone that stopped half way is dropped and made again.
 6. The frontend build.
@@ -497,7 +497,7 @@ When `.env` has `APP_PORT` or `VITE_PORT`, each worktree gets its own value: `ba
 
 ### Compose project
 
-With `sail` and `shared`, a worktree must have its own compose project. When the worktree's compose project is the same as the main checkout's, the setup stops: `up` and `down` would act on the main checkout's containers and volumes. Set `COMPOSE_PROJECT_NAME` per worktree with `env_overrides`. Before it runs `docker compose`, the package clears the variables that the main checkout's `.env` put into the PHP process (all `COMPOSE_*` variables, the keys of the worktree's `.env`, and others such as `DB_HOST` and `APP_URL`), so compose reads the worktree's own `.env`.
+With `sail` and `shared`, a worktree must have its own compose project. When the worktree's compose project is the same as the main checkout's or another registered worktree's (`git worktree list`), or when containers of the project belong to another folder (their label `com.docker.compose.project.working_dir`; a compose file in a subfolder of the worktree counts as the worktree's), the setup and `worktree:delete` stop: `up` and `down -v` would act on that checkout's containers and volumes. When the owner cannot be established (a checkout's compose config cannot be read, also the worktree's own, a registered folder is missing, Docker does not list the containers, a container of the project has no owner label), they stop too. Set `COMPOSE_PROJECT_NAME` per worktree with `env_overrides`. Before it runs `docker compose`, the package clears the variables that the main checkout's `.env` put into the PHP process (all `COMPOSE_*` variables, the keys of the worktree's `.env`, and others such as `DB_HOST` and `APP_URL`), so compose reads the worktree's own `.env`.
 
 When Sail's compose file builds the app image from `vendor/laravel/sail/...`, and the worktree has no `vendor` yet, the package lends the missing files from the checkout that runs artisan (with `shared`, the main checkout) to `docker compose up` and removes them after the start.
 
@@ -763,6 +763,8 @@ In a worktree:
 | `storage/app/worktree/state.json` | `shared`: the state file. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
+
+In the repository's git folder: a block in `info/exclude` (shared by all worktrees, never committed) that names `/storage/worktree-bootstrap.json`, `.lock` and `.clone`, and next to it `info/exclude.lw-lock`, the lock that lets only one setup write the block.
 
 ## ProcessManager contract
 
