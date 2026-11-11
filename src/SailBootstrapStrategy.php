@@ -258,7 +258,11 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             if ($theirs === $ours) {
                 throw new RuntimeException("The worktree has the same compose project as {$checkout} ('{$ours}'): starting or stopping it would act on that checkout's containers and volumes. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
             }
-            if ($theirs === false && in_array($ours, $this->possibleProjectsOf($checkout), true)) {
+            $possible = $theirs === false ? $this->possibleProjectsOf($checkout) : [];
+            if ($possible === null) {
+                throw new RuntimeException("Cannot read the compose project of {$checkout} (docker compose config failed, and the name in its compose file cannot be resolved): a worktree with the same project would act on its containers and volumes. Fix its compose setup, then run again.");
+            }
+            if (in_array($ours, $possible, true)) {
                 throw new RuntimeException("{$checkout} could have the same compose project ('{$ours}'): compose cannot read its config (docker compose config failed), and its .env, compose file or folder name give that project. Starting or stopping the worktree could act on that checkout's containers and volumes. Fix its compose setup (a missing .env?) or give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides), then run again.");
             }
         }
@@ -286,10 +290,11 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      * The project names compose could give a checkout whose config it cannot read:
      * COMPOSE_PROJECT_NAME of its `.env`, the top-level `name` of its compose files
      * (interpolated with its `.env`), and the folder names compose falls back to.
+     * Null when a `name` cannot be resolved.
      *
-     * @return list<string>
+     * @return list<string>|null
      */
-    private function possibleProjectsOf(string $checkout): array
+    private function possibleProjectsOf(string $checkout): ?array
     {
         $env = $checkout.'/.env';
         $files = $this->composeFiles($checkout);
@@ -299,7 +304,11 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             $names[] = basename(dirname($files[0]));
         }
         foreach ($files as $file) {
-            $names[] = $this->declaredProjectName($file, $env);
+            $name = $this->declaredProjectName($file, $env);
+            if ($name === false) {
+                return null;
+            }
+            $names[] = $name;
         }
         $names = array_map(static fn (?string $name): string => ltrim((string) preg_replace('/[^a-z0-9_-]/', '', strtolower((string) $name)), '_-'), $names);
 
@@ -307,8 +316,9 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     }
 
     /**
-     * The compose files of a checkout that exist: those of COMPOSE_FILE in its
-     * `.env`, else the default file and its override.
+     * The compose files of a checkout that exist, as compose picks them: those
+     * of COMPOSE_FILE in its `.env`, else the first default file and the first
+     * override file. Paths are absolute, with `.` and `..` removed.
      *
      * @return list<string>
      */
@@ -317,42 +327,87 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         $list = EnvFile::resolved($checkout.'/.env', 'COMPOSE_FILE') ?? '';
         $separator = EnvFile::resolved($checkout.'/.env', 'COMPOSE_PATH_SEPARATOR') ?: (PHP_OS_FAMILY === 'Windows' ? ';' : ':');
         $files = array_values(array_filter(array_map(trim(...), explode($separator, $list)), static fn (string $file): bool => $file !== ''));
-        if ($files === []) {
-            $files = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml', 'compose.override.yaml', 'compose.override.yml', 'docker-compose.override.yaml', 'docker-compose.override.yml'];
+        $absolute = static fn (string $file): string => self::cleanPath(preg_match('#^(/|\\\\|[A-Za-z]:[\\/])#', $file) === 1 ? $file : $checkout.'/'.$file);
+        if ($files !== []) {
+            return array_values(array_filter(array_map($absolute, $files), is_file(...)));
         }
-        $paths = array_map(static fn (string $file): string => str_starts_with($file, '/') ? $file : $checkout.'/'.$file, $files);
+        $picked = [];
+        foreach ([['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'], ['compose.override.yaml', 'compose.override.yml', 'docker-compose.override.yaml', 'docker-compose.override.yml']] as $group) {
+            foreach ($group as $file) {
+                if (is_file($checkout.'/'.$file)) {
+                    $picked[] = $absolute($file);
+                    break;
+                }
+            }
+        }
 
-        return array_values(array_filter($paths, is_file(...)));
+        return $picked;
+    }
+
+    /**
+     * A path without `.` and `..` segments, as compose cleans it.
+     */
+    private static function cleanPath(string $path): string
+    {
+        $prefix = preg_match('#^(/|\\\\|[A-Za-z]:[\\/])#', $path, $m) === 1 ? $m[1] : '';
+        $parts = [];
+        foreach (preg_split('#[\\/]+#', substr($path, strlen($prefix))) ?: [] as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..' && $parts !== [] && end($parts) !== '..') {
+                array_pop($parts);
+            } elseif ($part !== '..' || $prefix === '') {
+                $parts[] = $part;
+            }
+        }
+
+        return $prefix.implode('/', $parts);
     }
 
     /**
      * The top-level `name` of a compose file, with `${VAR}`, `${VAR:-default}`
-     * and `${VAR-default}` taken from the checkout's `.env`; null when it has none.
+     * and `${VAR-default}` (also nested) taken from the checkout's `.env`; null
+     * when it has none, false when it cannot be resolved.
      */
-    private function declaredProjectName(string $file, string $env): ?string
+    private function declaredProjectName(string $file, string $env): string|false|null
     {
-        if (! preg_match('/^name:[ \t]*(.*?)[ \t]*(?:[ \t]#.*)?$/m', (string) file_get_contents($file), $match)) {
+        if (! preg_match('/^name:[ \t]*(.*)$/m', (string) file_get_contents($file), $match)) {
             return null;
         }
-        $value = $match[1];
-        if (strlen($value) >= 2 && ($value[0] === '"' || $value[0] === "'") && str_ends_with($value, $value[0])) {
-            $value = substr($value, 1, -1);
+        $value = rtrim($match[1]);
+        if ($value !== '' && ($value[0] === '"' || $value[0] === "'")) {
+            // A quoted scalar ends at its closing quote; a # inside it is no comment.
+            $pattern = $value[0] === '"' ? '/^"((?:[^"\\\\]|\\\\.)*)"/' : "/^'((?:[^']|'')*)'/";
+            if (! preg_match($pattern, $value, $quoted)) {
+                return false;
+            }
+            $value = $value[0] === '"' ? stripcslashes($quoted[1]) : str_replace("''", "'", $quoted[1]);
+        } else {
+            $value = (string) preg_replace('/(^|[ \t])#.*$/', '', $value);
         }
+        $value = trim($value);
+        // Innermost first, so a default may hold another expression.
+        $rounds = 0;
+        do {
+            $value = (string) preg_replace_callback(
+                '/\$\{(\w+)(?:(:?)-([^${}]*))?\}|\$(\w+)/',
+                static function (array $m) use ($env): string {
+                    $variable = ($m[4] ?? '') !== '' ? $m[4] : $m[1];
+                    $set = EnvFile::resolved($env, $variable);
+                    if ($set === null || (($m[2] ?? '') === ':' && $set === '')) {
+                        return $m[3] ?? '';
+                    }
 
-        return (string) preg_replace_callback(
-            '/\$\{(\w+)(?:(:?)-([^}]*))?\}|\$(\w+)/',
-            static function (array $m) use ($env): string {
-                $variable = ($m[4] ?? '') !== '' ? $m[4] : $m[1];
-                $set = EnvFile::resolved($env, $variable);
-                $default = $m[3] ?? '';
-                if ($set === null || (($m[2] ?? '') === ':' && $set === '')) {
-                    return $default;
-                }
+                    return $set;
+                },
+                $value,
+                -1,
+                $count,
+            );
+        } while ($count > 0 && str_contains($value, '$') && ++$rounds < 10);
 
-                return $set;
-            },
-            $value,
-        );
+        return str_contains($value, '$') ? false : $value;
     }
 
     private function hasComposeFile(string $checkout): bool
