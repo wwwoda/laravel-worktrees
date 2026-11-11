@@ -13,8 +13,8 @@ use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\SailBootstrapStrategy;
 use Woda\Worktrees\SetupLock;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
-use Woda\Worktrees\SharedServicesBootstrapStrategy;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\SharedServicesBootstrapStrategy;
 use Woda\Worktrees\WorktreeManager;
 
 /*
