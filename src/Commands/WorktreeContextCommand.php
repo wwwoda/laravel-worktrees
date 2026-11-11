@@ -74,7 +74,7 @@ class WorktreeContextCommand extends Command
             $stopped = array_map(static fn (array $s): string => $s['service'], array_filter($services, static fn (array $s): bool => $s['state'] !== 'running'));
             $lines[] = '- Running: '.($running === [] ? 'nothing' : implode(', ', $running)).($stopped === [] ? '' : '; stopped: '.implode(', ', $stopped));
         } elseif ($status['profiles'] !== null) {
-            $lines[] = '- Running: nothing (start it with php artisan worktree:doctor --fix)';
+            $lines[] = '- Running: nothing ('.($status['main'] ? 'start it with php artisan worktree:doctor main --fix' : 'worktree:exec starts it; or php artisan worktree:doctor --fix').')';
         }
         if (is_array($status['profiles'])) {
             /** @var array{active: list<string>, available: list<string>} $profiles */

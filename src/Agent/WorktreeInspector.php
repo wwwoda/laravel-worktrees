@@ -2,10 +2,12 @@
 
 namespace Woda\Worktrees\Agent;
 
+use Closure;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Throwable;
+use Woda\Worktrees\ComposeProcess;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\WorktreeManager;
@@ -69,6 +71,36 @@ final readonly class WorktreeInspector
         if ($problem !== null) {
             throw new RuntimeException($problem);
         }
+    }
+
+    /**
+     * Before a command runs in a worktree's container: start its stack when
+     * the service does not run (an idle stop or a reboot stopped it), and mark
+     * the stack as used, both under the stack lock. The main checkout is
+     * never started here. True when the stack was started.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function wakeForUse(WorktreeTarget $target, ?string $service = null, ?Closure $output = null): bool
+    {
+        $stack = $this->stack($target->path);
+        if ($stack === null || $target->main) {
+            return false;
+        }
+
+        return StackLock::locked($target->path, static function () use ($stack, $target, $service, $output): bool {
+            $started = false;
+            if (! $stack->isRunning($service ?? $stack->appService)) {
+                $result = ComposeProcess::in($target->path, 600)->run('docker compose up -d --wait', $output);
+                if (! $result->successful()) {
+                    throw new RuntimeException('Starting the stopped stack failed (docker compose up -d --wait): '.trim($result->errorOutput() ?: $result->output()));
+                }
+                $started = true;
+            }
+            StackLock::markUsed($target->path);
+
+            return $started;
+        });
     }
 
     public function url(string $path): ?string

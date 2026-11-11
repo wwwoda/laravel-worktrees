@@ -110,6 +110,16 @@ class WorktreeExecCommand extends Command
             return self::FAILURE;
         }
         $runner = $inspector->runner();
+        try {
+            // A stack that an idle stop stopped starts again; the use keeps the next idle stop away.
+            if ($inspector->wakeForUse($target, $service)) {
+                $this->getOutput()->getErrorStyle()->writeln("Started the stopped stack of {$target->name}.");
+            }
+        } catch (RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return self::FAILURE;
+        }
         $command = $this->commandFor($words);
         $tty = $this->interactiveTerminal();
         $process = $runner->process($target->path, 60)->forever();
@@ -125,7 +135,7 @@ class WorktreeExecCommand extends Command
         });
         $exitCode = $result->exitCode() ?? 1;
         if ($exitCode !== 0 && $runner->usesCompose() && preg_match('/is not running|no container found|not running/i', $result->errorOutput())) {
-            $this->components->warn('The container does not run. Start it with: php artisan worktree:doctor --fix');
+            $this->components->warn('The container does not run. Start it with: php artisan worktree:doctor '.($target->main ? 'main ' : '').'--fix');
         }
 
         return $exitCode;

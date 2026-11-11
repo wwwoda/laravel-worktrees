@@ -288,6 +288,18 @@ final readonly class Doctor
      */
     private function startContainers(WorktreeTarget $target, ?Closure $output): void
     {
+        // Under the stack lock, as a wake: an idle stop cannot stop the stack right after.
+        StackLock::locked($target->path, function () use ($target, $output): void {
+            $this->startContainersNow($target, $output);
+            $target->main || StackLock::markUsed($target->path);
+        });
+    }
+
+    /**
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function startContainersNow(WorktreeTarget $target, ?Closure $output): void
+    {
         if ($target->main) {
             // The setup's bringUp guards worktrees; the main checkout only starts.
             $result = ComposeProcess::in($target->path, 600)->run('docker compose up -d', $output);

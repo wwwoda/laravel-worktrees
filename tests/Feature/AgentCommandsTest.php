@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Agent\Doctor;
+use Woda\Worktrees\Agent\StackLock;
 use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Agent\WorktreeTarget;
 use Woda\Worktrees\Commands\WorktreeExecCommand;
@@ -46,6 +47,7 @@ beforeEach(function () {
     $this->imageIds = [];
     $this->owner = null;
     $this->execResult = Process::result();
+    $this->upResult = Process::result();
     $this->fakeProcesses = function () {
         Process::fake([
             'git worktree list --porcelain' => fn () => Process::result(
@@ -72,6 +74,7 @@ beforeEach(function () {
             'docker ps -a --filter *' => fn () => Process::result($this->owner ?? $this->path),
             '*migrate:status*' => fn () => $this->migrateStatus,
             'docker compose exec *' => fn () => $this->execResult,
+            'docker compose up -d --wait' => fn () => $this->upResult,
             '*' => Process::result(),
         ]);
     };
@@ -216,7 +219,9 @@ it('finds problems and fixes them in order', function () {
 
     $this->artisan('worktree:doctor', ['worktree' => 't9', '--fix' => true])->assertSuccessful();
     expect($strategy->calls)->toBe(['bringUp', 'composer', 'migrate'])
-        ->and(File::exists($this->path.'/public/hot'))->toBeFalse();
+        ->and(File::exists($this->path.'/public/hot'))->toBeFalse()
+        // Started under the stack lock and marked as used, as a wake.
+        ->and(StackLock::lastUsed($this->path))->not->toBeNull();
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'php artisan config:clear && php artisan route:clear && php artisan event:clear'));
 });
 
@@ -453,4 +458,34 @@ it('writes the default profiles of a new worktree without spaces', function () {
     (new ReflectionMethod($manager, 'applyEnvReplacements'))->invoke($manager, $this->path, 't9');
 
     expect(File::get($this->path.'/.env'))->toContain("COMPOSE_PROFILES=workers,tools\n");
+});
+
+it('starts a stopped worktree stack before exec and marks it as used', function () {
+    $this->containers = [['Service' => 'laravel.test', 'Name' => 'app-t9-laravel.test-1', 'State' => 'exited', 'Health' => '']];
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d --wait' && $p->path === $this->path);
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec'));
+    expect(StackLock::lastUsed($this->path))->toBeGreaterThanOrEqual(time() - 5);
+});
+
+it('does not start a running stack and never starts the main checkout', function () {
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertSuccessful();
+    Process::assertNotRan('docker compose up -d --wait');
+    expect(StackLock::lastUsed($this->path))->not->toBeNull();
+
+    $this->containers = [];
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 'main']);
+    Process::assertNotRan('docker compose up -d --wait');
+});
+
+it('stops exec when the stopped stack does not start', function () {
+    $this->containers = [];
+    $this->upResult = Process::result(errorOutput: 'container unhealthy', exitCode: 1);
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])
+        ->expectsOutputToContain('container unhealthy')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec'));
 });
