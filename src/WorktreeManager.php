@@ -7,6 +7,7 @@ use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Symfony\Component\Finder\Finder;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
@@ -665,7 +666,9 @@ class WorktreeManager
                 : isset($tracked[$relative]);
 
             if (File::isDirectory($source)) {
-                foreach (File::allFiles($source, true) as $item) {
+                // Symlinked folders count with their files (skills are often installed as links), as copyDirectory() did.
+                $items = Finder::create()->files()->ignoreDotFiles(false)->ignoreVCS(false)->followLinks()->ignoreUnreadableDirs()->in($source);
+                foreach ($items as $item) {
                     $relative = $file.'/'.str_replace(DIRECTORY_SEPARATOR, '/', $item->getRelativePathname());
                     if ($keep($relative)) {
                         continue;

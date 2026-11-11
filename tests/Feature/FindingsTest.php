@@ -70,6 +70,19 @@ it('copies config folders without overwriting the files git tracks in the worktr
         ->and(File::get($this->path.'/'.$this->config.'/settings.local.json'))->toBe('{"local": true}');
 });
 
+it('copies the files of symlinked folders in a config folder', function () {
+    // Skills are often installed as links to a shared folder.
+    File::ensureDirectoryExists($this->base.'/shared-skills/review');
+    File::put($this->base.'/shared-skills/review/SKILL.md', 'linked skill');
+    symlink($this->base.'/shared-skills/review', base_path($this->config.'/skills/review'));
+    ($this->fake)();
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-deps' => true, '--skip-db' => true])->assertSuccessful();
+
+    expect(File::get($this->path.'/'.$this->config.'/skills/review/SKILL.md'))->toBe('linked skill')
+        ->and(File::get($this->path.'/'.$this->config.'/skills/app/SKILL.md'))->toBe('branch version');
+});
+
 it('replaces no existing file when git cannot list the tracked files', function () {
     $this->lsFiles = Process::result(errorOutput: 'fatal', exitCode: 128);
     ($this->fake)();
