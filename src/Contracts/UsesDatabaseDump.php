@@ -30,10 +30,17 @@ interface UsesDatabaseDump
     public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): string;
 
     /**
-     * Run the seed command, then save the database as the dump of the key.
+     * Run the seed command on the database that had no dump.
      *
      * @param  (Closure(string, string): void)|null  $output
+     */
+    public function seedDatabase(string $worktreePath, ?Closure $output = null): void;
+
+    /**
+     * Save the seeded database as the dump of the key. A separate stage, so a
+     * resume after a failed save does not seed again.
+     *
      * @param  (Closure(string): void)|null  $onStep
      */
-    public function seedAndSaveDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): void;
+    public function saveDatabaseDump(string $worktreePath, ?Closure $onStep = null): void;
 }

@@ -481,7 +481,9 @@ class WorktreeManager
             }
             // Only a database that had no dump is seeded; a restored or existing one is kept.
             if ($dumper !== null && ($state['dump'] ?? null) === UsesDatabaseDump::DUMP_MISSING) {
-                $run('seed', fn () => $dumper->seedAndSaveDatabaseDump($path, $processOutput, $step));
+                // Two stages: a resume after a failed save does not seed the database again.
+                $run('seed', fn () => $dumper->seedDatabase($path, $processOutput));
+                $run('dump-save', fn () => $dumper->saveDatabaseDump($path, $step));
             }
             $finishNode();
             $state['status'] = 'ready';

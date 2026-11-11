@@ -183,7 +183,40 @@ it('seeds and saves a dump when none exists for the key', function () use ($stra
     Process::assertRan("docker compose exec -T 'laravel.test' sh -c 'php artisan app:seed-test-data'");
     expect(File::exists($dump->path($dump->key($this->path))))->toBeTrue();
     $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
-    expect($record['completed'])->toContain('dump', 'migrations', 'seed');
+    expect($record['completed'])->toContain('dump', 'migrations', 'seed', 'dump-save');
+});
+
+it('saves the dump again on a resume without seeding again', function () use ($strategy) {
+    $this->saveFails = true;
+    ($this->fake)(["docker compose exec -T 'mariadb' sh -c * > *" => function (PendingProcess $p) {
+        if ($this->saveFails) {
+            return Process::result(errorOutput: 'disk full', exitCode: 1);
+        }
+        preg_match("/> '([^']+)'$/", (string) $p->command, $m);
+        File::put($m[1], '-- dump');
+
+        return Process::result();
+    }, "'gzip' *" => function (PendingProcess $p) {
+        $file = end($p->command);
+        File::put($file.'.gz', gzencode(File::get($file)));
+        File::delete($file);
+
+        return Process::result();
+    }]);
+    $dump = new DatabaseDump(true, seedCommand: 'php artisan app:seed-test-data');
+    $strategy(new FastSetup(dump: $dump));
+
+    $this->artisan('worktree:create', ['name' => 't9'])->expectsOutputToContain('Saving the database dump failed')->assertFailed();
+    Process::assertRanTimes("docker compose exec -T 'laravel.test' sh -c 'php artisan app:seed-test-data'", 1);
+    $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->toContain('seed')->not->toContain('dump-save');
+
+    $this->saveFails = false;
+    $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true])->assertSuccessful();
+    Process::assertRanTimes("docker compose exec -T 'laravel.test' sh -c 'php artisan app:seed-test-data'", 1);
+    expect(File::exists($dump->path($dump->key($this->path))))->toBeTrue();
+    $record = json_decode(File::get($this->path.'/storage/worktree-bootstrap.json'), true);
+    expect($record['completed'])->toContain('seed', 'dump-save');
 });
 
 it('does not restore into a database with tables', function () use ($strategy) {

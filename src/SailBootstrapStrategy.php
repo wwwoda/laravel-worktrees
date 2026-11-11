@@ -485,14 +485,17 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
     }
 
-    public function seedAndSaveDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): void
+    public function seedDatabase(string $worktreePath, ?Closure $output = null): void
     {
-        $dump = $this->fast->dump;
-        $result = $this->compose($worktreePath, 1800)->run($this->execCommand($dump->seedCommand()), $output);
+        $result = $this->compose($worktreePath, 1800)->run($this->execCommand($this->fast->dump->seedCommand()), $output);
         if (! $result->successful()) {
             throw new RuntimeException("The seed command failed: {$result->errorOutput()}");
         }
-        $saved = $dump->save($worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout));
+    }
+
+    public function saveDatabaseDump(string $worktreePath, ?Closure $onStep = null): void
+    {
+        $saved = $this->fast->dump->save($worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout));
         $onStep && $onStep('Saved the database dump '.basename($saved).' for the next worktrees.');
     }
 
