@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Fast\ContentKey;
 
 /**
  * Template databases: one per hash of their inputs (by default the main
@@ -39,25 +40,7 @@ class TemplateManager
 
     public function hash(): string
     {
-        $context = hash_init('sha256');
-        hash_update($context, "seed:{$this->seedCommand}\n");
-        $files = [];
-        foreach ($this->hashPaths as $relative) {
-            $path = MainCheckout::file($relative);
-            if (is_file($path)) {
-                $files[$relative] = $path;
-            } elseif (is_dir($path)) {
-                foreach (File::allFiles($path) as $file) {
-                    $files[$relative.'/'.$file->getRelativePathname()] = $file->getPathname();
-                }
-            }
-        }
-        ksort($files);
-        foreach ($files as $relative => $path) {
-            hash_update($context, $relative."\0".hash_file('sha256', $path)."\n");
-        }
-
-        return substr(hash_final($context), 0, 12);
+        return ContentKey::of(MainCheckout::path(), $this->hashPaths, "seed:{$this->seedCommand}\n");
     }
 
     public function name(): string

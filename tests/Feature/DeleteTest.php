@@ -100,6 +100,7 @@ beforeEach(function () {
             },
             "docker compose exec -T 'laravel.test' sh -c *echo*" => Process::result('ready'),
             'git rev-parse --path-format=absolute --git-common-dir' => fn () => Process::result($this->commonDir),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };

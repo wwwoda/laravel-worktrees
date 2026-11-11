@@ -77,7 +77,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
-            'docker compose config --format json' => Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             'docker compose up -d' => fn () => isset($this->onUp) ? ($this->onUp)() : Process::result(),
             '*' => Process::result(),
         ]);
@@ -125,6 +125,9 @@ test('the app container is started and the bundle is built inside it', function 
 });
 
 test('vendor and node_modules are copied with copy-on-write when the lock files match', function () {
+    config()->set('worktrees.fast.composer.copy_vendor', true);
+    app()->forgetInstance(BootstrapStrategy::class);
+    app()->forgetInstance(WorktreeManager::class);
     File::ensureDirectoryExists($this->main.'/vendor');
     File::ensureDirectoryExists($this->main.'/node_modules');
     File::put($this->main.'/composer.lock', 'lock-a');
@@ -138,9 +141,23 @@ test('vendor and node_modules are copied with copy-on-write when the lock files 
     Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array($this->main.'/node_modules', $p->command, true));
     // After the copy, composer install completes it (the main checkout may have been
     // installed with --no-dev) and builds the autoloader for this branch.
-    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'" && $p->path === ($this->path)('t9'));
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'" && $p->path === ($this->path)('t9'));
     // The host install completes the copy (the main checkout may lack dev packages).
-    Process::assertRan(fn (PendingProcess $p) => $p->command === 'pnpm install' && $p->path === ($this->path)('t9'));
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'pnpm install --prefer-offline' && $p->path === ($this->path)('t9'));
+});
+
+test('vendor is not copied by default; node_modules is', function () {
+    File::ensureDirectoryExists($this->main.'/vendor');
+    File::ensureDirectoryExists($this->main.'/node_modules');
+    File::put($this->main.'/composer.lock', 'lock-a');
+    File::put($this->main.'/pnpm-lock.yaml', 'pnpm-a');
+    $this->checkoutFiles = ['composer.lock' => 'lock-a', 'pnpm-lock.yaml' => 'pnpm-a'];
+
+    $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
+
+    Process::assertNotRan(fn (PendingProcess $p) => is_array($p->command) && in_array($this->main.'/vendor', $p->command, true));
+    Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array($this->main.'/node_modules', $p->command, true));
+    Process::assertRan(fn (PendingProcess $p) => $p->command === "docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'");
 });
 
 test('copy-on-write is skipped when the lock files differ', function () {
@@ -152,7 +169,7 @@ test('copy-on-write is skipped when the lock files differ', function () {
 
     Process::assertNotRan(fn (PendingProcess $p) => is_array($p->command) && $p->command[0] === 'cp');
     Process::assertRan(fn (PendingProcess $p) => is_string($p->command) && str_contains($p->command, 'composer install'));
-    Process::assertRan('pnpm install');
+    Process::assertRan('pnpm install --prefer-offline');
 });
 
 test('a filesystem without copy-on-write falls back to a normal install', function () {
@@ -310,7 +327,7 @@ test('missing Sail build contexts are lent from the main checkout', function () 
     File::ensureDirectoryExists($this->main.'/vendor/laravel/sail/runtimes/8.4');
     File::put($this->main.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php');
     $seen = null;
-    Process::fake(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
+    Process::fake(['docker compose config --format json' => fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path), 'services' => ['laravel.test' => ['build' => ['context' => $worktree.'/vendor/laravel/sail/runtimes/8.4']]]]))]);
     $this->onUp = function () use ($worktree, &$seen) {
         $seen = is_file($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
 

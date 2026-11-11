@@ -26,10 +26,7 @@ it('names only commands the package registers', function () {
     $skill = (string) file_get_contents(__DIR__.'/../../resources/boost/skills/worktree/SKILL.md');
     preg_match_all('/worktree:[a-z-]+/', $skill, $matches);
     $known = array_keys(array_filter(Artisan::all(), fn ($command, string $name) => str_starts_with($name, 'worktree:'), ARRAY_FILTER_USE_BOTH));
-
-    // The commands of PR 26; remove this list once it is merged (see the PR description).
-    $pending = ['worktree:context', 'worktree:status', 'worktree:exec', 'worktree:doctor', 'worktree:services'];
-    expect(array_diff(array_unique($matches[0]), $known, $pending))->toBe([]);
+    expect(array_diff(array_unique($matches[0]), $known))->toBe([]);
 });
 
 it('writes -- before the command in every worktree:exec example', function () {

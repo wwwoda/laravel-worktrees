@@ -3,12 +3,18 @@
 namespace Woda\Worktrees;
 
 use Closure;
+use Illuminate\Contracts\Process\InvokedProcess;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
+use Woda\Worktrees\Contracts\UsesDatabaseDump;
+use Woda\Worktrees\Fast\FastSetup;
+use Woda\Worktrees\Shared\EnvFile;
+use Woda\Worktrees\Shared\MainCheckout;
 
 /**
  * Sail / docker-compose bootstrap.
@@ -31,14 +37,30 @@ use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
  * every compose invocation; compose then falls back to the new worktree's
  * own `.env` for project name + everything else.
  */
-class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp
+class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBringUp, UsesDatabaseDump
 {
+    // Written before a dump restore and removed after it: a restore that stopped half way.
+    private const RESTORE_MARKER = 'storage/app/worktree/dump-restore.pending';
+
+    // The output of the node install that runs while the containers start.
+    public const NODE_INSTALL_LOG = 'storage/logs/worktree-node-install.log';
+
+    protected readonly FastSetup $fast;
+
+    /**
+     * @param  FastSetup|null  $fast  Null: the container's FastSetup (the `fast` config
+     *                                section), so a subclass that does not pass it keeps it.
+     */
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
         private readonly bool $buildFrontend,
         private readonly int $bringUpTimeout = 600,
-    ) {}
+        ?FastSetup $fast = null,
+        private readonly ?Closure $onStep = null,
+    ) {
+        $this->fast = $fast ?? app(FastSetup::class);
+    }
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
@@ -46,6 +68,12 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         $this->assertOwnComposeProject($worktreePath, $config);
         $lent = $this->lendVendorPaths($worktreePath, $config);
         try {
+            // The tag covers the lent build contexts (Sail's runtimes under vendor), and
+            // goes into .env before compose runs, so compose resolves the shared image.
+            $tag = $this->writeImageTag($worktreePath, $config);
+            if ($tag !== null) {
+                $this->ensureSharedImage($worktreePath, $tag, $output);
+            }
             $result = $this->compose($worktreePath, $this->bringUpTimeout)->run(
                 'docker compose up -d',
                 $output,
@@ -64,6 +92,47 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         // the first `exec` lands.
         $this->waitForService($worktreePath, $output);
         $this->ensureVolumesMounted($worktreePath, $config, $output);
+        $this->waitForHealthy($worktreePath, $output);
+    }
+
+    /**
+     * Wait while a service's healthcheck still says `starting`, so a test run
+     * right after the setup does not meet a database that is still starting.
+     * An unhealthy service is reported, not fatal: some healthchecks fail on a
+     * working service.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    protected function waitForHealthy(string $worktreePath, ?Closure $output = null, int $seconds = 120): void
+    {
+        $deadline = time() + $seconds;
+        do {
+            $starting = [];
+            $unhealthy = [];
+            $result = $this->compose($worktreePath, 30)->run('docker compose ps --format json');
+            if (! $result->successful()) {
+                // Unknown is not ready: ask again until the deadline.
+                $starting = ['(docker compose ps failed: '.trim($result->errorOutput()).')'];
+                usleep(500_000);
+
+                continue;
+            }
+            foreach (ComposeStack::parsePs($result->output()) as $container) {
+                $service = $container['service'] !== '' ? $container['service'] : '?';
+                if ($container['health'] === 'starting') {
+                    $starting[] = $service;
+                } elseif ($container['health'] === 'unhealthy') {
+                    $unhealthy[] = $service;
+                }
+            }
+            if ($starting === []) {
+                break;
+            }
+            usleep(500_000);
+        } while (time() < $deadline);
+        if ($output && ($starting !== [] || $unhealthy !== [])) {
+            $output('out', 'Not healthy yet: '.implode(', ', [...$starting, ...$unhealthy]).".\n");
+        }
     }
 
     /**
@@ -164,28 +233,129 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      * an unchanged COMPOSE_PROJECT_NAME gives it the project of the checkout it came
      * from; then they would act on that checkout's containers and volumes.
      *
+     * The project must not be the one of the main checkout or of any other
+     * registered worktree (by their compose config), and no container of the
+     * project may belong to another folder (by its owner label). When one of
+     * these cannot be read, the project's owner is unknown: refuse.
+     *
      * @param  array<mixed>|null  $config
      */
     protected function assertOwnComposeProject(string $worktreePath, ?array $config): void
     {
         $ours = is_string($config['name'] ?? null) && $config['name'] !== '' ? $config['name'] : null;
         if ($ours === null) {
-            return;
+            throw new RuntimeException("Cannot read the compose project of {$worktreePath} (docker compose config failed or gave no project name), so it is not known which containers and volumes starting or stopping it would act on. Fix its compose setup, then run again.");
         }
         $self = realpath($worktreePath) ?: $worktreePath;
-        foreach (array_unique($this->protectedCheckouts()) as $checkout) {
+        $registered = $this->registeredCheckouts();
+        foreach (array_unique([...$this->protectedCheckouts(), ...$registered]) as $checkout) {
             if ((realpath($checkout) ?: $checkout) === $self) {
                 continue;
             }
-            $theirs = $this->composeConfig($checkout)['name'] ?? null;
+            $theirs = $this->projectOf($checkout);
             if ($theirs === $ours) {
                 throw new RuntimeException("The worktree has the same compose project as {$checkout} ('{$ours}'): starting or stopping it would act on that checkout's containers and volumes. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
+            }
+        }
+        $this->assertContainersOwned($ours, $self, $registered);
+    }
+
+    /**
+     * The compose project of another checkout; null when it has no compose file.
+     */
+    private function projectOf(string $checkout): ?string
+    {
+        if (! is_dir($checkout)) {
+            throw new RuntimeException("Cannot read the compose project of {$checkout}: git registers it, but its folder is missing. Run git worktree prune, then run again.");
+        }
+        $name = $this->composeConfig($checkout)['name'] ?? null;
+        if (is_string($name) && $name !== '') {
+            return $name;
+        }
+        if (! $this->hasComposeFile($checkout)) {
+            return null;
+        }
+
+        throw new RuntimeException("Cannot read the compose project of {$checkout} (docker compose config failed): a worktree with the same project would act on its containers and volumes. Fix its compose setup, then run again.");
+    }
+
+    private function hasComposeFile(string $checkout): bool
+    {
+        foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $file) {
+            if (is_file($checkout.'/'.$file)) {
+                return true;
+            }
+        }
+        $env = EnvFile::get($checkout.'/.env', 'COMPOSE_FILE');
+
+        return $env !== null && $env !== '';
+    }
+
+    /**
+     * Every container of the project must belong to this worktree: its
+     * compose working folder (the folder of the compose file, also a
+     * subfolder) lies in the worktree and in no other registered checkout
+     * inside it.
+     *
+     * @param  list<string>  $registered
+     */
+    private function assertContainersOwned(string $project, string $self, array $registered): void
+    {
+        $result = Process::timeout(30)->run(sprintf(
+            'docker ps -a --filter %s --format %s',
+            escapeshellarg('label=com.docker.compose.project='.$project),
+            escapeshellarg('{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}'),
+        ));
+        if (! $result->successful()) {
+            throw new RuntimeException("Cannot list the containers of the compose project '{$project}', so their owner is unknown: ".trim($result->errorOutput()));
+        }
+        $folders = [];
+        // One line per container: its ID, a space, its owner label (empty when the label is missing).
+        foreach (preg_split('/\r?\n/', $result->output()) ?: [] as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            [$id, $folder] = array_pad(explode(' ', $line, 2), 2, '');
+            if (trim($folder) === '') {
+                throw new RuntimeException("Container {$id} of the compose project '{$project}' has no owner label (com.docker.compose.project.working_dir), so its owner is unknown: starting or stopping the worktree could act on it. Remove the container or give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides), then run again.");
+            }
+            $folders[] = trim($folder);
+        }
+        $checkouts = array_map(static fn (string $c): string => rtrim(realpath($c) ?: $c, '/'), [$self, ...$registered]);
+        foreach (array_unique($folders) as $folder) {
+            $real = rtrim(realpath($folder) ?: $folder, '/');
+            $owner = null;
+            foreach ($checkouts as $checkout) {
+                if (($real === $checkout || str_starts_with($real, $checkout.'/')) && strlen($checkout) > strlen((string) $owner)) {
+                    $owner = $checkout;
+                }
+            }
+            if ($owner !== $self) {
+                throw new RuntimeException("Containers of the compose project '{$project}' belong to {$folder}: starting or stopping the worktree would act on them. Give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides) and run again.");
             }
         }
     }
 
     /**
-     * Checkouts whose compose project a worktree must not share.
+     * The folders of all checkouts git registers for the repository (the main
+     * checkout first).
+     *
+     * @return list<string>
+     */
+    private function registeredCheckouts(): array
+    {
+        $result = Process::path(base_path())->timeout(30)->run('git worktree list --porcelain');
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot list the worktrees of the repository, so the owners of compose projects are unknown: '.trim($result->errorOutput()));
+        }
+        preg_match_all('/^worktree (.+)$/m', $result->output(), $matches);
+
+        return array_map(trim(...), $matches[1]);
+    }
+
+    /**
+     * Checkouts whose compose project a worktree must not share, besides the
+     * registered ones.
      *
      * @return list<string>
      */
@@ -270,10 +440,28 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
     {
-        $result = $this->compose($worktreePath, 600)->run(
-            $this->execCommand('composer install --no-interaction --prefer-dist'),
-            $output,
-        );
+        // With an equal composer.lock, a copy-on-write copy of the main checkout's
+        // vendor makes the install below a check. The install still runs: the main
+        // checkout may have been installed with --no-dev, and the autoloader must
+        // describe this branch's classes.
+        $this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output, $this->fast->copyVendor);
+        $host = $this->fast->composerRunner === 'host';
+        $run = function (bool $offline) use ($worktreePath, $output, $host) {
+            $env = $offline ? ['COMPOSER_DISABLE_NETWORK' => '1'] : [];
+            if ($host) {
+                return $this->compose($worktreePath, 600)->run(($offline ? 'COMPOSER_DISABLE_NETWORK=1 ' : '').$this->fast->composerHostCommand, $output);
+            }
+            if ($this->fast->composerCacheDir !== null && $this->fast->composerCacheDir !== '') {
+                $env['COMPOSER_CACHE_DIR'] = $this->fast->composerCacheDir;
+            }
+
+            return $this->compose($worktreePath, 600)->run($this->execCommand('composer install --no-interaction --prefer-dist', $env), $output);
+        };
+        $result = $this->fast->composerOffline ? $run(true) : null;
+        if ($result === null || ! $result->successful()) {
+            // A cache miss: install with the network.
+            $result = $run(false);
+        }
 
         if (! $result->successful()) {
             throw new RuntimeException("Composer install failed: {$result->errorOutput()}");
@@ -283,10 +471,80 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
     {
         // Host-native — Vite + HMR are host concerns.
-        $result = Process::path($worktreePath)->timeout(300)->run("{$this->nodePackageManager} install", $output);
+        $result = Process::path($worktreePath)->timeout(300)->run($this->nodeInstallCommand(), $output);
 
         if (! $result->successful()) {
             throw new RuntimeException("Node dependency install failed: {$result->errorOutput()}");
+        }
+    }
+
+    /**
+     * pnpm and npm install from their store or cache without asking the
+     * registry for every package; a missing package still comes from the network.
+     */
+    protected function nodeInstallCommand(): string
+    {
+        return in_array($this->nodePackageManager, ['pnpm', 'npm'], true)
+            ? "{$this->nodePackageManager} install --prefer-offline"
+            : "{$this->nodePackageManager} install";
+    }
+
+    /**
+     * The node install can run while the containers start when no service
+     * mounts a named volume at `node_modules`: a host install replaces that
+     * folder, which would detach such a volume (see InstallsNodeBeforeBringUp).
+     */
+    public function canInstallNodeInParallel(string $worktreePath): bool
+    {
+        // A subclass with its own node install: the parallel start would bypass it.
+        if (! $this->fast->parallelNode || (new \ReflectionMethod($this, 'installNodeDependencies'))->getDeclaringClass()->getName() !== self::class) {
+            return false;
+        }
+        $config = $this->composeConfig($worktreePath);
+        if ($config === null) {
+            return false;
+        }
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        foreach ($services as $service) {
+            $volumes = is_array($service) && is_array($service['volumes'] ?? null) ? $service['volumes'] : [];
+            foreach ($volumes as $volume) {
+                if (is_array($volume) && ($volume['type'] ?? null) === 'volume' && is_string($volume['target'] ?? null) && str_ends_with(rtrim($volume['target'], '/'), '/node_modules')) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Start the node install in the background. Its output goes into a file,
+     * not a pipe: nothing reads a pipe while the containers start, and an
+     * install would block once the pipe holds 64 KiB.
+     */
+    public function startNodeInstall(string $worktreePath): InvokedProcess
+    {
+        File::ensureDirectoryExists(dirname($worktreePath.'/'.self::NODE_INSTALL_LOG));
+        File::delete($worktreePath.'/'.self::NODE_INSTALL_LOG);
+
+        return Process::path($worktreePath)->timeout(300)->quietly()
+            ->start($this->nodeInstallCommand().' > '.escapeshellarg(self::NODE_INSTALL_LOG).' 2>&1');
+    }
+
+    /**
+     * Wait for the node install of startNodeInstall(); its output goes to `$output` then.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function finishNodeInstall(InvokedProcess $process, string $worktreePath, ?Closure $output = null): void
+    {
+        $result = $process->wait();
+        $log = is_file($worktreePath.'/'.self::NODE_INSTALL_LOG) ? File::get($worktreePath.'/'.self::NODE_INSTALL_LOG) : '';
+        if ($output && $log !== '') {
+            $output('out', $log);
+        }
+        if (! $result->successful()) {
+            throw new RuntimeException('Node dependency install failed (see '.self::NODE_INSTALL_LOG.'): '.trim(substr($log, -2000)));
         }
     }
 
@@ -296,7 +554,9 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             return;
         }
 
-        $result = Process::path($worktreePath)->timeout(300)->run("{$this->nodePackageManager} run build", $output);
+        // Without the variables of the checkout that runs artisan: Vite reads VITE_*
+        // from the environment before .env, and would build with the main checkout's values.
+        $result = $this->compose($worktreePath, 300)->run("{$this->nodePackageManager} run build", $output);
 
         if (! $result->successful()) {
             throw new RuntimeException("Frontend build failed: {$result->errorOutput()}");
@@ -315,6 +575,206 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         }
     }
 
+    /**
+     * The shared app image's tag, written into `.env`; null when the shared image is off.
+     */
+    /**
+     * @param  array<mixed>|null  $config
+     */
+    private function writeImageTag(string $worktreePath, ?array $config): ?string
+    {
+        $image = $this->fast->image;
+        if (! $image->enabled()) {
+            return null;
+        }
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $service = $services[$image->service($this->appService)] ?? null;
+        $build = is_array($service) && is_array($service['build'] ?? null) ? $service['build'] : null;
+        $tag = $image->tag($worktreePath, $build);
+        if (EnvFile::get($worktreePath.'/.env', $image->envKey()) !== $tag) {
+            EnvFile::upsert($worktreePath.'/.env', [$image->envKey() => $tag]);
+        }
+
+        return $tag;
+    }
+
+    /**
+     * Build the shared app image once when it is missing.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    private function ensureSharedImage(string $worktreePath, string $tag, ?Closure $output): void
+    {
+        $built = $this->fast->image->ensure($tag, $this->appService, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output, $this->onStep);
+        if (! $built && $output) {
+            $output('out', "Using the app image {$tag}.\n");
+        }
+    }
+
+    public function databaseDumpEnabled(): bool
+    {
+        return $this->fast->dump->enabled();
+    }
+
+    public function restoreDatabaseDump(string $worktreePath, ?Closure $output = null, ?Closure $onStep = null): string
+    {
+        $dump = $this->fast->dump;
+        $pending = $worktreePath.'/'.self::RESTORE_MARKER;
+        // A restore that stopped half way left some tables: restore again over them
+        // (the dump drops each table before it creates it). Else only into an empty
+        // database: a restore over existing tables would replace them.
+        $interrupted = is_file($pending);
+        if (! $interrupted && ! $this->databaseIsEmpty($worktreePath)) {
+            $onStep && $onStep('The database has tables; it is kept, and neither restored nor seeded.');
+
+            return self::DUMP_EXISTING;
+        }
+        // No migrations table does not prove an empty database: an adopted
+        // database, or a first migrate that failed half way, has tables without it.
+        if (! $interrupted && $this->databaseHasTables($worktreePath)) {
+            $onStep && $onStep('The database has tables but no migrations table; it is kept, and neither restored nor seeded.');
+
+            return self::DUMP_EXISTING;
+        }
+        $file = $dump->find($worktreePath, $onStep);
+        if ($file === null && $interrupted) {
+            throw new RuntimeException('A restore of the database dump stopped half way, and the dump is gone: empty the database (or delete the worktree), remove '.self::RESTORE_MARKER.' and run the setup again.');
+        }
+        if ($file === null) {
+            $onStep && $onStep('No database dump for key '.$dump->key($worktreePath).' yet: this setup seeds and saves one.');
+
+            return self::DUMP_MISSING;
+        }
+        $onStep && $onStep(($interrupted ? 'Restoring the database dump again (the last restore stopped half way): ' : 'Restoring the database dump ').basename($file).'...');
+        File::ensureDirectoryExists(dirname($pending));
+        File::put($pending, date(DATE_ATOM)."\n");
+        $dump->restore($file, $worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout), $output);
+        File::delete($pending);
+
+        return self::DUMP_RESTORED;
+    }
+
+    /**
+     * How long the dump stage waits for the database service to answer. The
+     * containers have just started, and a fast Composer leaves the database
+     * no time to start up.
+     */
+    protected int $databaseWaitSeconds = 60;
+
+    /**
+     * True without a migrations table (then databaseHasTables() decides).
+     * The message counts, not the exit code
+     * alone. Another error (the database does not answer yet) is tried again
+     * every second, for up to $databaseWaitSeconds.
+     */
+    private function databaseIsEmpty(string $worktreePath): bool
+    {
+        $deadline = time() + $this->databaseWaitSeconds;
+        while (true) {
+            $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
+            if (stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false) {
+                return true;
+            }
+            if ($status->successful()) {
+                return false;
+            }
+            if (time() >= $deadline) {
+                throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
+            }
+            sleep(1);
+        }
+    }
+
+    /**
+     * Whether the database has any table, as `php artisan db:show --json` in
+     * the app container lists them. Throws when the list cannot be read: a
+     * restore must not run on a database whose state is unknown.
+     */
+    private function databaseHasTables(string $worktreePath): bool
+    {
+        $show = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan db:show --json --no-ansi --no-interaction'));
+        $output = $show->output();
+        $start = strpos($output, '{');
+        $data = $start === false ? null : json_decode(substr($output, $start), true);
+        if (! $show->successful() || ! is_array($data) || ! is_array($data['tables'] ?? null)) {
+            throw new RuntimeException('Cannot tell whether the database has tables, so the dump is not restored (php artisan db:show --json): '.trim($show->errorOutput() ?: $output));
+        }
+
+        return $data['tables'] !== [];
+    }
+
+    public function seedDatabase(string $worktreePath, ?Closure $output = null): void
+    {
+        $result = $this->compose($worktreePath, 1800)->run($this->execCommand($this->fast->dump->seedCommand()), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("The seed command failed: {$result->errorOutput()}");
+        }
+    }
+
+    public function saveDatabaseDump(string $worktreePath, ?Closure $onStep = null): void
+    {
+        $saved = $this->fast->dump->save($worktreePath, fn (int $timeout) => $this->compose($worktreePath, $timeout));
+        $onStep && $onStep('Saved the database dump '.basename($saved).' for the next worktrees.');
+    }
+
+    /**
+     * Copy `$directory` from the main checkout with copy-on-write when the
+     * lock files are equal. False when that is not possible.
+     *
+     * @param  list<string>  $lockFiles
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    protected function copyFromMain(string $worktreePath, string $directory, array $lockFiles, ?Closure $output, bool $enabled = true): bool
+    {
+        $main = MainCheckout::path();
+        $source = $main.'/'.$directory;
+        $target = $worktreePath.'/'.$directory;
+        if (! $enabled || ! is_dir($source) || file_exists($target) || ! $this->locksEqual($main, $worktreePath, $lockFiles)) {
+            return false;
+        }
+        $flags = PHP_OS_FAMILY === 'Darwin' ? ['-c'] : ['--reflink=always'];
+        // One file first: without copy-on-write (ext4), cp fails for each file of the tree.
+        $probe = $worktreePath.'/.worktree-cow-probe';
+        $lock = current(array_filter($lockFiles, static fn (string $file): bool => is_file($main.'/'.$file)));
+        $supported = $lock !== false && Process::timeout(30)->run(['cp', ...$flags, $main.'/'.$lock, $probe])->successful();
+        File::delete($probe);
+        if (! $supported) {
+            $output && $output('out', "No copy-on-write on this file system: {$directory} is installed.\n");
+
+            return false;
+        }
+        $result = Process::timeout(600)->run(['cp', ...$flags, '-R', $source, $target]);
+        if (! $result->successful()) {
+            // No copy-on-write on this filesystem: install normally.
+            File::deleteDirectory($target);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  list<string>  $lockFiles
+     */
+    private function locksEqual(string $main, string $worktreePath, array $lockFiles): bool
+    {
+        $compared = false;
+        foreach ($lockFiles as $file) {
+            $a = $main.'/'.$file;
+            $b = $worktreePath.'/'.$file;
+            if (! is_file($a) && ! is_file($b)) {
+                continue;
+            }
+            if (! is_file($a) || ! is_file($b) || hash_file('sha256', $a) !== hash_file('sha256', $b)) {
+                return false;
+            }
+            $compared = true;
+        }
+
+        return $compared;
+    }
+
     public function tearDown(string $worktreePath, ?Closure $output = null): void
     {
         $this->down($worktreePath, false, $output);
@@ -327,13 +787,95 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     private function down(string $worktreePath, bool $keepVolumes, ?Closure $output): void
     {
-        $this->assertOwnComposeProject($worktreePath, $this->composeConfig($worktreePath));
+        $config = $this->composeConfig($worktreePath);
+        $this->assertOwnComposeProject($worktreePath, $config);
         $result = $this->compose($worktreePath, 120)->run(
             'docker compose --profile "*" down'.($keepVolumes ? '' : ' -v'), $output,
         );
         if (! $result->successful()) {
             throw new RuntimeException('Worktree environment teardown failed; checkout retained.');
         }
+        $this->removeOwnImages($config, $output);
+    }
+
+    /**
+     * Remove the images that the worktree's compose project built for itself:
+     * services with a `build:` whose image name holds the project name (the
+     * per-worktree tag `{project}/app:latest`, or compose's default
+     * `{project}-{service}`). Shared images (another name, the main checkout's
+     * images) stay; an image that another container still uses stays too.
+     * When the main checkout's compose config cannot be read, no image is removed.
+     *
+     * @param  array<mixed>|null  $config
+     * @param  (Closure(string, string): void)|null  $output
+     * @return list<string> the removed images
+     */
+    protected function removeOwnImages(?array $config, ?Closure $output = null): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        if ($project === '') {
+            return [];
+        }
+        $main = $this->composeConfig(base_path());
+        if ($main === null) {
+            // Without the main checkout's images, a worktree image with the same name is not known: remove none.
+            $output && $output('out', "Kept the images of {$project}: the compose config of the main checkout could not be read.\n");
+
+            return [];
+        }
+        $keep = $this->imagesOf($main);
+        $removed = [];
+        foreach ($this->imagesOf($config, builtOnly: true) as $service => $image) {
+            // Worker services often share the app service's image: remove it once.
+            if (in_array($image, $keep, true) || in_array($image, $removed, true) || ! self::isProjectImage($image, $project, (string) $service)) {
+                continue;
+            }
+            if (Process::timeout(120)->run('docker image rm '.escapeshellarg($image))->successful()) {
+                $removed[] = $image;
+                $output && $output('out', "Removed the image {$image}.\n");
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * An image of the compose project itself: `{project}/…` (the per-worktree
+     * tag `{project}/app:latest`) or compose's default `{project}-{service}`,
+     * with any tag. A name that only contains the project name is not one: a
+     * worktree named `app` must not remove the shared `hungryport-app:{key}`.
+     */
+    private static function isProjectImage(string $image, string $project, string $service): bool
+    {
+        $slash = strrpos($image, '/');
+        $colon = strrpos($image, ':');
+        $name = $colon !== false && ($slash === false || $colon > $slash) ? substr($image, 0, $colon) : $image;
+
+        return str_starts_with($name, $project.'/') || $name === $project.'-'.$service;
+    }
+
+    /**
+     * The image of each service, by service name.
+     *
+     * @param  array<mixed>|null  $config
+     * @return array<string, string>
+     */
+    private function imagesOf(?array $config, bool $builtOnly = false): array
+    {
+        $project = is_string($config['name'] ?? null) ? $config['name'] : '';
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $images = [];
+        foreach ($services as $name => $service) {
+            if (! is_array($service) || ($builtOnly && ! isset($service['build']))) {
+                continue;
+            }
+            $image = is_string($service['image'] ?? null) ? $service['image'] : (isset($service['build']) && $project !== '' ? $project.'-'.$name : null);
+            if ($image !== null) {
+                $images[(string) $name] = $image;
+            }
+        }
+
+        return $images;
     }
 
     /**
@@ -351,10 +893,19 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         return $this->appService;
     }
 
-    protected function execCommand(string $cmd): string
+    /**
+     * @param  array<string, string>  $env
+     */
+    protected function execCommand(string $cmd, array $env = []): string
     {
+        $options = '';
+        foreach ($env as $key => $value) {
+            $options .= ' -e '.escapeshellarg($key.'='.$value);
+        }
+
         return sprintf(
-            'docker compose exec -T %s sh -c %s',
+            'docker compose exec -T%s %s sh -c %s',
+            $options,
             escapeshellarg($this->appService),
             escapeshellarg($cmd),
         );

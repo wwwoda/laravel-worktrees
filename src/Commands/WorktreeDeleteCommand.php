@@ -3,6 +3,7 @@
 namespace Woda\Worktrees\Commands;
 
 use Illuminate\Console\Command;
+use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\DatabaseCloner;
 use Woda\Worktrees\WorktreeManager;
@@ -12,6 +13,8 @@ use function Laravel\Prompts\select;
 
 class WorktreeDeleteCommand extends Command
 {
+    use RunsInMainCheckout;
+
     protected $signature = 'worktree:delete
         {name? : Worktree name}
         {--force : Skip safety checks and confirmation}
@@ -25,8 +28,20 @@ class WorktreeDeleteCommand extends Command
         ProcessManager $processManager,
         DatabaseCloner $databaseCloner,
     ): int {
+        // From a linked worktree: the same command in the main checkout.
+        if (($exitCode = $this->runInMainCheckout()) !== null) {
+            return $exitCode;
+        }
+
         $nameArg = $this->argument('name');
         $name = is_string($nameArg) ? $nameArg : null;
+
+        if (! $name && ! $this->canAsk()) {
+            // Without a terminal, a prompt would pick an answer by itself.
+            $this->components->error('Give the name of the worktree to delete: php artisan worktree:delete NAME (see php artisan worktree:list).');
+
+            return self::FAILURE;
+        }
 
         if (! $name) {
             $worktrees = $worktreeManager->list();
@@ -68,8 +83,8 @@ class WorktreeDeleteCommand extends Command
                 $worktreeManager->checkSharedDatabases($name);
             }
 
-            if (! $this->option('force') && ! $this->confirmDelete($worktreeManager, $name)) {
-                return self::SUCCESS;
+            if (! $this->option('force') && ($stop = $this->confirmDelete($worktreeManager, $name)) !== null) {
+                return $stop;
             }
 
             if ($processManager->isRunning($name)) {
@@ -81,7 +96,14 @@ class WorktreeDeleteCommand extends Command
             // First stop the containers: no process may hold files, ports or
             // database connections of what is removed next.
             $this->components->info('Stopping the worktree environment...');
-            $worktreeManager->tearDown($name, keepDatabase: (bool) $this->option('keep-db'));
+            $verbose = $this->output->isVerbose();
+            $worktreeManager->tearDown($name, function (string $type, string $buffer) use ($verbose): void {
+                if ($verbose) {
+                    $this->output->write($buffer);
+                } elseif (str_starts_with($buffer, 'Removed the image') || str_starts_with($buffer, 'Kept the images')) {
+                    $this->line('  '.trim($buffer));
+                }
+            }, keepDatabase: (bool) $this->option('keep-db'));
 
             // Shared services: only the worktree's own databases, user and Redis numbers.
             if ($worktreeManager->usesSharedDatabases() && ! $this->option('keep-db')) {
@@ -127,14 +149,16 @@ class WorktreeDeleteCommand extends Command
 
             return;
         }
+        $how = $status['via'] === 'pull request' ? ' by a pull request (squashed or rebased)' : '';
         $delete = $this->option('delete-branch')
-            || (! $this->option('force') && $this->input->isInteractive() && confirm("Branch '{$branch}' is merged. Delete it?", true));
+            || (! $this->option('force') && $this->canAsk() && confirm("Branch '{$branch}' is merged{$how}. Delete it?", true));
         if (! $delete) {
-            $this->components->warn("Branch '{$branch}' remains (merged; delete it with: git branch -d {$branch}).");
+            $flag = $status['via'] === 'pull request' ? '-D' : '-d';
+            $this->components->warn("Branch '{$branch}' remains (merged{$how}; delete it with: git branch {$flag} {$branch}).");
 
             return;
         }
-        if ($worktreeManager->deleteMergedBranch($branch)) {
+        if ($worktreeManager->deleteMergedBranch($branch, $status['via'] === 'pull request')) {
             $this->components->info("Deleted merged branch '{$branch}'.");
         } else {
             $this->components->warn("Branch '{$branch}' could not be deleted.");
@@ -142,32 +166,45 @@ class WorktreeDeleteCommand extends Command
     }
 
     /**
-     * Safety checks and the final question; false when the user stops.
+     * Null when the delete may go on; else the exit code to stop with.
+     * Without a terminal (with -n, or with a stdin that is a pipe or a file),
+     * uncommitted changes and unpushed commits stop the delete with exit code
+     * 1 (nothing was deleted), and a clean worktree is deleted without a question. A person who declines a
+     * question at the terminal ends it with 0: that is their choice.
      */
-    private function confirmDelete(WorktreeManager $worktreeManager, string $name): bool
+    private function confirmDelete(WorktreeManager $worktreeManager, string $name): ?int
     {
         $safety = $worktreeManager->safetyCheck($name);
+        $problems = array_keys(array_filter([
+            'uncommitted changes' => ! $safety['clean'],
+            'unpushed commits' => $safety['unpushed'],
+        ]));
 
-        if (! $safety['clean']) {
-            $this->components->warn("Worktree '{$name}' has uncommitted changes.");
-            if (! confirm('Continue anyway?', false)) {
-                return false;
+        // Without a terminal (also without -n), no question: Laravel Prompts would answer its default.
+        if (! $this->canAsk()) {
+            if ($problems === []) {
+                return null;
             }
+            $this->components->error("Worktree '{$name}' has ".implode(' and ', $problems).': nothing was deleted. Commit and push them, or delete anyway (and lose them) with --force.');
+
+            return self::FAILURE;
         }
 
-        if ($safety['unpushed']) {
-            $this->components->warn("Worktree '{$name}' has unpushed commits.");
+        foreach ($problems as $problem) {
+            $this->components->warn("Worktree '{$name}' has {$problem}.");
             if (! confirm('Continue anyway?', false)) {
-                return false;
+                $this->components->info('Cancelled.');
+
+                return self::SUCCESS;
             }
         }
 
         if (! confirm("Delete worktree '{$name}'?")) {
             $this->components->info('Cancelled.');
 
-            return false;
+            return self::SUCCESS;
         }
 
-        return true;
+        return null;
     }
 }

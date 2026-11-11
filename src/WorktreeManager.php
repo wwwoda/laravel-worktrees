@@ -4,13 +4,18 @@ namespace Woda\Worktrees;
 
 use Closure;
 use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Symfony\Component\Finder\Finder;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
+use Woda\Worktrees\Contracts\UsesDatabaseDump;
+use Woda\Worktrees\Fast\BuildCache;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\SailConverter;
 
@@ -25,6 +30,10 @@ class WorktreeManager
 
     private const CLONE_MARKER = 'storage/worktree-bootstrap.clone';
 
+    private const EXCLUDE_MARKER = '# laravel-worktrees: files the package writes into each worktree';
+
+    private const PACKAGE_FILES = ['/storage/worktree-bootstrap.json', '/storage/worktree-bootstrap.lock', '/storage/worktree-bootstrap.clone'];
+
     public function __construct(
         private readonly string $basePath,
         private readonly string $branchPrefix,
@@ -37,6 +46,7 @@ class WorktreeManager
         private readonly bool $runMigrations,
         /** @var array<string, string|Closure(string $name, string $worktreePath): string> */
         private readonly array $envOverrides = [],
+        private readonly ?BuildCache $buildCache = null,
     ) {}
 
     /**
@@ -114,6 +124,8 @@ class WorktreeManager
 
     public function create(string $name, ?string $branch = null, ?string $baseBranch = null): string
     {
+        $named = $branch !== null;
+        $tracked = false;
         $branch ??= $this->branchPrefix.$name;
         $baseBranch ??= $this->baseBranch;
         $path = $this->pathFor($name);
@@ -123,19 +135,61 @@ class WorktreeManager
         }
 
         $local = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch));
-        $remote = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/remotes/origin/'.$branch));
-
-        $command = $local->successful()
-            ? sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch))
-            : sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path),
-                escapeshellarg($remote->successful() ? 'origin/'.$branch : $baseBranch));
+        if ($local->successful()) {
+            $command = sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch));
+        } elseif ($this->fetchRemoteBranch($branch, $named)) {
+            // The remote's head: not a new branch from the base branch. Tracking is set below.
+            $tracked = true;
+            $command = sprintf('worktree add --no-track -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg('origin/'.$branch));
+        } else {
+            $command = sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg($baseBranch));
+        }
         $result = $this->git($command);
 
         if (! $result->successful()) {
             throw new RuntimeException("Failed to create worktree: {$result->errorOutput()}");
         }
+        // Track origin's branch through the branch config: `--track` refuses a
+        // remote ref outside the clone's fetch refspec (a single-branch clone).
+        if ($tracked && $this->git('remote get-url origin')->successful()) {
+            $this->git(sprintf('config %s origin', escapeshellarg('branch.'.$branch.'.remote')));
+            $this->git(sprintf('config %s %s', escapeshellarg('branch.'.$branch.'.merge'), escapeshellarg('refs/heads/'.$branch)));
+            // A clone whose fetch refspec does not cover the branch would never update
+            // origin/{branch}: a push would then still count as unpushed on delete.
+            if (! $this->git('rev-parse --symbolic-full-name '.escapeshellarg($branch.'@{upstream}'))->successful()) {
+                $this->git('remote set-branches --add origin '.escapeshellarg($branch));
+            }
+        }
 
         return $path;
+    }
+
+    /**
+     * Fetch the branch from origin into `origin/{branch}`, with an explicit
+     * refspec (a clone may fetch only some branches). True when origin has it.
+     * False when origin does not have it. Without an origin remote, an
+     * existing `origin/{branch}` ref counts. A fetch that
+     * fails otherwise (no network) stops a branch that was named: a new branch
+     * from the base would hide the remote one. For the default branch of a
+     * name, the last fetched `origin/{branch}` counts.
+     */
+    public function fetchRemoteBranch(string $branch, bool $required = true): bool
+    {
+        $ref = 'refs/remotes/origin/'.$branch;
+        // Without an origin remote, only a ref that is already there can count.
+        if ($this->git('remote get-url origin')->successful()) {
+            $fetch = Process::path(base_path())->timeout(60)->run('git fetch origin '.escapeshellarg('+refs/heads/'.$branch.':'.$ref));
+            if (! $fetch->successful()) {
+                if (stripos($fetch->errorOutput(), "couldn't find remote ref") !== false) {
+                    return false;
+                }
+                if ($required) {
+                    throw new RuntimeException("Cannot fetch the branch {$branch} from origin, so it is unknown whether origin has it: ".trim($fetch->errorOutput()));
+                }
+            }
+        }
+
+        return $this->git('show-ref --verify --quiet '.escapeshellarg($ref))->successful();
     }
 
     public function remove(string $name): void
@@ -196,23 +250,64 @@ class WorktreeManager
     }
 
     /**
-     * After a delete: is the local branch still there, and is it merged into the base branch?
+     * After a delete: is the local branch still there, and is it merged into the
+     * base branch? A branch whose pull request was squashed or rebased is not an
+     * ancestor of the base branch; it counts as merged when GitHub reports a merged
+     * pull request whose head is the local branch's commit (`via` is then `pull request`).
      *
-     * @return array{exists: bool, merged: bool}
+     * @return array{exists: bool, merged: bool, via: string|null}
      */
     public function branchStatus(string $branch): array
     {
         $exists = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful();
+        if (! $exists) {
+            return ['exists' => false, 'merged' => false, 'via' => null];
+        }
+        if ($this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful()) {
+            return ['exists' => true, 'merged' => true, 'via' => 'ancestor'];
+        }
+        $head = trim($this->git('rev-parse '.escapeshellarg('refs/heads/'.$branch))->output());
+        // Only a pull request into the base branch: one merged into another branch did not reach it.
+        $pulls = $this->ghJson(sprintf('gh pr list --head %s --base %s --state merged --limit 5 --json headRefOid', escapeshellarg($branch), escapeshellarg($this->baseBranch)));
+        foreach (is_array($pulls) ? $pulls : [] as $pull) {
+            if (is_array($pull) && $head !== '' && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
+        // `worktree:create --pr` puts a fork's head into `pr-{number}`: GitHub knows
+        // the fork's own branch name, so ask for the pull request by its number.
+        if ($head !== '' && preg_match('/^pr-(\d+)$/', $branch, $match) === 1) {
+            $pull = $this->ghJson(sprintf('gh pr view %s --json state,baseRefName,headRefOid', escapeshellarg($match[1])));
+            if (is_array($pull) && ($pull['state'] ?? null) === 'MERGED' && ($pull['baseRefName'] ?? null) === $this->baseBranch && ($pull['headRefOid'] ?? null) === $head) {
+                return ['exists' => true, 'merged' => true, 'via' => 'pull request'];
+            }
+        }
 
-        return [
-            'exists' => $exists,
-            'merged' => $exists && $this->git('merge-base --is-ancestor '.escapeshellarg($branch).' '.escapeshellarg($this->baseBranch))->successful(),
-        ];
+        return ['exists' => true, 'merged' => false, 'via' => null];
     }
 
-    public function deleteMergedBranch(string $branch): bool
+    /**
+     * The decoded JSON of a `gh` call; null when gh fails, is missing or does
+     * not answer in time (the branch then counts as not merged).
+     */
+    private function ghJson(string $command): mixed
     {
-        return $this->git('branch -d '.escapeshellarg($branch))->successful();
+        try {
+            $result = Process::path(base_path())->timeout(30)->run($command);
+        } catch (ProcessTimedOutException) {
+            return null;
+        }
+
+        return $result->successful() ? json_decode($result->output(), true) : null;
+    }
+
+    /**
+     * Delete a merged branch: `git branch -d`, or `-D` for a branch that a merged
+     * pull request with the same head commit squashed or rebased.
+     */
+    public function deleteMergedBranch(string $branch, bool $mergedByPullRequest = false): bool
+    {
+        return $this->git('branch '.($mergedByPullRequest ? '-D' : '-d').' '.escapeshellarg($branch))->successful();
     }
 
     public function exists(string $name): bool
@@ -315,19 +410,15 @@ class WorktreeManager
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
         $this->assertNameFree($name, $path);
-        File::ensureDirectoryExists($path.'/storage');
-        $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
-        if ($handle === false) {
-            throw new RuntimeException('Cannot open the worktree bootstrap lock.');
-        }
-        if (! flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-
+        $handle = SetupLock::tryAcquire($path);
+        if ($handle === null) {
             throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
+        $parallelNode = null;
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
+            $this->excludePackageFiles($path);
             $decoded = File::exists($statePath)
                 ? json_decode(File::get($statePath), true, flags: JSON_THROW_ON_ERROR)
                 : ['completed' => []];
@@ -361,7 +452,7 @@ class WorktreeManager
             if ($provisions && ! empty($options['skip_db']) && (! $resume || ! in_array('database', $state['completed'], true))) {
                 throw new RuntimeException('--skip-db works with shared services only on a resume, once the worktree has its own databases: otherwise its .env names the main database. Run without --skip-db.');
             }
-            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
+            $run = function (string $id, Closure $action, bool $always = false, ?float $since = null) use (&$state, $statePath, $step, $resume, $onStageDone): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
                     return;
                 }
@@ -369,7 +460,8 @@ class WorktreeManager
                 $state['status'] = 'running';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
                 $step($id);
-                $started = microtime(true);
+                // A stage that ran in parallel counts from its start.
+                $started = $since ?? microtime(true);
                 $action();
                 $onStageDone && $onStageDone($id, microtime(true) - $started);
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
@@ -395,12 +487,28 @@ class WorktreeManager
                     'base' => $options['base'] ?? $this->baseBranch,
                 ], $processOutput, $step));
             }
-            $node = fn () => $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
+            $nodeNeeded = ! is_dir($path.'/node_modules');
+            $node = fn () => $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), $nodeNeeded);
             // Container strategies install node on the host before the containers start (see the contract).
             $nodeFirst = $this->bootstrapStrategy instanceof InstallsNodeBeforeBringUp;
             if ($nodeFirst && empty($options['skip_deps'])) {
-                $node();
+                $pending = ! $resume || $nodeNeeded || ! in_array('node', $state['completed'], true);
+                if ($pending && $this->bootstrapStrategy instanceof SailBootstrapStrategy && $this->bootstrapStrategy->canInstallNodeInParallel($path)) {
+                    // No container mounts node_modules: install while the containers start.
+                    $step('node (in parallel)');
+                    $parallelNode = [$this->bootstrapStrategy, $this->bootstrapStrategy->startNodeInstall($path), microtime(true)];
+                } else {
+                    $node();
+                }
             }
+            $finishNode = function () use (&$parallelNode, $run, $path, $processOutput): void {
+                if ($parallelNode === null) {
+                    return;
+                }
+                [$strategy, $process, $since] = $parallelNode;
+                $parallelNode = null;
+                $run('node', fn () => $strategy->finishNodeInstall($process, $path, $processOutput), true, $since);
+            };
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
                 $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
@@ -428,24 +536,70 @@ class WorktreeManager
                     File::delete($marker);
                 });
             }
+            // A ready-made database with test data: restored now, or seeded and saved after the migrations.
+            $dumper = $this->bootstrapStrategy instanceof UsesDatabaseDump && $this->bootstrapStrategy->databaseDumpEnabled()
+                && empty($options['skip_db']) && empty($options['skip_deps']) && $this->runMigrations
+                ? $this->bootstrapStrategy : null;
+            if ($dumper !== null) {
+                $run('dump', function () use (&$state, $dumper, $path, $processOutput, $step): void {
+                    $state['dump'] = $dumper->restoreDatabaseDump($path, $processOutput, $step);
+                });
+            }
             if (empty($options['skip_build']) && $this->buildFrontend) {
-                $run('build', fn () => $this->bootstrapStrategy->buildFrontend($path, $processOutput), ! is_file($path.'/public/build/manifest.json'));
+                $run('build', function () use ($path, $processOutput, $step, $finishNode): void {
+                    $this->restoreOrBuildFrontend($path, $processOutput, $step, $finishNode);
+                }, ! is_file($path.'/public/build/manifest.json'));
             }
             if (empty($options['skip_deps']) && $this->runMigrations) {
                 $run('migrations', fn () => $this->bootstrapStrategy->runMigrations($path, $processOutput), true);
             }
+            // Only a database that had no dump is seeded; a restored or existing one is kept.
+            if ($dumper !== null && ($state['dump'] ?? null) === UsesDatabaseDump::DUMP_MISSING) {
+                // Two stages: a resume after a failed save does not seed the database again.
+                $run('seed', fn () => $dumper->seedDatabase($path, $processOutput));
+                $run('dump-save', fn () => $dumper->saveDatabaseDump($path, $step));
+            }
+            $finishNode();
             $state['status'] = 'ready';
             File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
         } catch (\Throwable $error) {
+            // A failed setup does not leave the node install running.
+            if ($parallelNode !== null && $parallelNode[1]->running()) {
+                $parallelNode[1]->signal(15);
+            }
             if (isset($state)) {
                 $state['status'] = 'failed';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             }
             throw $error;
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            SetupLock::release($handle);
         }
+    }
+
+    /**
+     * The build stage: a copy of a build with the same inputs, else a build
+     * (after the node install that runs in parallel).
+     *
+     * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  Closure(string): void  $step
+     * @param  Closure(): void  $finishNode
+     */
+    private function restoreOrBuildFrontend(string $path, ?Closure $processOutput, Closure $step, Closure $finishNode): void
+    {
+        $source = $this->buildCache?->restore($path);
+        if ($source !== null) {
+            $step("Copied the frontend build from the {$source}: its inputs are the same.");
+            // The build installs the app container's own node_modules; without the build, that install still runs.
+            if ($this->bootstrapStrategy instanceof SharedServicesBootstrapStrategy) {
+                $this->bootstrapStrategy->installContainerNodeDependencies($path, $processOutput);
+            }
+
+            return;
+        }
+        $finishNode();
+        $this->bootstrapStrategy->buildFrontend($path, $processOutput);
+        $this->buildCache?->store($path);
     }
 
     /**
@@ -590,6 +744,31 @@ class WorktreeManager
         return trim($result->output()) !== '';
     }
 
+    /**
+     * The uncommitted files of a checkout (`git status --porcelain` paths),
+     * without the files this package writes into it.
+     *
+     * @return list<string>
+     */
+    public function changedFiles(string $path): array
+    {
+        $result = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
+        $files = [];
+        foreach (preg_split('/\r?\n/', rtrim($result->output())) ?: [] as $line) {
+            if (strlen($line) > 3) {
+                // `XY path` or `XY old -> new`; the current path counts.
+                $file = substr($line, 3);
+                $file = str_contains($file, ' -> ') ? substr($file, (int) strrpos($file, ' -> ') + 4) : $file;
+                $files[] = trim($file, '"');
+            }
+        }
+
+        return $files;
+    }
+
     public function nameFromPath(string $path): ?string
     {
         $prefix = basename(base_path()).'-';
@@ -609,20 +788,94 @@ class WorktreeManager
     {
         $sourcePath = base_path();
 
-        foreach ($this->copyFiles as $file) {
+        foreach ($this->copyFiles as $entry) {
+            // `.claude/` and `./.claude` name the same folder as git's `.claude`.
+            $file = (string) preg_replace('#^(\./)+#', '', trim($entry));
+            $file = rtrim($file, '/');
+            if ($file === '') {
+                continue;
+            }
             $source = $sourcePath.'/'.$file;
             $target = $targetPath.'/'.$file;
 
             if (! File::exists($source) || ($keepExisting && File::exists($target))) {
                 continue;
             }
+            // Files that git tracks in the worktree keep the branch's version: a copy of the
+            // main checkout's working file (a folder such as .claude holds tracked skills)
+            // would show as a change in every new worktree. Without the list of tracked
+            // files, no file that exists in the worktree is replaced.
+            $tracked = $this->trackedFiles($targetPath, $file);
+            $keep = fn (string $relative): bool => $tracked === null
+                ? File::exists($targetPath.'/'.$relative)
+                : isset($tracked[$relative]);
 
             if (File::isDirectory($source)) {
-                File::copyDirectory($source, $target);
-            } else {
+                // Symlinked folders count with their files (skills are often installed as links), as copyDirectory() did.
+                $items = Finder::create()->files()->ignoreDotFiles(false)->ignoreVCS(false)->followLinks()->ignoreUnreadableDirs()->in($source);
+                foreach ($items as $item) {
+                    $relative = $file.'/'.str_replace(DIRECTORY_SEPARATOR, '/', $item->getRelativePathname());
+                    if ($keep($relative)) {
+                        continue;
+                    }
+                    File::ensureDirectoryExists(dirname($targetPath.'/'.$relative));
+                    File::copy($item->getPathname(), $targetPath.'/'.$relative);
+                }
+            } elseif (! $keep($file)) {
                 File::ensureDirectoryExists(dirname($target));
                 File::copy($source, $target);
             }
+        }
+    }
+
+    /**
+     * The files under `$pathspec` that git tracks in the checkout, as a set of
+     * relative paths; null when git cannot tell.
+     *
+     * @return array<string, true>|null
+     */
+    private function trackedFiles(string $checkout, string $pathspec): ?array
+    {
+        $result = Process::path($checkout)->timeout(30)->run('git ls-files -z -- '.escapeshellarg($pathspec));
+        if (! $result->successful()) {
+            return null;
+        }
+        $files = array_filter(explode("\0", $result->output()), static fn (string $file): bool => $file !== '');
+
+        return array_fill_keys($files, true);
+    }
+
+    /**
+     * The files the package writes into a worktree are untracked: list them in the
+     * repository's `info/exclude` (shared by all its worktrees), so `git status`
+     * stays clean. Nothing is committed.
+     */
+    private function excludePackageFiles(string $path): void
+    {
+        $result = Process::path($path)->timeout(10)->run('git rev-parse --path-format=absolute --git-common-dir');
+        $common = trim($result->output());
+        if (! $result->successful() || $common === '' || ! is_dir($common)) {
+            return;
+        }
+        $exclude = $common.'/info/exclude';
+        if (File::exists($exclude) && str_contains(File::get($exclude), self::EXCLUDE_MARKER)) {
+            return;
+        }
+        File::ensureDirectoryExists(dirname($exclude));
+        // All worktrees share the file: two setups at the same time must not both append.
+        $lock = fopen($exclude.'.lw-lock', 'c');
+        if ($lock === false) {
+            return;
+        }
+        try {
+            flock($lock, LOCK_EX);
+            $content = File::exists($exclude) ? File::get($exclude) : '';
+            if (! str_contains($content, self::EXCLUDE_MARKER)) {
+                File::append($exclude, ($content === '' || str_ends_with($content, "\n") ? '' : "\n").self::EXCLUDE_MARKER."\n".implode("\n", self::PACKAGE_FILES)."\n");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
     }
 
@@ -686,6 +939,13 @@ class WorktreeManager
                 'VITE_PORT='.($viteBase + $portOffset),
                 $content,
             );
+        }
+
+        // Optional services (compose profiles) of a new worktree; null keeps the main checkout's.
+        $profiles = config('worktrees.services.default');
+        if (is_string($profiles)) {
+            // `workers, tools` would break the .env: written without spaces.
+            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.implode(',', ComposeStack::splitProfiles($profiles)));
         }
 
         // User-defined env overrides — last so they win.

@@ -78,7 +78,7 @@ beforeEach(function () {
 
                 return Process::result();
             },
-            'docker compose config --format json' => Process::result(),
+            'docker compose config --format json' => composeConfigPerCheckout(),
             '*' => Process::result(),
         ]);
     };

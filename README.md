@@ -58,7 +58,7 @@ The **legacy** database clone strategies (`database.strategy`) work with `native
 
 ## Commands
 
-All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only.
+All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only. `worktree:create`, `worktree:delete` and `worktree:list` give the same result wherever artisan runs: run in a linked worktree, they run again with the same arguments in the main checkout (the folder that git names as the home of the common `.git`), with the variables of the worktree's `.env` cleared (and those of `.env.{environment}` for `--env` or `APP_ENV`). `--env` is passed on, and so is an `APP_ENV` from outside (one that differs from the worktree's `.env`), as `--env`. The main checkout runs its own installed copy of this package: when its version (in `vendor/composer/installed.json`; for a branch install also the commit) differs from the one in the worktree, or cannot be read, the command stops and names both versions. Update the main checkout first.
 
 ### `worktree:create`
 
@@ -76,7 +76,7 @@ php artisan worktree:create                            # interactive: issue, PR,
 | Option | Meaning |
 |---|---|
 | `name` | The worktree name. Without it and without `--branch`, `--issue` or `--pr`, the command asks. |
-| `--branch=` | The branch. A local branch is used as it is, else `origin/<branch>`, else a new branch from the base branch. Default: `{branch_prefix}{name}`. |
+| `--branch=` | The branch. A local branch is used as it is. Else the branch is fetched from origin (with its own refspec, so also in a clone that fetches only some branches); when origin has it, the new local branch starts at origin's head and tracks it (in such a clone, the branch is added to origin's fetched branches, so `origin/<branch>` follows each push). Else a new branch from the base branch. When origin cannot be asked (no network), a named `--branch` stops instead. Default: `{branch_prefix}{name}`. |
 | `--base=` | The base branch for a new branch. Default: `base_branch`. |
 | `--issue=` | Use the branch that is linked to this GitHub issue, or create one with `gh issue develop`. Stops when the issue has several linked branches: give `--branch`. Not together with `--pr`. |
 | `--pr=` | Use the head branch of this pull request. The head of a pull request from a fork is fetched into the local branch `pr-{number}`. |
@@ -158,15 +158,15 @@ The order:
 
 1. The folder must be a worktree that git registers for this repository; any other folder is refused.
 2. `shared` without `--keep-db`: the state file is checked (see [Safe delete](#safe-delete)). A problem stops the delete before anything changes.
-3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete.
+3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete. Without a terminal (`-n`, or a stdin that is a pipe or a file, as for an agent or a script) there are no questions: uncommitted changes or unpushed commits stop the delete with exit code 1 and a message that names them and `--force`; nothing is deleted. A clean worktree is deleted. Without a name, the delete stops with exit code 1 instead of asking which worktree. A person who answers no at the terminal ends the command with exit code 0.
 4. The `ProcessManager` stops the worktree's processes.
-5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays.
+5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` named `{project}/…` (`shop-t9/app:latest`) or exactly compose's default `{project}-{service}` (`shop-t9-worker`). A name that only contains the project name stays: a worktree named `app` keeps the shared `shop-app:{key}`. Shared images, the main checkout's images and images that another container uses stay. When the main checkout's compose config cannot be read, no image is removed.
 6. `shared`: the worktree's own databases and user are dropped, and its Redis numbers are emptied.
 7. The folder is removed and `git worktree prune` runs. The command fails when the folder is still there or `git worktree list` still names it (for example files that belong to the container's user).
 8. `native` and `sail`: the database clone is dropped.
-9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`.
+9. A branch that is not merged stays, with a message. A merged branch is deleted after a question, or with `--delete-branch`. A branch counts as merged when it is part of the base branch, or when GitHub (`gh`) reports a pull request into the base branch, merged, whose head is the branch's commit: a squash or rebase merge. For the branch `pr-{number}` of a fork's pull request (`worktree:create --pr`), `gh` is asked for that pull request by its number. Such a branch is deleted with `git branch -D`; a branch with commits after the merge stays.
 
-The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes.
+The files that the package writes into a worktree (the bootstrap record, the state file, the setup log) do not count as uncommitted changes. The setup also lists the bootstrap files in the repository's `.git/info/exclude`, so a plain `git status` in a new worktree is clean.
 
 ### `worktree:cleanup`
 
@@ -223,6 +223,127 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 
 `--remove` removes only volumes that are in the list.
 
+### Agent commands
+
+Five commands for daily work in a worktree, written for agent sessions and people alike. Without a worktree argument they act on the checkout that runs artisan; a worktree can also be given as its name (the name in its bootstrap record or its folder `{project}-{name}`), as a folder, or as `main`. A word without a slash is a name first; when no worktree has that name, an existing folder of that name in the current folder counts. `main` means the main checkout; when a worktree is also named `main`, the command refuses the word and asks for a path. With `native`, the commands run on the host and know no containers.
+
+#### `worktree:status`
+
+```bash
+php artisan worktree:status            # this checkout
+php artisan worktree:status t9 --json  # for scripts
+```
+
+Shows the folder, branch and commit, the number of uncommitted files, the URL (`APP_URL` with `${KEY}` expanded), the setup state, the compose project, the active and available compose profiles, the database state (`php artisan migrate:status` in the app container: `ok`, `pending`, `empty` or `unknown`) and each container with its state, health and memory. `--no-memory` and `--no-db` skip the slow parts.
+
+#### `worktree:services`
+
+Optional services are [compose profiles](https://docs.docker.com/compose/how-tos/profiles/): a service with `profiles: [workers]` runs only when `COMPOSE_PROFILES` in the worktree's `.env` names `workers`.
+
+```bash
+php artisan worktree:services                     # the profiles, their services and what runs
+php artisan worktree:services workers             # exactly these profiles
+php artisan worktree:services phpmyadmin --add    # add one (aliases: services.aliases)
+php artisan worktree:services workers --remove
+php artisan worktree:services none                # only the services without a profile
+php artisan worktree:services workers -w t9       # another worktree
+```
+
+The command writes `COMPOSE_PROFILES` to the worktree's `.env`, runs `docker compose up -d`, and stops and removes the services whose profiles are off. It does this with the stack lock held exclusively, so it waits until a running `worktree:exec` or `worktree:doctor` fix has ended. `--no-apply` only writes `.env`. A worktree with the main checkout's compose project is refused. `services.default` sets the profiles of new worktrees (see [Configuration reference](#agent-commands-1)).
+
+A compose file for this, with a light queue worker, Horizon and the scheduler off by default:
+
+```yaml
+services:
+  laravel.test: { ... }          # always on
+  worker:
+    <<: *app
+    profiles: [workers]
+    command: ["php", "artisan", "queue:work", "--queue=high,default"]
+  scheduler:
+    <<: *app
+    profiles: [workers]
+    command: ["php", "artisan", "schedule:work"]
+  horizon:
+    <<: *app
+    profiles: [horizon]
+    command: ["php", "artisan", "horizon"]
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    profiles: [tools]
+```
+
+#### `worktree:exec`
+
+Runs a command in the worktree's app container (`docker compose exec`), on the host with `native`. Put `--` between this command's own options and the command:
+
+```bash
+php artisan worktree:exec -- test --filter=UserTest      # php artisan test --filter=UserTest
+php artisan worktree:exec -- test --parallel             # with exec.test_processes processes
+php artisan worktree:exec -- artisan migrate:status
+php artisan worktree:exec -- composer require foo/bar
+php artisan worktree:exec -- "php -i | grep memory"      # one quoted word: a shell command
+php artisan worktree:exec -w t9 --service=mariadb -- mariadb -e 'select 1'
+php artisan worktree:exec -- tinker < script.php          # piped input goes to the command
+```
+
+| Option | Meaning |
+|---|---|
+| `-w`, `--worktree=` | The worktree; before the `--`. |
+| `--service=` | The compose service. Default: `bootstrap.sail.app_service`. |
+
+Why the `--`: artisan reads its own options `-h`, `--help`, `-V`, `--version` and `-q` anywhere on the line up to a `--`. Without it, `worktree:exec free -h` would show the help of `worktree:exec`, and `worktree:exec composer --version` would print the version of Laravel, both with exit code 0. `worktree:exec` refuses such a call without `--` (exit code 2). A call without these options also works without `--`, but scripts and agents should always write it.
+
+The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one; otherwise piped input (`< file`, `cat file |`) goes to its stdin. The exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. When the worktree's service does not run (for example after a reboot), `worktree:exec` first starts its stack (`docker compose up -d --wait`) and says so on stderr; it never starts the main checkout. While the command runs, `worktree:exec` holds the stack lock (`storage/app/worktree/idle.lock`) shared and marks the stack as used at its start and its end (`storage/app/worktree/woken`): a command that stops the stack must take the lock exclusively, so it waits until the command ends. Without `-w`, the command runs in the checkout that runs artisan: in the main checkout, `worktree:exec -- artisan migrate` changes the main database.
+
+#### `worktree:doctor`
+
+```bash
+php artisan worktree:doctor          # show the problems
+php artisan worktree:doctor --fix    # fix them, in this order
+```
+
+| Check | Problem | Fix |
+|---|---|---|
+| `setup` | The bootstrap record says failed, or running while no setup holds the setup lock. | None: the hint names the command that continues the setup. |
+| `env` | No `.env`. | None. |
+| `compose_project` | A worktree has the main checkout's compose project. | None: no other fix runs then, as it would act on the main checkout's containers. |
+| `app_url` | No `APP_URL`, or the main checkout's URL. | None. |
+| `containers` | The app container or a service of an active profile does not run. | Starts them (the setup's start step, with its compose project check). |
+| `vendor` | No `vendor/autoload.php`. | `composer install` in the container. |
+| `node_modules` | `package.json` without `node_modules`. | The node install (then the container start again, for its volume). |
+| `hot` | `public/hot` names a dev server that does not answer. | Removes `public/hot`. |
+| `build` | No `public/build/manifest.json` and no `public/hot`. | The frontend build. |
+| `caches` | A config, route or event cache in `bootstrap/cache`. | `config:clear`, `route:clear`, `event:clear`. |
+| `database` | No migrations table, or pending migrations. | The migrations. |
+| `workers` | A running container with the app container's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). With `shared` and `WORKTREE_QUEUE_WORKER=horizon`, the app container itself. | Restarts these containers. |
+
+`--fix` takes the setup lock (`storage/worktree-bootstrap.lock`) and refuses while a setup runs, as the setup installs and migrates itself. In the main checkout it fixes only when named (`worktree:doctor main --fix`): without an argument it refuses, as its fixes would migrate the main database. The `containers` fix starts the stack with the stack lock held exclusively; every other fix holds the stack lock shared while it runs. Each fix marks the stack as used.
+
+With `native`, the fixes run on the host with the variables of the checkout that runs artisan cleared, so they reach the target's own database. A check that cannot tell (no running container) says `skip`. The exit code is 1 when a check fails. `--json` prints the results.
+
+#### `worktree:context`
+
+A short summary for the start of an agent session: folder, branch, URL, what runs, the optional services, the database state, the project's notes (`context.notes`, for example where the test login is), the main commands and the last errors of `storage/logs/laravel*.log`. It never fails: what it cannot read, it leaves out. `--json` and `--no-db` as in `worktree:status`.
+
+A Claude Code session-start hook in the project's `.claude/settings.json` prints it into each new session:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "php artisan worktree:context 2>/dev/null || true", "timeout": 30 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Where artisan runs only in a container, use the container's command instead, for example `docker compose exec -T laravel.test php artisan worktree:context`.
+
 ## Skill for agents
 
 The package ships a skill for Claude Code and other agents that read `SKILL.md` files: `resources/boost/skills/worktree/SKILL.md`. It names the `worktree:*` commands, which container runs what, a decision tree (something is broken, queued jobs, the scheduler, the database, a browser check, workers on old code, tests) and the memory rules (optional services only when needed, delete merged worktrees).
@@ -252,7 +373,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `base_path` | `WORKTREE_BASE_PATH` | Folder for new worktrees. [the parent folder of the project] |
 | `branch_prefix` | `WORKTREE_BRANCH_PREFIX` | Prefix of a new branch, for example `agent/`. [empty] |
 | `base_branch` | `WORKTREE_BASE_BRANCH` | Base branch for new branches, and the branch that "merged" refers to. [`master`] |
-| `copy_files` | | Files and folders copied from the main checkout into a new worktree. [`['.env']`] |
+| `copy_files` | | Files and folders copied from the main checkout into a new worktree. Files that git tracks in the worktree are not overwritten: they keep the branch's version. [`['.env']`] |
 | `ports.app_base` | `WORKTREE_APP_PORT_BASE` | Base of the worktree's `APP_PORT`. [8100] |
 | `ports.vite_base` | `WORKTREE_VITE_PORT_BASE` | Base of the worktree's `VITE_PORT`. [5200] |
 | `env_overrides` | | `.env` values for each worktree (see [Env overrides](#env-overrides)). [`[]`] |
@@ -268,6 +389,17 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `bootstrap.run_migrations` | | Run the migrations. [true] |
 | `bootstrap.sail.app_service` | `WORKTREE_SAIL_APP_SERVICE` | The compose service that runs PHP (`sail` and `shared`). [`laravel.test`] |
 
+### Agent commands
+
+| Key | Env | Meaning |
+|---|---|---|
+| `services.default` | `WORKTREE_DEFAULT_PROFILES` | Compose profiles of a new worktree, written as `COMPOSE_PROFILES` at setup (empty: none). [none: keep the main checkout's value] |
+| `services.aliases` | | Other names for profiles. [`['phpmyadmin' => 'tools']`] |
+| `exec.aliases` | | Short names for the first word of `worktree:exec`. [`test`, `artisan`, `tinker`, `composer`] |
+| `exec.test_processes` | `WORKTREE_TEST_PROCESSES` | Processes for `php artisan test --parallel` without `--processes`, for example 8 on a shared agent host. [none: one per CPU] |
+| `context.notes` | | Lines that `worktree:context` prints, for example `'Test login: test@example.com / password'`. [`[]`] |
+| `context.log_errors` | | How many error lines of `laravel.log` `worktree:context` prints. [5] |
+
 ### Database clone (`native`, `sail`)
 
 | Key | Env | Meaning |
@@ -278,6 +410,34 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `database.pgsql_docker_container` | `WORKTREE_DB_PGSQL_DOCKER_CONTAINER` | Run the PostgreSQL clients in this container. [none] |
 | `database.docker_host` | `WORKTREE_DB_DOCKER_HOST` | Database host inside that container. [`127.0.0.1`] |
 
+### Fast setup (`sail`, `shared`)
+
+| Key | Env | Meaning |
+|---|---|---|
+| `fast.image.name` | `WORKTREE_APP_IMAGE_NAME` | Name of the shared app image. [none: off] |
+| `fast.image.env` | | `.env` key for its tag. [`WORKTREE_APP_IMAGE`] |
+| `fast.image.hash_paths` | | Build inputs that make the tag, in addition to the build section and build context of the building service. [`['Dockerfile', 'docker']`] |
+| `fast.image.service` | `WORKTREE_APP_IMAGE_SERVICE` | The service that builds it. [the app service] |
+| `fast.composer.copy_vendor` | `WORKTREE_COPY_VENDOR` | Copy-on-write copy of `vendor` when `composer.lock` is equal. With `shared`, also `shared.dependencies.copy_on_write` must be true. [false] |
+| `fast.composer.offline_first` | `WORKTREE_COMPOSER_OFFLINE_FIRST` | First install without network. [true] |
+| `fast.composer.cache_dir` | `WORKTREE_COMPOSER_CACHE_DIR` | `COMPOSER_CACHE_DIR` in the app container. [none] |
+| `fast.composer.runner` | `WORKTREE_COMPOSER_RUNNER` | `container` or `host`. [`container`] |
+| `fast.composer.host_command` | `WORKTREE_COMPOSER_HOST_COMMAND` | The install on the host. [`composer install --no-interaction --prefer-dist --ignore-platform-reqs`] |
+| `fast.parallel_node` | `WORKTREE_PARALLEL_NODE` | Node install while the containers start, when that is safe. [true] |
+| `fast.build_cache.enabled` | `WORKTREE_BUILD_CACHE` | Reuse a build with the same inputs. Off by default: list every input of the build in `paths` first (see Fast setup). [false] |
+| `fast.build_cache.paths` | | Build inputs. [resources, `package.json`, lock files, Vite, TypeScript, Tailwind and PostCSS configs] |
+| `fast.build_cache.output` | | The build folder. [`public/build`] |
+| `fast.build_cache.keep` | | Cached builds kept. [5] |
+| `fast.database_dump.enabled` | `WORKTREE_DB_DUMP` | Start from a dump with test data. [false] |
+| `fast.database_dump.service` | `WORKTREE_DB_DUMP_SERVICE` | The database service. [`mariadb`] |
+| `fast.database_dump.hash_paths` | | What makes the key. [`['database/migrations', 'database/seeders']`] |
+| `fast.database_dump.seed_command` | `WORKTREE_DB_DUMP_SEED_COMMAND` | Fills the first database. [`php artisan db:seed --force`] |
+| `fast.database_dump.dump_command` | `WORKTREE_DB_DUMP_COMMAND` | In the database service. [`mariadb-dump … {database}`] |
+| `fast.database_dump.restore_command` | `WORKTREE_DB_RESTORE_COMMAND` | In the database service. [`mariadb … {database}`] |
+| `fast.database_dump.url` | `WORKTREE_DB_DUMP_URL` | Download URL with `{key}`. [none] |
+| `fast.database_dump.url_header` | `WORKTREE_DB_DUMP_URL_HEADER` | One header for the download. [none] |
+| `fast.database_dump.keep` | | Dumps kept. [3] |
+
 ### Shared services (`shared`)
 
 | Key | Env | Meaning |
@@ -285,7 +445,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `shared.stack.start_command` | `WORKTREE_SHARED_STACK_START_COMMAND` | Command that starts the shared stack, run in the main checkout. [none] |
 | `shared.stack.wait_seconds` | `WORKTREE_SHARED_STACK_WAIT` | Time to wait for the database server after the start. [120] |
 | `shared.app.compose_file` | `WORKTREE_APP_COMPOSE_FILE` | The app-only compose file, written to the worktree's `.env` as `COMPOSE_FILE`. [none: compose's default file] |
-| `shared.dependencies.copy_on_write` | `WORKTREE_COPY_ON_WRITE` | Copy `vendor` and `node_modules` from the main checkout when the lock files are equal. [true] |
+| `shared.dependencies.copy_on_write` | `WORKTREE_COPY_ON_WRITE` | Copy `node_modules` (and `vendor`, when `fast.composer.copy_vendor` is true) from the main checkout when the lock files are equal. [true] |
 | `shared.queue.mode` | `WORKTREE_QUEUE_MODE` | Default queue worker: `listen` or `horizon`. [`listen`] |
 | `shared.queue.env.mode` | | `.env` key for the worker mode. [`WORKTREE_QUEUE_WORKER`] |
 | `shared.queue.env.queues` | | `.env` key for the queue list. [`WORKTREE_QUEUES`] |
@@ -331,7 +491,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
    - With the `mysql` or `pgsql` clone, `DB_DATABASE` becomes `{database}_{name}` (`-` changed to `_`).
    - `APP_PORT` and `VITE_PORT`, only when the key is in `.env` (see [Ports](#ports)).
    - The `env_overrides` values.
-3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP. When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
+3. `sail`: the node install on the host, then `docker compose up -d`, then a wait until the app service runs PHP and no healthcheck says `starting` any more (at most 2 minutes; an unhealthy service is reported, not fatal). When the app service lost a named volume (see [App container and dependencies](#app-container-and-dependencies)), it is restarted.
 4. Composer install, and with `native` the node install after it.
 5. The database: the clone. A database that exists already is kept. A clone that stopped half way is dropped and made again.
 6. The frontend build.
@@ -356,13 +516,81 @@ When `.env` has `APP_PORT` or `VITE_PORT`, each worktree gets its own value: `ba
 
 ### Compose project
 
-With `sail` and `shared`, a worktree must have its own compose project. When the worktree's compose project is the same as the main checkout's, the setup stops: `up` and `down` would act on the main checkout's containers and volumes. Set `COMPOSE_PROJECT_NAME` per worktree with `env_overrides`. Before it runs `docker compose`, the package clears the variables that the main checkout's `.env` put into the PHP process (all `COMPOSE_*` variables, the keys of the worktree's `.env`, and others such as `DB_HOST` and `APP_URL`), so compose reads the worktree's own `.env`.
+With `sail` and `shared`, a worktree must have its own compose project. When the worktree's compose project is the same as the main checkout's or another registered worktree's (`git worktree list`), or when containers of the project belong to another folder (their label `com.docker.compose.project.working_dir`; a compose file in a subfolder of the worktree counts as the worktree's), the setup and `worktree:delete` stop: `up` and `down -v` would act on that checkout's containers and volumes. When the owner cannot be established (a checkout's compose config cannot be read, also the worktree's own, a registered folder is missing, Docker does not list the containers, a container of the project has no owner label), they stop too. Set `COMPOSE_PROJECT_NAME` per worktree with `env_overrides`. Before it runs `docker compose`, the package clears the variables that the main checkout's `.env` put into the PHP process (all `COMPOSE_*` variables, the keys of the worktree's `.env`, and others such as `DB_HOST` and `APP_URL`), so compose reads the worktree's own `.env`.
 
 When Sail's compose file builds the app image from `vendor/laravel/sail/...`, and the worktree has no `vendor` yet, the package lends the missing files from the checkout that runs artisan (with `shared`, the main checkout) to `docker compose up` and removes them after the start.
 
 ### Databases with the Sail strategy
 
 The `mysql` and `pgsql` clones copy on the main checkout's server. When each Sail worktree runs its own database service (the usual Sail compose file), the worktree does not use that server: set `WORKTREE_DB_STRATEGY=none`, and the migrations fill the worktree's own database. Keep `mysql` or `pgsql` only when `DB_HOST` of the worktrees points at the main checkout's server. The `sqlite` clone works with Sail: the relative path `database/database.sqlite` is correct on the host and in the container.
+
+### Fast setup (`sail`)
+
+A warm worktree of a separate stack (each worktree with its own database and Redis containers) is ready in about 10 seconds. These parts make it fast; all are in the top-level config section `fast`, and each can be switched off. The frontend build cache is off by default.
+
+| Part | What happens | What the project provides |
+|---|---|---|
+| Shared app image | The tag `{fast.image.name}:{key}` is written to the worktree's `.env` as `WORKTREE_APP_IMAGE`. The key is the content of `fast.image.hash_paths` (default `Dockerfile` and `docker/`), the `build` section of the building service in the resolved compose file (context, dockerfile, args, target) and the files of its build context. The Dockerfile that the build section names always counts, also outside these paths (for example `.docker/php/Dockerfile`). Hidden files (such as `.dockerignore`) count for the image key. So another Sail runtime, other build arguments or a Sail update that changes the runtime's files give a new tag. A build context of `.` (the worktree itself) is not hashed as a whole, or each code change would give a new image: list the files that the Dockerfile copies in `fast.image.hash_paths`. A missing tag is built once with `docker compose build`, under a lock, so worktrees made at the same time wait for one build. | `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service (and on the worker services with the same image), and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`. |
+| Composer | `composer install` runs first with `COMPOSER_DISABLE_NETWORK=1`: with a warm cache it needs no network, and a container without internet does not wait for time-outs (1.2 s instead of 88 s on an agent host). When that fails, it runs again with the network. `vendor` is not copied by default: on a Mac with APFS, the offline install from a mounted cache took 6 s, and a copy-on-write copy of `vendor` plus the install took 9.5 to 16.9 s. With `WORKTREE_COPY_VENDOR=true` and an equal `composer.lock`, `vendor` is first copied from the main checkout with copy-on-write (APFS on macOS, Btrfs or XFS on Linux; a one-file probe skips the copy on ext4). | A mount of the host's Composer cache into the app service and `WORKTREE_COMPOSER_CACHE_DIR` set to its path in the container. Or `WORKTREE_COMPOSER_RUNNER=host`: Composer runs on the host. |
+| Node | `pnpm install --prefer-offline` (`npm install --prefer-offline`) installs from the store. `node_modules` is never copied (a copy-on-write copy was slower than the install). When no service mounts a named volume at `node_modules`, the install runs while the containers start. | Nothing. |
+| Frontend build | The key is the git tree of `fast.build_cache.paths` (resources, lock files, the Vite config) at `HEAD`, and the `VITE_*` values of the checkout's `.env` (Vite builds them into the bundle; a worktree with its own `VITE_*` host gets its own build). A worktree with the same key gets a copy of a cached build from the main checkout's `storage/app/worktrees/builds/{key}/` (filled after each build), or of the main checkout's own `public/build` when the main checkout has the same key, no changes in those paths, and a manifest newer than its last checkout or commit, its input files and its `.env`. A worktree with uncommitted changes there builds. Off by default. | `WORKTREE_BUILD_CACHE=true`, and every path that the build reads in `fast.build_cache.paths`. The default list has only the frontend's own files. Many builds read more: Wayfinder reads `routes/` (and the controllers in `app/`), Tailwind scans `app/` and the Blade views for class names, and Flux's CSS comes from `vendor/`. A path that git does not track (such as `vendor/livewire/flux/dist`) counts by its content on disk; list such a path as narrow as you can, as each setup reads all its files. A missing input gives a stale bundle without a warning. |
+| Database with test data | See below. | `WORKTREE_DB_DUMP=true` and the seed command. |
+
+Also in the project:
+
+- **Healthchecks with a short first check** in the compose file, for example `start_interval: 1s` (Compose 2.20 or later) next to `start_period`; with `interval: 10s` alone the first check comes after 10 seconds.
+- **`VITE_*` values that do not change per worktree.** The build key holds all `VITE_*` values of the worktree's `.env`, after `${KEY}` references are expanded. Laravel's default `.env` has `VITE_APP_NAME="${APP_NAME}"`: when `env_overrides` gives each worktree its own `APP_NAME`, each worktree then gets its own key and builds. Write a fixed value, for example `VITE_APP_NAME="Shop"`, or do not set `APP_NAME` per worktree.
+- **The test database.** Each worktree's database service starts empty, and the package creates no database in it: the image makes the app database from its environment (`MARIADB_DATABASE` or `MYSQL_DATABASE`). A base test database (for example `<db>_test`) must be created by the project, for example with an init script in `/docker-entrypoint-initdb.d` of the MariaDB service, as Sail's `create-testing-database.sh` does. The database dump holds only `DB_DATABASE`.
+
+`worktree:create` prints the time of each step. Measured on srv4 (Linux, ext4) with a Laravel 13 app, MariaDB and Redis per worktree, warm caches:
+
+| Step | Time |
+|---|---|
+| config (git worktree, `.env`) | 0.0 s |
+| environment (containers, MariaDB healthy on a fresh volume) | 6.3 s |
+| composer (offline, warm cache) | 1.4 s |
+| dump (restore) | 0.5 s |
+| build (copied from the cache) | 0.0 s |
+| migrations (nothing left) | 0.1 s |
+| node (in parallel with the steps above) | 8.3 s |
+| total | 8.4 s |
+
+### Database dump with test data
+
+With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree starts with a database that holds test data:
+
+1. The key is the content of `fast.database_dump.hash_paths` (default `database/migrations` and `database/seeders`) of the worktree and the seed command (`WORKTREE_DB_DUMP_SEED_COMMAND`, default `php artisan db:seed --force`).
+2. When the main checkout has `storage/app/worktrees/dumps/{key}.sql.gz`, it is restored into the worktree's database before the migrations, which then find nothing to do. Only an empty database gets a restore: no migrations table, and no table at all (`php artisan db:show --json` in the app container). A database with tables (a setup that runs again, an adopted database, a first migrate that stopped half way) is kept: neither restored nor seeded. When the tables cannot be listed, the setup stops. A restore that itself stopped half way is the exception: the next run restores again over its tables.
+3. Else, with `WORKTREE_DB_DUMP_URL` (for example `https://ci.example.com/dumps/{key}.sql.gz`, with one header in `WORKTREE_DB_DUMP_URL_HEADER`), the dump is downloaded. A missing download is not an error.
+4. Else the worktree migrates, runs the seed command, and saves its database as the dump of the key for the next worktrees.
+
+The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image: they read the root password from `MARIADB_ROOT_PASSWORD` or, as Sail's compose file sets it, `MYSQL_ROOT_PASSWORD`, and pass it as `MYSQL_PWD`. For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
+
+**CI can publish the dump.** The key is the first 12 hex characters of SHA-256 over `seed:{seed command}\n`, then for each file under the hash paths, sorted by relative path (hidden files left out), `{relative path}\0{sha256 of the file}\n`. A CI job that migrates and seeds anyway can compute it the same way, dump the database to `{key}.sql.gz` and publish it where `WORKTREE_DB_DUMP_URL` points.
+
+### Host settings for many worktrees (`sail`, `shared`)
+
+**pnpm store on the volume of the worktrees.** pnpm clones or links packages from its store into `node_modules` only when the store is on the same volume; else it copies each file. On a Mac with the worktrees on a second APFS volume, the default store (in the home folder) is on another volume. Put the store on the volume of the worktrees (replace `<volume>` with the mount point of that volume):
+
+```sh
+pnpm config set store-dir <volume>/.pnpm-store --location global
+```
+
+For a Laravel app on a Mac, this took the node install from 13.6 s to about 7 s. Keep pnpm's default `package-import-method` (`auto`, which clones on APFS): `hardlink` was the slowest (29 s).
+
+**Docker address pools.** Each compose project makes at least one network, and each network takes a subnet from Docker's default address pools. At about 24 stacks, `docker compose up` stops with `all predefined address pools have been fully subnetted`. Give the daemon a pool with small subnets, in a range that your LAN and VPN do not use:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/16", "size": 24 }
+  ]
+}
+```
+
+This gives 256 networks of 254 addresses. Put it into the daemon config and restart the daemon: Docker Desktop: Settings, Docker Engine. OrbStack: Settings, Docker (or `~/.orbstack/config/docker.json`). Linux: `/etc/docker/daemon.json`, or `~/.config/docker/daemon.json` for rootless Docker. Networks that exist keep their subnets; make them again (`docker compose down` and `up`) to use the new pool.
+
+A stopped stack (`docker compose stop`) keeps its network and so its subnet; stopping idle stacks saves memory and CPU, but frees no subnet. `docker compose down` in a worktree that you do not use frees it; the volumes stay.
 
 ## Shared services
 
@@ -474,7 +702,7 @@ A missing or broken state file does not stop a setup: the setup makes it again f
 - **Order:** the databases are made and `.env` names them before the app container starts, so the worker and the scheduler start with the right database.
 - **Host node install first:** the copy of `node_modules` and the node install on the host run before `docker compose up -d`. On Linux, a host install that replaces the `node_modules` folder (pnpm removes an empty one and makes it again) detaches the volume that a running container mounts there; the container then builds with the host's packages.
 - **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. When the app service declares a named volume that its container does not mount (a container that already ran while `node_modules` was replaced on the host), the app service is restarted once; when the volume is still missing, the setup stops. A `public/hot` whose dev server does not answer is removed.
-- **Dependencies:** when `composer.lock` is the same as in the main checkout, `vendor` is copied from the main checkout with copy-on-write (`cp -c` on macOS with APFS, `cp --reflink=always` on other systems). The same applies to the host `node_modules` and the node lock file (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`, `bun.lockb`). Then `composer install` runs in the container and the node install on the host in all cases; after a copy they are fast. A file system without copy-on-write (for example ext4) skips the copy. Set `shared.dependencies.copy_on_write` to false to never copy.
+- **Dependencies:** when the node lock file (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`, `bun.lockb`) is the same as in the main checkout, the host `node_modules` is copied from the main checkout with copy-on-write (`cp -c` on macOS with APFS, `cp --reflink=always` on other systems). `vendor` is copied the same way only with `fast.composer.copy_vendor` (`WORKTREE_COPY_VENDOR=true`) and an equal `composer.lock`; by default the offline `composer install` from the Composer cache is faster. Then `composer install` runs in the container and the node install on the host in all cases; after a copy they are fast. A file system without copy-on-write (for example ext4) skips the copy. Set `shared.dependencies.copy_on_write` to false to never copy.
 - **Frontend:** built in the container: `pnpm install --frozen-lockfile && pnpm run build` (`npm ci && npm run build` for npm).
 - **Migrations:** run in the container for the app, test and e2e databases, with the config read fresh.
 
@@ -554,6 +782,8 @@ In a worktree:
 | `storage/app/worktree/state.json` | `shared`: the state file. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
+
+In the repository's git folder: a block in `info/exclude` (shared by all worktrees, never committed) that names `/storage/worktree-bootstrap.json`, `.lock` and `.clone`, and next to it `info/exclude.lw-lock`, the lock that lets only one setup write the block.
 
 ## ProcessManager contract
 

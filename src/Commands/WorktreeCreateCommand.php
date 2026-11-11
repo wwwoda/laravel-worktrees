@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Woda\Worktrees\Commands\Concerns\RunsBootstrap;
+use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Woda\Worktrees\WorktreeManager;
 
 use function Laravel\Prompts\search;
@@ -15,6 +16,7 @@ use function Laravel\Prompts\text;
 class WorktreeCreateCommand extends Command
 {
     use RunsBootstrap;
+    use RunsInMainCheckout;
 
     protected $signature = 'worktree:create
         {name? : Worktree name (interactive if omitted)}
@@ -32,6 +34,11 @@ class WorktreeCreateCommand extends Command
 
     public function handle(WorktreeManager $worktreeManager): int
     {
+        // From a linked worktree: the same command in the main checkout.
+        if (($exitCode = $this->runInMainCheckout()) !== null) {
+            return $exitCode;
+        }
+
         /** @var string|null $name */
         $name = $this->argument('name');
         /** @var string|null $branch */
@@ -437,21 +444,23 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * Fetch origin and check that the branch is now local or on origin. Without
-     * this, create would cut a new branch with that name from the base.
+     * Check that the branch is local or on origin (fetched with its own
+     * refspec). Without this, create would cut a new branch with that name
+     * from the base.
      */
     private function fetchBranch(string $branch): bool
     {
-        $fetch = Process::path(base_path())->timeout(30)->run('git fetch origin');
-        if (! $fetch->successful()) {
-            $this->components->error('git fetch origin failed: '.$fetch->errorOutput());
-
-            return false;
+        if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful()) {
+            return true;
         }
-        foreach (['refs/heads/'.$branch, 'refs/remotes/origin/'.$branch] as $ref) {
-            if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg($ref))->successful()) {
+        try {
+            if (app(WorktreeManager::class)->fetchRemoteBranch($branch)) {
                 return true;
             }
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return false;
         }
         $this->components->error("Branch {$branch} is neither local nor on origin after the fetch.");
 
