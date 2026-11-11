@@ -127,6 +127,25 @@ it('removes the images the worktree built for itself on delete, and no shared im
     Process::assertNotRan("docker image rm 'app/app:latest'");
 });
 
+it('keeps a shared image whose name only contains the worktree\'s project name', function (string $project) {
+    $config = fn (string $name, array $services) => Process::result(json_encode(['name' => $name, 'services' => $services]));
+    ($this->fake)(['docker compose config --format json' => fn (PendingProcess $p) => $p->path === $this->path
+        ? $config($project, [
+            'laravel.test' => ['build' => ['context' => '.'], 'image' => 'hungryport-app:3f2a'],
+            'worker' => ['build' => ['context' => '.'], 'image' => 'hungryport-app:3f2a'],
+            'queue' => ['build' => ['context' => '.'], 'image' => 'my'.$project.'-queue:1'],
+            'scheduler' => ['build' => ['context' => '.']],
+        ])
+        : $config('hungryport', ['laravel.test' => ['build' => ['context' => '.'], 'image' => 'hungryport/app:latest']])]);
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--force' => true])->assertSuccessful();
+
+    Process::assertNotRan("docker image rm 'hungryport-app:3f2a'");
+    Process::assertNotRan("docker image rm 'my{$project}-queue:1'");
+    Process::assertRan("docker image rm '{$project}-scheduler'");
+})->with(['app', 'ap', 'a']);
+
 it('offers a branch that a pull request squashed, and only with the same head commit', function (string $prHead, bool $deleted) {
     ($this->fake)([
         "git show-ref --verify --quiet 'refs/heads/t9'" => Process::result(),

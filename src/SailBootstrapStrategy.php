@@ -411,8 +411,9 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         }
         $keep = $this->imagesOf($main);
         $removed = [];
-        foreach (array_diff($this->imagesOf($config, builtOnly: true), $keep) as $image) {
-            if (! str_contains($image, $project)) {
+        foreach ($this->imagesOf($config, builtOnly: true) as $service => $image) {
+            // Worker services often share the app service's image: remove it once.
+            if (in_array($image, $keep, true) || in_array($image, $removed, true) || ! self::isProjectImage($image, $project, (string) $service)) {
                 continue;
             }
             if (Process::timeout(120)->run('docker image rm '.escapeshellarg($image))->successful()) {
@@ -425,8 +426,25 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     }
 
     /**
+     * An image of the compose project itself: `{project}/…` (the per-worktree
+     * tag `{project}/app:latest`) or compose's default `{project}-{service}`,
+     * with any tag. A name that only contains the project name is not one: a
+     * worktree named `app` must not remove the shared `hungryport-app:{key}`.
+     */
+    private static function isProjectImage(string $image, string $project, string $service): bool
+    {
+        $slash = strrpos($image, '/');
+        $colon = strrpos($image, ':');
+        $name = $colon !== false && ($slash === false || $colon > $slash) ? substr($image, 0, $colon) : $image;
+
+        return str_starts_with($name, $project.'/') || $name === $project.'-'.$service;
+    }
+
+    /**
+     * The image of each service, by service name.
+     *
      * @param  array<mixed>|null  $config
-     * @return list<string>
+     * @return array<string, string>
      */
     private function imagesOf(?array $config, bool $builtOnly = false): array
     {
@@ -439,11 +457,11 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             }
             $image = is_string($service['image'] ?? null) ? $service['image'] : (isset($service['build']) && $project !== '' ? $project.'-'.$name : null);
             if ($image !== null) {
-                $images[] = $image;
+                $images[(string) $name] = $image;
             }
         }
 
-        return array_values(array_unique($images));
+        return $images;
     }
 
     /**
