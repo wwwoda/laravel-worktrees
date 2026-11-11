@@ -274,6 +274,7 @@ it('stops a delete without a terminal at uncommitted changes or unpushed commits
 ]);
 
 it('ends with 0 when a person declines the delete at the terminal', function () {
+    deleteCommandWithStdin(terminal: true);
     ($this->fake)(['git status --porcelain *' => Process::result(" M app/User.php\n")]);
     File::ensureDirectoryExists($this->path.'/storage');
 
@@ -281,4 +282,35 @@ it('ends with 0 when a person declines the delete at the terminal', function () 
         ->expectsConfirmation('Continue anyway?', 'no')
         ->assertSuccessful();
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'worktree remove'));
+});
+
+it('treats a delete without -n whose stdin is no terminal as non-interactive', function (string $status, int $exitCode, bool $removed) {
+    // Symfony keeps the input interactive without -n; Laravel Prompts would answer its default.
+    deleteCommandWithStdin(terminal: false);
+    ($this->fake)([
+        'git status --porcelain *' => Process::result($status),
+        'git rev-parse --abbrev-ref HEAD' => Process::result("t9\n"),
+    ]);
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $command = $this->artisan('worktree:delete', ['name' => 't9']);
+    $status === '' || $command->expectsOutputToContain('has uncommitted changes: nothing was deleted');
+    $command->assertExitCode($exitCode)->run();
+
+    // The delete removes the folder and prunes git's record.
+    expect(is_dir($this->path))->toBe(! $removed);
+})->with([
+    'dirty' => [" M app/User.php\n", 1, false],
+    'clean' => ['', 0, true],
+]);
+
+it('asks for the worktree name only at a terminal', function () {
+    deleteCommandWithStdin(terminal: false);
+    ($this->fake)();
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $this->artisan('worktree:delete')
+        ->expectsOutputToContain('Give the name of the worktree to delete')
+        ->assertFailed();
+    expect(is_dir($this->path))->toBeTrue();
 });

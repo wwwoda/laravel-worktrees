@@ -4,6 +4,7 @@ namespace Woda\Worktrees\Commands\Concerns;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Symfony\Component\Console\Input\StreamableInputInterface;
 use Symfony\Component\Process\Process as SymfonyProcess;
 use Woda\Worktrees\ComposeProcess;
 use Woda\Worktrees\Shared\MainCheckout;
@@ -57,6 +58,27 @@ trait RunsInMainCheckout
         return $result->exitCode() ?? self::FAILURE;
     }
 
+    /**
+     * Whether the command's stdin is a terminal. Symfony keeps the input
+     * interactive without `-n` also when stdin is a pipe or a file; Laravel
+     * Prompts then answers each question with its default.
+     */
+    protected function stdinIsTerminal(): bool
+    {
+        $stream = $this->input instanceof StreamableInputInterface ? $this->input->getStream() : null;
+        $stream ??= defined('STDIN') ? STDIN : null;
+
+        return is_resource($stream) && stream_isatty($stream);
+    }
+
+    /**
+     * Whether the command may ask a person: interactive, with a terminal on stdin.
+     */
+    protected function canAsk(): bool
+    {
+        return $this->input->isInteractive() && $this->stdinIsTerminal();
+    }
+
     protected function ttySupported(): bool
     {
         return SymfonyProcess::isTtySupported();
@@ -98,7 +120,7 @@ trait RunsInMainCheckout
                 $tokens[] = $item === true ? '--'.$name : '--'.$name.'='.(is_scalar($item) ? (string) $item : '');
             }
         }
-        if (! $this->input->isInteractive()) {
+        if (! $this->canAsk()) {
             $tokens[] = '--no-interaction';
         }
 

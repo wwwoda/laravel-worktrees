@@ -36,6 +36,13 @@ class WorktreeDeleteCommand extends Command
         $nameArg = $this->argument('name');
         $name = is_string($nameArg) ? $nameArg : null;
 
+        if (! $name && ! $this->canAsk()) {
+            // Without a terminal, a prompt would pick an answer by itself.
+            $this->components->error('Give the name of the worktree to delete: php artisan worktree:delete NAME (see php artisan worktree:list).');
+
+            return self::FAILURE;
+        }
+
         if (! $name) {
             $worktrees = $worktreeManager->list();
 
@@ -144,7 +151,7 @@ class WorktreeDeleteCommand extends Command
         }
         $how = $status['via'] === 'pull request' ? ' by a pull request (squashed or rebased)' : '';
         $delete = $this->option('delete-branch')
-            || (! $this->option('force') && $this->input->isInteractive() && confirm("Branch '{$branch}' is merged{$how}. Delete it?", true));
+            || (! $this->option('force') && $this->canAsk() && confirm("Branch '{$branch}' is merged{$how}. Delete it?", true));
         if (! $delete) {
             $flag = $status['via'] === 'pull request' ? '-D' : '-d';
             $this->components->warn("Branch '{$branch}' remains (merged{$how}; delete it with: git branch {$flag} {$branch}).");
@@ -159,12 +166,10 @@ class WorktreeDeleteCommand extends Command
     }
 
     /**
-     * Safety checks and the final question; false when the user stops.
-     */
-    /**
      * Null when the delete may go on; else the exit code to stop with.
-     * Without a terminal, uncommitted changes and unpushed commits stop the
-     * delete with exit code 1 (nothing was deleted). A person who declines a
+     * Without a terminal (with -n, or with a stdin that is a pipe or a file),
+     * uncommitted changes and unpushed commits stop the delete with exit code
+     * 1 (nothing was deleted), and a clean worktree is deleted without a question. A person who declines a
      * question at the terminal ends it with 0: that is their choice.
      */
     private function confirmDelete(WorktreeManager $worktreeManager, string $name): ?int
@@ -175,7 +180,8 @@ class WorktreeDeleteCommand extends Command
             'unpushed commits' => $safety['unpushed'],
         ]));
 
-        if (! $this->input->isInteractive()) {
+        // Without a terminal (also without -n), no question: Laravel Prompts would answer its default.
+        if (! $this->canAsk()) {
             if ($problems === []) {
                 return null;
             }
