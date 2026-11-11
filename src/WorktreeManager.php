@@ -9,10 +9,13 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Symfony\Component\Finder\Finder;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
+use Woda\Worktrees\Contracts\UsesDatabaseDump;
+use Woda\Worktrees\Fast\BuildCache;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\SailConverter;
 
@@ -43,6 +46,7 @@ class WorktreeManager
         private readonly bool $runMigrations,
         /** @var array<string, string|Closure(string $name, string $worktreePath): string> */
         private readonly array $envOverrides = [],
+        private readonly ?BuildCache $buildCache = null,
     ) {}
 
     /**
@@ -406,17 +410,12 @@ class WorktreeManager
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
         $this->assertNameFree($name, $path);
-        File::ensureDirectoryExists($path.'/storage');
-        $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
-        if ($handle === false) {
-            throw new RuntimeException('Cannot open the worktree bootstrap lock.');
-        }
-        if (! flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-
+        $handle = SetupLock::tryAcquire($path);
+        if ($handle === null) {
             throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
+        $parallelNode = null;
         try {
             $statePath = $path.'/storage/worktree-bootstrap.json';
             $this->excludePackageFiles($path);
@@ -453,7 +452,7 @@ class WorktreeManager
             if ($provisions && ! empty($options['skip_db']) && (! $resume || ! in_array('database', $state['completed'], true))) {
                 throw new RuntimeException('--skip-db works with shared services only on a resume, once the worktree has its own databases: otherwise its .env names the main database. Run without --skip-db.');
             }
-            $run = function (string $id, Closure $action, bool $always = false) use (&$state, $statePath, $step, $resume, $onStageDone): void {
+            $run = function (string $id, Closure $action, bool $always = false, ?float $since = null) use (&$state, $statePath, $step, $resume, $onStageDone): void {
                 if ($resume && ! $always && in_array($id, $state['completed'], true)) {
                     return;
                 }
@@ -461,7 +460,8 @@ class WorktreeManager
                 $state['status'] = 'running';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
                 $step($id);
-                $started = microtime(true);
+                // A stage that ran in parallel counts from its start.
+                $started = $since ?? microtime(true);
                 $action();
                 $onStageDone && $onStageDone($id, microtime(true) - $started);
                 $state['completed'] = array_values(array_unique([...$state['completed'], $id]));
@@ -487,12 +487,28 @@ class WorktreeManager
                     'base' => $options['base'] ?? $this->baseBranch,
                 ], $processOutput, $step));
             }
-            $node = fn () => $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), ! is_dir($path.'/node_modules'));
+            $nodeNeeded = ! is_dir($path.'/node_modules');
+            $node = fn () => $run('node', fn () => $this->bootstrapStrategy->installNodeDependencies($path, $processOutput), $nodeNeeded);
             // Container strategies install node on the host before the containers start (see the contract).
             $nodeFirst = $this->bootstrapStrategy instanceof InstallsNodeBeforeBringUp;
             if ($nodeFirst && empty($options['skip_deps'])) {
-                $node();
+                $pending = ! $resume || $nodeNeeded || ! in_array('node', $state['completed'], true);
+                if ($pending && $this->bootstrapStrategy instanceof SailBootstrapStrategy && $this->bootstrapStrategy->canInstallNodeInParallel($path)) {
+                    // No container mounts node_modules: install while the containers start.
+                    $step('node (in parallel)');
+                    $parallelNode = [$this->bootstrapStrategy, $this->bootstrapStrategy->startNodeInstall($path), microtime(true)];
+                } else {
+                    $node();
+                }
             }
+            $finishNode = function () use (&$parallelNode, $run, $path, $processOutput): void {
+                if ($parallelNode === null) {
+                    return;
+                }
+                [$strategy, $process, $since] = $parallelNode;
+                $parallelNode = null;
+                $run('node', fn () => $strategy->finishNodeInstall($process, $path, $processOutput), true, $since);
+            };
             $run('environment', fn () => $this->bootstrapStrategy->bringUp($path, $processOutput), true);
             if (empty($options['skip_deps'])) {
                 $run('composer', fn () => $this->bootstrapStrategy->installComposerDependencies($path, $processOutput), ! is_file($path.'/vendor/autoload.php'));
@@ -520,24 +536,70 @@ class WorktreeManager
                     File::delete($marker);
                 });
             }
+            // A ready-made database with test data: restored now, or seeded and saved after the migrations.
+            $dumper = $this->bootstrapStrategy instanceof UsesDatabaseDump && $this->bootstrapStrategy->databaseDumpEnabled()
+                && empty($options['skip_db']) && empty($options['skip_deps']) && $this->runMigrations
+                ? $this->bootstrapStrategy : null;
+            if ($dumper !== null) {
+                $run('dump', function () use (&$state, $dumper, $path, $processOutput, $step): void {
+                    $state['dump'] = $dumper->restoreDatabaseDump($path, $processOutput, $step);
+                });
+            }
             if (empty($options['skip_build']) && $this->buildFrontend) {
-                $run('build', fn () => $this->bootstrapStrategy->buildFrontend($path, $processOutput), ! is_file($path.'/public/build/manifest.json'));
+                $run('build', function () use ($path, $processOutput, $step, $finishNode): void {
+                    $this->restoreOrBuildFrontend($path, $processOutput, $step, $finishNode);
+                }, ! is_file($path.'/public/build/manifest.json'));
             }
             if (empty($options['skip_deps']) && $this->runMigrations) {
                 $run('migrations', fn () => $this->bootstrapStrategy->runMigrations($path, $processOutput), true);
             }
+            // Only a database that had no dump is seeded; a restored or existing one is kept.
+            if ($dumper !== null && ($state['dump'] ?? null) === UsesDatabaseDump::DUMP_MISSING) {
+                // Two stages: a resume after a failed save does not seed the database again.
+                $run('seed', fn () => $dumper->seedDatabase($path, $processOutput));
+                $run('dump-save', fn () => $dumper->saveDatabaseDump($path, $step));
+            }
+            $finishNode();
             $state['status'] = 'ready';
             File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
         } catch (\Throwable $error) {
+            // A failed setup does not leave the node install running.
+            if ($parallelNode !== null && $parallelNode[1]->running()) {
+                $parallelNode[1]->signal(15);
+            }
             if (isset($state)) {
                 $state['status'] = 'failed';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             }
             throw $error;
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            SetupLock::release($handle);
         }
+    }
+
+    /**
+     * The build stage: a copy of a build with the same inputs, else a build
+     * (after the node install that runs in parallel).
+     *
+     * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  Closure(string): void  $step
+     * @param  Closure(): void  $finishNode
+     */
+    private function restoreOrBuildFrontend(string $path, ?Closure $processOutput, Closure $step, Closure $finishNode): void
+    {
+        $source = $this->buildCache?->restore($path);
+        if ($source !== null) {
+            $step("Copied the frontend build from the {$source}: its inputs are the same.");
+            // The build installs the app container's own node_modules; without the build, that install still runs.
+            if ($this->bootstrapStrategy instanceof SharedServicesBootstrapStrategy) {
+                $this->bootstrapStrategy->installContainerNodeDependencies($path, $processOutput);
+            }
+
+            return;
+        }
+        $finishNode();
+        $this->bootstrapStrategy->buildFrontend($path, $processOutput);
+        $this->buildCache?->store($path);
     }
 
     /**
@@ -680,6 +742,31 @@ class WorktreeManager
         }
 
         return trim($result->output()) !== '';
+    }
+
+    /**
+     * The uncommitted files of a checkout (`git status --porcelain` paths),
+     * without the files this package writes into it.
+     *
+     * @return list<string>
+     */
+    public function changedFiles(string $path): array
+    {
+        $result = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
+        $files = [];
+        foreach (preg_split('/\r?\n/', rtrim($result->output())) ?: [] as $line) {
+            if (strlen($line) > 3) {
+                // `XY path` or `XY old -> new`; the current path counts.
+                $file = substr($line, 3);
+                $file = str_contains($file, ' -> ') ? substr($file, (int) strrpos($file, ' -> ') + 4) : $file;
+                $files[] = trim($file, '"');
+            }
+        }
+
+        return $files;
     }
 
     public function nameFromPath(string $path): ?string
@@ -852,6 +939,13 @@ class WorktreeManager
                 'VITE_PORT='.($viteBase + $portOffset),
                 $content,
             );
+        }
+
+        // Optional services (compose profiles) of a new worktree; null keeps the main checkout's.
+        $profiles = config('worktrees.services.default');
+        if (is_string($profiles)) {
+            // `workers, tools` would break the .env: written without spaces.
+            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.implode(',', ComposeStack::splitProfiles($profiles)));
         }
 
         // User-defined env overrides — last so they win.

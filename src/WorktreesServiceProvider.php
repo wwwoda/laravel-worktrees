@@ -2,23 +2,36 @@
 
 namespace Woda\Worktrees;
 
+use Illuminate\Console\Application as Artisan;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Woda\Worktrees\Agent\AppRunner;
+use Woda\Worktrees\Agent\Doctor;
+use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
+use Woda\Worktrees\Commands\WorktreeContextCommand;
 use Woda\Worktrees\Commands\WorktreeConvertCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
+use Woda\Worktrees\Commands\WorktreeDoctorCommand;
+use Woda\Worktrees\Commands\WorktreeExecCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
+use Woda\Worktrees\Commands\WorktreeServicesCommand;
 use Woda\Worktrees\Commands\WorktreeSetupCommand;
+use Woda\Worktrees\Commands\WorktreeStatusCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
 use Woda\Worktrees\Commands\WorktreeVolumesCommand;
 use Woda\Worktrees\Commands\WorktreeWorkerCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Fast\AppImage;
+use Woda\Worktrees\Fast\BuildCache;
+use Woda\Worktrees\Fast\DatabaseDump;
+use Woda\Worktrees\Fast\FastSetup;
 use Woda\Worktrees\Shared\ArtisanTemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
@@ -42,6 +55,10 @@ class WorktreesServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/worktrees.php', 'worktrees');
 
         $this->app->bindIf(ProcessManager::class, NullProcessManager::class);
+
+        // Read at each resolve: a strategy (or an app's subclass of it) built
+        // without a `fast` argument gets the `fast` config section.
+        $this->app->bindIf(FastSetup::class, fn (): FastSetup => self::fastSetup());
 
         $this->app->singleton(BootstrapStrategy::class, function (): BootstrapStrategy {
             /** @var string $strategy */
@@ -82,6 +99,7 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->registerSharedServices();
         $this->registerConverter();
+        $this->registerAgentServices();
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -130,8 +148,70 @@ class WorktreesServiceProvider extends ServiceProvider
                 buildFrontend: $buildFrontend,
                 runMigrations: $runMigrations,
                 envOverrides: $envOverrides,
+                buildCache: self::buildCache($nodePackageManager = is_string($pm = config('worktrees.bootstrap.node_package_manager')) ? $pm : 'pnpm'),
             );
         });
+    }
+
+    /**
+     * The `fast` section, read key by key: a config published before it existed has none.
+     */
+    public static function fastSetup(): FastSetup
+    {
+        $get = static fn (string $key, mixed $default = null): mixed => config('worktrees.fast.'.$key, $default);
+        $string = static fn (string $key, ?string $default = null): ?string => is_string($value = $get($key, $default)) && $value !== '' ? $value : $default;
+
+        return new FastSetup(
+            image: new AppImage(
+                name: $string('image.name'),
+                envKey: $string('image.env', 'WORKTREE_APP_IMAGE') ?? 'WORKTREE_APP_IMAGE',
+                hashPaths: self::fastList('image.hash_paths', ['Dockerfile', 'docker']),
+                service: $string('image.service'),
+            ),
+            copyVendor: (bool) $get('composer.copy_vendor', false),
+            composerOffline: (bool) $get('composer.offline_first', true),
+            composerCacheDir: $string('composer.cache_dir'),
+            composerRunner: $string('composer.runner', 'container') === 'host' ? 'host' : 'container',
+            composerHostCommand: $string('composer.host_command', 'composer install --no-interaction --prefer-dist --ignore-platform-reqs') ?? '',
+            parallelNode: (bool) $get('parallel_node', true),
+            dump: new DatabaseDump(
+                enabled: (bool) $get('database_dump.enabled', false),
+                service: $string('database_dump.service', 'mariadb') ?? 'mariadb',
+                hashPaths: self::fastList('database_dump.hash_paths', ['database/migrations', 'database/seeders']),
+                seedCommand: $string('database_dump.seed_command', 'php artisan db:seed --force') ?? '',
+                dumpCommand: $string('database_dump.dump_command', DatabaseDump::DUMP_COMMAND) ?? '',
+                restoreCommand: $string('database_dump.restore_command', DatabaseDump::RESTORE_COMMAND) ?? '',
+                url: $string('database_dump.url'),
+                urlHeader: $string('database_dump.url_header'),
+                keep: is_numeric($keep = $get('database_dump.keep', 3)) ? (int) $keep : 3,
+            ),
+        );
+    }
+
+    /**
+     * @param  list<string>  $default
+     * @return list<string>
+     */
+    private static function fastList(string $key, array $default): array
+    {
+        $value = config('worktrees.fast.'.$key, $default);
+
+        return is_array($value) ? array_values(array_filter($value, is_string(...))) : $default;
+    }
+
+    public static function buildCache(string $nodePackageManager): BuildCache
+    {
+        $paths = config('worktrees.fast.build_cache.paths');
+        $output = config('worktrees.fast.build_cache.output', 'public/build');
+        $keep = config('worktrees.fast.build_cache.keep', 5);
+
+        return new BuildCache(
+            enabled: (bool) config('worktrees.fast.build_cache.enabled', false),
+            paths: is_array($paths) ? array_values(array_filter($paths, is_string(...))) : [],
+            buildCommand: (is_string($strategy = config('worktrees.bootstrap.strategy')) ? $strategy : 'native').':'.$nodePackageManager,
+            output: is_string($output) && $output !== '' ? $output : 'public/build',
+            keep: is_numeric($keep) ? (int) $keep : 5,
+        );
     }
 
     private function registerSharedServices(): void
@@ -304,6 +384,24 @@ class WorktreesServiceProvider extends ServiceProvider
         };
     }
 
+    private function registerAgentServices(): void
+    {
+        $this->app->bind(AppRunner::class, fn (Application $app): AppRunner => new AppRunner(
+            strategy: $app->make(BootstrapStrategy::class),
+            appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
+        ));
+        $this->app->bind(WorktreeInspector::class, fn (Application $app): WorktreeInspector => new WorktreeInspector(
+            manager: $app->make(WorktreeManager::class),
+            runner: $app->make(AppRunner::class),
+        ));
+        $this->app->bindIf(Doctor::class, fn (Application $app): Doctor => new Doctor(
+            inspector: $app->make(WorktreeInspector::class),
+            strategy: $app->make(BootstrapStrategy::class),
+            buildFrontend: (bool) config('worktrees.bootstrap.build_frontend', true),
+            nodePackageManager: is_string($pm = config('worktrees.bootstrap.node_package_manager')) ? $pm : 'pnpm',
+        ));
+    }
+
     private function registerConverter(): void
     {
         $this->app->bindIf(SailConverter::class, function (Application $app): SailConverter {
@@ -342,6 +440,11 @@ class WorktreesServiceProvider extends ServiceProvider
         ], 'worktrees-config');
 
         if ($this->app->runningInConsole()) {
+            // Before artisan reads its own options: see WorktreeExecCommand::refuseGlobalOptions().
+            Artisan::starting(static function (): void {
+                $argv = $_SERVER['argv'] ?? [];
+                WorktreeExecCommand::refuseGlobalOptions(is_array($argv) ? array_values(array_filter($argv, is_string(...))) : []);
+            });
             $this->commands([
                 WorktreeCreateCommand::class,
                 WorktreeBootstrapCommand::class,
@@ -354,6 +457,11 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeWorkerCommand::class,
                 WorktreeConvertCommand::class,
                 WorktreeVolumesCommand::class,
+                WorktreeStatusCommand::class,
+                WorktreeServicesCommand::class,
+                WorktreeExecCommand::class,
+                WorktreeDoctorCommand::class,
+                WorktreeContextCommand::class,
             ]);
         }
     }

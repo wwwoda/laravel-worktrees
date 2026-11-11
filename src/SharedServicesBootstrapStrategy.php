@@ -4,10 +4,10 @@ namespace Woda\Worktrees;
 
 use Closure;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\ProvisionsDatabases;
+use Woda\Worktrees\Fast\FastSetup;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
@@ -51,8 +51,23 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         private readonly bool $copyOnWrite = true,
         private readonly ?Closure $devServerAnswers = null,
         int $bringUpTimeout = 600,
+        ?FastSetup $fast = null,
     ) {
-        parent::__construct($appService, $nodePackageManager, $buildFrontend, $bringUpTimeout);
+        // Null: the container's FastSetup (the `fast` config section), so a
+        // subclass that does not pass it keeps it. The vendor copy needs both
+        // fast.composer.copy_vendor and shared.dependencies.copy_on_write; the
+        // shared strategy has its own databases, so no dump.
+        $fast ??= app(FastSetup::class);
+        parent::__construct($appService, $nodePackageManager, $buildFrontend, $bringUpTimeout, new FastSetup(
+            image: $fast->image,
+            copyVendor: $copyOnWrite && $fast->copyVendor,
+            composerOffline: $fast->composerOffline,
+            composerCacheDir: $fast->composerCacheDir,
+            composerRunner: $fast->composerRunner,
+            composerHostCommand: $fast->composerHostCommand,
+            // The app container mounts its own node_modules volume.
+            parallelNode: false,
+        ));
     }
 
     public function configureEnvironment(string $worktreePath, array $options): void
@@ -148,22 +163,12 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         $this->removeStaleHotFile($worktreePath, $output);
     }
 
-    public function installComposerDependencies(string $worktreePath, ?Closure $output = null): void
-    {
-        // With equal lock files, a copy-on-write copy of the main checkout's vendor
-        // makes the install below fast. The install still runs: the main checkout may
-        // have been installed with --no-dev, and the autoloader must describe this
-        // branch's classes.
-        $this->copyFromMain($worktreePath, 'vendor', ['composer.lock'], $output);
-        parent::installComposerDependencies($worktreePath, $output);
-    }
-
     public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
     {
         // The host copy serves the IDE and edit hooks; the container has its own.
         // The install still runs after a copy: the main checkout may have been
         // installed without dev packages (npm ci --omit=dev, pnpm install --prod).
-        $this->copyFromMain($worktreePath, 'node_modules', self::NODE_LOCK_FILES, $output);
+        $this->copyFromMain($worktreePath, 'node_modules', self::NODE_LOCK_FILES, $output, $this->copyOnWrite);
         parent::installNodeDependencies($worktreePath, $output);
     }
 
@@ -172,16 +177,38 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         if (! $this->buildFrontend) {
             return;
         }
-        $pm = $this->nodePackageManager;
-        // Install exactly the lock file: npm has its own command for that.
-        $install = $pm === 'npm' ? 'npm ci' : "{$pm} install --frozen-lockfile";
         $result = $this->compose($worktreePath, 900)->run(
-            $this->execCommand("{$install} && {$pm} run build"),
+            $this->execCommand($this->containerNodeInstall()." && {$this->nodePackageManager} run build"),
             $output,
         );
         if (! $result->successful()) {
             throw new RuntimeException("Frontend build in the container failed: {$result->errorOutput()}");
         }
+    }
+
+    /**
+     * The install into the app container's own node_modules volume, without
+     * the build: after a build was copied from the cache, the dev server in
+     * the container still needs its packages.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function installContainerNodeDependencies(string $worktreePath, ?Closure $output = null): void
+    {
+        $result = $this->compose($worktreePath, 900)->run($this->execCommand($this->containerNodeInstall()), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("Node install in the container failed: {$result->errorOutput()}");
+        }
+    }
+
+    /**
+     * Install exactly the lock file: npm has its own command for that.
+     */
+    private function containerNodeInstall(): string
+    {
+        $pm = $this->nodePackageManager;
+
+        return $pm === 'npm' ? 'npm ci' : "{$pm} install --frozen-lockfile";
     }
 
     /**
@@ -215,56 +242,6 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
                 throw new RuntimeException("Migration of {$database} failed: {$result->errorOutput()}");
             }
         }
-    }
-
-    /**
-     * Copy `$directory` from the main checkout with copy-on-write when the
-     * lock files are equal. False when that is not possible.
-     *
-     * @param  list<string>  $lockFiles
-     * @param  (Closure(string, string): void)|null  $output
-     */
-    private function copyFromMain(string $worktreePath, string $directory, array $lockFiles, ?Closure $output): bool
-    {
-        $main = MainCheckout::path();
-        $source = $main.'/'.$directory;
-        $target = $worktreePath.'/'.$directory;
-        if (! $this->copyOnWrite || ! is_dir($source) || file_exists($target) || ! $this->locksEqual($main, $worktreePath, $lockFiles)) {
-            return false;
-        }
-        $command = PHP_OS_FAMILY === 'Darwin'
-            ? ['cp', '-c', '-R', $source, $target]
-            : ['cp', '-R', '--reflink=always', $source, $target];
-        $result = Process::timeout(600)->run($command, $output);
-        if (! $result->successful()) {
-            // No copy-on-write on this filesystem: install normally.
-            File::deleteDirectory($target);
-
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * @param  list<string>  $lockFiles
-     */
-    private function locksEqual(string $main, string $worktreePath, array $lockFiles): bool
-    {
-        $compared = false;
-        foreach ($lockFiles as $file) {
-            $a = $main.'/'.$file;
-            $b = $worktreePath.'/'.$file;
-            if (! is_file($a) && ! is_file($b)) {
-                continue;
-            }
-            if (! is_file($a) || ! is_file($b) || hash_file('sha256', $a) !== hash_file('sha256', $b)) {
-                return false;
-            }
-            $compared = true;
-        }
-
-        return $compared;
     }
 
     /**

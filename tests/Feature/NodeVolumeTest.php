@@ -28,6 +28,8 @@ beforeEach(function () {
     config()->set('worktrees.copy_files', ['.env']);
     config()->set('worktrees.database.strategy', 'none');
     config()->set('worktrees.bootstrap.strategy', 'shared');
+    // One composer install per run, so a failing one fails the setup.
+    config()->set('worktrees.fast.composer.offline_first', false);
     config()->set('worktrees.bootstrap.build_frontend', true);
     config()->set('worktrees.env_overrides', ['COMPOSE_PROJECT_NAME' => 'app-{name}']);
     config()->set('worktrees.shared.database.prefix', 'hp');
@@ -92,7 +94,7 @@ beforeEach(function () {
         'docker compose config --format json' => fn (PendingProcess $p) => Process::result((string) json_encode(['name' => 'project-'.md5((string) $p->path)] + $this->composeConfig)),
         'docker compose up -d' => $once('up', fn () => Process::result()),
         // The host install makes node_modules, as pnpm does.
-        'pnpm install' => $once('node', function (PendingProcess $process) {
+        'pnpm install --prefer-offline' => $once('node', function (PendingProcess $process) {
             File::ensureDirectoryExists($process->path.'/node_modules');
 
             return Process::result();
@@ -118,7 +120,7 @@ beforeEach(function () {
         (fn () => $this->recorded)->call(Process::getFacadeRoot()),
     ), $from);
     // The host install is exactly `pnpm install`; the build in the container also holds that text.
-    $this->position = fn (array $ran, string $needle) => array_key_first(array_filter($ran, fn (string $command) => $needle === 'pnpm install' ? $command === $needle : str_contains($command, $needle)));
+    $this->position = fn (array $ran, string $needle) => array_key_first(array_filter($ran, fn (string $command) => str_starts_with($needle, 'pnpm install') ? $command === $needle : str_contains($command, $needle)));
 });
 
 afterEach(function () {
@@ -137,8 +139,8 @@ test('the node_modules copy and the host node install run before the app contain
     $ran = ($this->ran)();
     $at = fn (string $needle) => ($this->position)($ran, $needle);
     expect($at($this->main.'/node_modules'))->not->toBeNull()
-        ->and($at($this->main.'/node_modules'))->toBeLessThan($at('pnpm install'))
-        ->and($at('pnpm install'))->toBeLessThan($at('docker compose up -d'))
+        ->and($at($this->main.'/node_modules'))->toBeLessThan($at('pnpm install --prefer-offline'))
+        ->and($at('pnpm install --prefer-offline'))->toBeLessThan($at('docker compose up -d'))
         ->and($at('docker compose up -d'))->toBeLessThan($at('composer install'))
         ->and($at('composer install'))->toBeLessThan($at('pnpm run build'));
     $record = json_decode(File::get(($this->path)('t9').'/storage/worktree-bootstrap.json'), true);
@@ -155,7 +157,7 @@ test('the sail strategy installs node on the host before the containers start to
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 
     $ran = ($this->ran)();
-    expect(($this->position)($ran, 'pnpm install'))->toBeLessThan(($this->position)($ran, 'docker compose up -d'));
+    expect(($this->position)($ran, 'pnpm install --prefer-offline'))->toBeLessThan(($this->position)($ran, 'docker compose up -d'));
 });
 
 test('the native strategy keeps composer before the node install', function () {
@@ -168,6 +170,7 @@ test('the native strategy keeps composer before the node install', function () {
     $this->artisan('worktree:create', ['name' => 't9'])->assertSuccessful();
 
     $ran = ($this->ran)();
+    // The native strategy keeps its plain install.
     expect(($this->position)($ran, 'composer install'))->toBeLessThan(($this->position)($ran, 'pnpm install'));
 });
 
@@ -182,7 +185,7 @@ test('a setup that failed at a step resumes, and the host install never follows 
     $this->artisan('worktree:bootstrap', ['name' => 't9', '--resume' => true])->assertSuccessful();
 
     $ran = ($this->ran)($from);
-    $install = ($this->position)($ran, 'pnpm install');
+    $install = ($this->position)($ran, 'pnpm install --prefer-offline');
     if ($nodeAgain) {
         expect($install)->not->toBeNull()->toBeLessThan(($this->position)($ran, 'docker compose up -d'));
     } else {
@@ -207,7 +210,7 @@ test('worktree:setup on a folder runs the host install before the container star
     $this->artisan('worktree:setup', ['path' => $path])->assertSuccessful();
 
     $ran = ($this->ran)();
-    expect(($this->position)($ran, 'pnpm install'))->toBeLessThan(($this->position)($ran, 'docker compose up -d'));
+    expect(($this->position)($ran, 'pnpm install --prefer-offline'))->toBeLessThan(($this->position)($ran, 'docker compose up -d'));
 });
 
 test('a running app container that lost its node_modules volume is restarted before the next step', function () {
