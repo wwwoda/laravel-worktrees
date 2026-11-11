@@ -150,6 +150,11 @@ class WorktreeManager
         if ($tracked && $this->git('remote get-url origin')->successful()) {
             $this->git(sprintf('config %s origin', escapeshellarg('branch.'.$branch.'.remote')));
             $this->git(sprintf('config %s %s', escapeshellarg('branch.'.$branch.'.merge'), escapeshellarg('refs/heads/'.$branch)));
+            // A clone whose fetch refspec does not cover the branch would never update
+            // origin/{branch}: a push would then still count as unpushed on delete.
+            if (! $this->git('rev-parse --symbolic-full-name '.escapeshellarg($branch.'@{upstream}'))->successful()) {
+                $this->git('remote set-branches --add origin '.escapeshellarg($branch));
+            }
         }
 
         return $path;

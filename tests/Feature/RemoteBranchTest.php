@@ -111,6 +111,12 @@ it('with real git, checks out a branch that a single-branch clone never fetched,
             ->and($run($path, ['config', 'branch.feature-x.remote']))->toBe('origin')
             ->and($run($path, ['config', 'branch.feature-x.merge']))->toBe('refs/heads/feature-x')
             ->and($run($repo, ['rev-parse', 'HEAD']))->not->toBe($head);
+
+        // After a push from the worktree, origin/feature-x follows, so the
+        // delete's check for unpushed commits finds none.
+        $run($path, ['commit', '--allow-empty', '-m', 'Work']);
+        $run($path, ['push']);
+        expect($run($path, ['log', 'feature-x', '--not', '--remotes', '--oneline']))->toBe('');
     } finally {
         $this->app->setBasePath($oldBase);
     }

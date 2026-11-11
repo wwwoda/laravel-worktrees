@@ -75,7 +75,7 @@ php artisan worktree:create                            # interactive: issue, PR,
 | Option | Meaning |
 |---|---|
 | `name` | The worktree name. Without it and without `--branch`, `--issue` or `--pr`, the command asks. |
-| `--branch=` | The branch. A local branch is used as it is. Else the branch is fetched from origin (with its own refspec, so also in a clone that fetches only some branches); when origin has it, the new local branch starts at origin's head and tracks it. Else a new branch from the base branch. When origin cannot be asked (no network), a named `--branch` stops instead. Default: `{branch_prefix}{name}`. |
+| `--branch=` | The branch. A local branch is used as it is. Else the branch is fetched from origin (with its own refspec, so also in a clone that fetches only some branches); when origin has it, the new local branch starts at origin's head and tracks it (in such a clone, the branch is added to origin's fetched branches, so `origin/<branch>` follows each push). Else a new branch from the base branch. When origin cannot be asked (no network), a named `--branch` stops instead. Default: `{branch_prefix}{name}`. |
 | `--base=` | The base branch for a new branch. Default: `base_branch`. |
 | `--issue=` | Use the branch that is linked to this GitHub issue, or create one with `gh issue develop`. Stops when the issue has several linked branches: give `--branch`. Not together with `--pr`. |
 | `--pr=` | Use the head branch of this pull request. The head of a pull request from a fork is fetched into the local branch `pr-{number}`. |
