@@ -220,7 +220,7 @@ it('finds problems and fixes them in order', function () {
     $this->artisan('worktree:doctor', ['worktree' => 't9', '--fix' => true])->assertSuccessful();
     expect($strategy->calls)->toBe(['bringUp', 'composer', 'migrate'])
         ->and(File::exists($this->path.'/public/hot'))->toBeFalse()
-        // Started under the stack lock and marked as used, as a wake.
+        // Started under the stack lock and marked as used.
         ->and(StackLock::lastUsed($this->path))->not->toBeNull();
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'php artisan config:clear && php artisan route:clear && php artisan event:clear'));
 });
@@ -492,7 +492,7 @@ it('stops exec when the stopped stack does not start', function () {
 
 /**
  * True when another process could take the exclusive stack lock now (as an
- * idle stop would). flock() locks belong to the open file, so a second
+ * command that stops the stack would). flock() locks belong to the open file, so a second
  * fopen() conflicts with a lock this process holds through another handle.
  */
 function exclusiveStackLockFree(string $path): bool

@@ -78,7 +78,7 @@ final readonly class Doctor
             return;
         }
         // Every other fix holds the stack lock shared and marks the use at its
-        // start and its end: an idle stop waits until the fix ends.
+        // start and its end: a stop of the stack waits until the fix ends.
         $this->inspector->inUse($target, fn () => match ($id) {
             'vendor' => $native ? $this->artisan($path, 'composer install --no-interaction', $output) : $this->strategy->installComposerDependencies($path, $output),
             'node_modules' => $native ? $this->artisan($path, "{$pm} install", $output) : $this->installNode($target, $output),
@@ -301,7 +301,7 @@ final readonly class Doctor
      */
     private function startContainers(WorktreeTarget $target, ?Closure $output): void
     {
-        // Under the stack lock, as a wake: an idle stop cannot stop the stack right after.
+        // Under the stack lock, marked as used: a stop of the stack cannot follow unseen.
         StackLock::locked($target->path, function () use ($target, $output): void {
             $this->startContainersNow($target, $output);
             $target->main || StackLock::markUsed($target->path);

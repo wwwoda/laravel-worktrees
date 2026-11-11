@@ -75,7 +75,7 @@ final readonly class WorktreeInspector
 
     /**
      * Before a command runs in a worktree's container: start its stack when
-     * the service does not run (an idle stop or a reboot stopped it), and mark
+     * the service does not run (a reboot or a stop stopped it), and mark
      * the stack as used, both under the stack lock. The main checkout is
      * never started here. True when the stack was started.
      *
@@ -105,9 +105,8 @@ final readonly class WorktreeInspector
 
     /**
      * Runs a command's work in the target's stack with the stack lock held
-     * shared, so an idle stop (exclusive) waits until it ends; the use is
-     * marked at the start and the end. The main checkout's use is not marked
-     * (it is never stopped as idle). Without compose (native), it only runs.
+     * shared, so a stop of the stack (exclusive) waits until it ends; the use
+     * is marked at the start and the end, but not for the main checkout. Without compose (native), it only runs.
      *
      * @template T
      *

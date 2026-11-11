@@ -11,7 +11,7 @@ use RuntimeException;
  * command. A command that starts a stopped stack takes the lock exclusively
  * (locked()); a command that runs something in the stack (worktree:exec, a
  * fix of worktree:doctor) holds it shared for the whole run (shared()) and
- * marks the use at its start and its end. A stop of an idle stack must take
+ * marks the use at its start and its end. A command that stops a stack must take
  * the lock exclusively, so it waits for every running command, and must skip
  * a stack used since its check, so it cannot follow a start unseen.
  */

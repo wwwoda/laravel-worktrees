@@ -113,7 +113,7 @@ class WorktreeExecCommand extends Command
         }
         $runner = $inspector->runner();
         try {
-            // A stack that an idle stop stopped starts again; the use keeps the next idle stop away.
+            // A stopped stack (after a reboot or a stop) starts again; the use is marked.
             if ($inspector->wakeForUse($target, $service)) {
                 $this->getOutput()->getErrorStyle()->writeln("Started the stopped stack of {$target->name}.");
             }
@@ -124,7 +124,7 @@ class WorktreeExecCommand extends Command
         }
 
         // Under the shared stack lock, marked as used at the start and the end:
-        // an idle stop waits until the command ends. A stop that comes between
+        // a stop of the stack waits until the command ends. A stop that comes between
         // the wake above and this lock finds the stack marked as used and skips it.
         return $inspector->inUse($target, fn (): int => $this->runIn($target, $runner, $service, $words));
     }
