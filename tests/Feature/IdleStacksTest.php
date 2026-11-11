@@ -239,3 +239,13 @@ it('leaves the package\'s own state files out of the git status', function () {
     Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git status --porcelain -z --untracked-files=all -- .')
         && str_contains((string) $p->command, "':(exclude)storage/app/worktree'"));
 });
+
+it('does not wake a checkout whose compose project another worktree has', function () {
+    $this->projects['busy'] = 'app-copied';
+    $this->projects['idle'] = 'app-copied';
+
+    $this->artisan('worktree:wake', ['worktree' => 'idle'])
+        ->expectsOutputToContain('compose project app-copied')
+        ->assertFailed();
+    Process::assertNotRan('docker compose up -d --wait');
+});

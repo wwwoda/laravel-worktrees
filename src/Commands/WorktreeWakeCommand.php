@@ -40,21 +40,22 @@ class WorktreeWakeCommand extends Command
         }
         // As the setup does: a copied .env may name another checkout's compose project,
         // and `up` would then start (or change) that checkout's containers.
-        $main = null;
-        foreach ($stacks->checkouts(true) as $checkout) {
-            $main = $checkout['main'] ? $checkout['path'] : $main;
-        }
-        if ($main !== null && realpath($main) !== realpath($path)) {
+        $others = array_values(array_filter($stacks->checkouts(true), static fn (array $checkout): bool => realpath($checkout['path']) !== realpath($path)));
+        $isMain = $others !== [] && ! in_array(true, array_column($others, 'main'), true);
+        if (! $isMain) {
             $project = $stacks->project($path);
             if ($project === null) {
                 $this->components->error("The compose config of {$path} cannot be read.");
 
                 return self::FAILURE;
             }
-            if ($project === $stacks->project($main)) {
-                $this->components->error("{$path} has the main checkout's compose project {$project}: set its own COMPOSE_PROJECT_NAME in its .env.");
+            foreach ($others as $other) {
+                if ($stacks->project($other['path']) === $project) {
+                    $owner = $other['main'] ? "the main checkout's" : "{$other['name']}'s";
+                    $this->components->error("{$path} has {$owner} compose project {$project}: set its own COMPOSE_PROJECT_NAME in its .env.");
 
-                return self::FAILURE;
+                    return self::FAILURE;
+                }
             }
         }
         $result = $stacks->wake($path, $this->output->isVerbose() ? fn (string $type, string $buffer) => $this->output->write($buffer) : null);
