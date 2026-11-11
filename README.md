@@ -157,7 +157,7 @@ The order:
 
 1. The folder must be a worktree that git registers for this repository; any other folder is refused.
 2. `shared` without `--keep-db`: the state file is checked (see [Safe delete](#safe-delete)). A problem stops the delete before anything changes.
-3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete.
+3. Without `--force`: questions about uncommitted changes, unpushed commits and the delete. Without a terminal (`-n`, an agent, a script) there are no questions: uncommitted changes or unpushed commits stop the delete with exit code 1 and a message that names them and `--force`; nothing is deleted. A person who answers no at the terminal ends the command with exit code 0.
 4. The `ProcessManager` stops the worktree's processes.
 5. `sail` and `shared`: `docker compose --profile "*" down -v` stops every service of every profile. When this fails, the checkout stays. Then the images that the worktree's compose project built for itself are removed: images of services with `build:` named `{project}/…` (`shop-t9/app:latest`) or exactly compose's default `{project}-{service}` (`shop-t9-worker`). A name that only contains the project name stays: a worktree named `app` keeps the shared `shop-app:{key}`. Shared images, the main checkout's images and images that another container uses stay. When the main checkout's compose config cannot be read, no image is removed.
 6. `shared`: the worktree's own databases and user are dropped, and its Redis numbers are emptied.

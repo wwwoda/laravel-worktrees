@@ -255,3 +255,30 @@ it('writes the exclude block once when another setup wrote it after the first re
 
     expect(substr_count(File::get($this->common.'/info/exclude'), '# laravel-worktrees:'))->toBe(1);
 })->skip(! function_exists('pcntl_fork'), 'needs pcntl');
+
+it('stops a delete without a terminal at uncommitted changes or unpushed commits with exit code 1', function (string $status, string $log, string $problem) {
+    ($this->fake)([
+        'git status --porcelain *' => Process::result($status),
+        'git rev-parse --abbrev-ref HEAD' => Process::result("t9\n"),
+        'git log *' => Process::result($log),
+    ]);
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $this->artisan('worktree:delete', ['name' => 't9', '--no-interaction' => true])
+        ->expectsOutputToContain("has {$problem}: nothing was deleted. Commit and push them, or delete anyway (and lose them) with --force.")
+        ->assertExitCode(1);
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'worktree remove') || str_contains((string) $p->command, ' down'));
+})->with([
+    'uncommitted' => [" M app/User.php\n", '', 'uncommitted changes'],
+    'unpushed' => ['', "abc123 Work\n", 'unpushed commits'],
+]);
+
+it('ends with 0 when a person declines the delete at the terminal', function () {
+    ($this->fake)(['git status --porcelain *' => Process::result(" M app/User.php\n")]);
+    File::ensureDirectoryExists($this->path.'/storage');
+
+    $this->artisan('worktree:delete', ['name' => 't9'])
+        ->expectsConfirmation('Continue anyway?', 'no')
+        ->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'worktree remove'));
+});

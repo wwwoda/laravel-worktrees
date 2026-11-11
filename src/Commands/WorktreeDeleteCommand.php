@@ -76,8 +76,8 @@ class WorktreeDeleteCommand extends Command
                 $worktreeManager->checkSharedDatabases($name);
             }
 
-            if (! $this->option('force') && ! $this->confirmDelete($worktreeManager, $name)) {
-                return self::SUCCESS;
+            if (! $this->option('force') && ($stop = $this->confirmDelete($worktreeManager, $name)) !== null) {
+                return $stop;
             }
 
             if ($processManager->isRunning($name)) {
@@ -161,30 +161,44 @@ class WorktreeDeleteCommand extends Command
     /**
      * Safety checks and the final question; false when the user stops.
      */
-    private function confirmDelete(WorktreeManager $worktreeManager, string $name): bool
+    /**
+     * Null when the delete may go on; else the exit code to stop with.
+     * Without a terminal, uncommitted changes and unpushed commits stop the
+     * delete with exit code 1 (nothing was deleted). A person who declines a
+     * question at the terminal ends it with 0: that is their choice.
+     */
+    private function confirmDelete(WorktreeManager $worktreeManager, string $name): ?int
     {
         $safety = $worktreeManager->safetyCheck($name);
+        $problems = array_keys(array_filter([
+            'uncommitted changes' => ! $safety['clean'],
+            'unpushed commits' => $safety['unpushed'],
+        ]));
 
-        if (! $safety['clean']) {
-            $this->components->warn("Worktree '{$name}' has uncommitted changes.");
-            if (! confirm('Continue anyway?', false)) {
-                return false;
+        if (! $this->input->isInteractive()) {
+            if ($problems === []) {
+                return null;
             }
+            $this->components->error("Worktree '{$name}' has ".implode(' and ', $problems).': nothing was deleted. Commit and push them, or delete anyway (and lose them) with --force.');
+
+            return self::FAILURE;
         }
 
-        if ($safety['unpushed']) {
-            $this->components->warn("Worktree '{$name}' has unpushed commits.");
+        foreach ($problems as $problem) {
+            $this->components->warn("Worktree '{$name}' has {$problem}.");
             if (! confirm('Continue anyway?', false)) {
-                return false;
+                $this->components->info('Cancelled.');
+
+                return self::SUCCESS;
             }
         }
 
         if (! confirm("Delete worktree '{$name}'?")) {
             $this->components->info('Cancelled.');
 
-            return false;
+            return self::SUCCESS;
         }
 
-        return true;
+        return null;
     }
 }
