@@ -231,7 +231,13 @@ The package ships a skill for Claude Code and other agents that read `SKILL.md` 
 php artisan vendor:publish --tag=worktrees-skill   # copies it to .claude/skills/worktree/SKILL.md
 ```
 
-Publish it again after an update of the package. [Laravel Boost](https://github.com/laravel/boost) reads skills of packages from `resources/boost/skills/` too. Put project facts (the seed command's test login, the names of the compose profiles) into `worktrees.context.notes` or the project's own skills, not into the published file.
+After an update of the package, publish it again with `--force`: without it, `vendor:publish` keeps the existing file.
+
+```bash
+php artisan vendor:publish --tag=worktrees-skill --force
+```
+
+[Laravel Boost](https://github.com/laravel/boost) reads skills of packages from `resources/boost/skills/` too. Put project facts (the seed command's test login, the names of the compose profiles) into `worktrees.context.notes` or the project's own skills, not into the published file.
 
 A project's own instructions (`CLAUDE.md`, `AGENTS.md`) then need only a pointer, for example: "Worktrees: see the `worktree` skill; start with `php artisan worktree:context`."
 
