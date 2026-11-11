@@ -54,13 +54,13 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         ?FastSetup $fast = null,
     ) {
         // Null: the container's FastSetup (the `fast` config section), so a
-        // subclass that does not pass it keeps it. The vendor copy follows
-        // shared.dependencies.copy_on_write; the shared strategy has its own
-        // databases, so no dump.
+        // subclass that does not pass it keeps it. The vendor copy needs both
+        // fast.composer.copy_vendor and shared.dependencies.copy_on_write; the
+        // shared strategy has its own databases, so no dump.
         $fast ??= app(FastSetup::class);
         parent::__construct($appService, $nodePackageManager, $buildFrontend, $bringUpTimeout, new FastSetup(
             image: $fast->image,
-            copyVendor: $copyOnWrite,
+            copyVendor: $copyOnWrite && $fast->copyVendor,
             composerOffline: $fast->composerOffline,
             composerCacheDir: $fast->composerCacheDir,
             composerRunner: $fast->composerRunner,

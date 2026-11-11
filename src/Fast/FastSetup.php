@@ -10,7 +10,9 @@ final readonly class FastSetup
     public function __construct(
         public AppImage $image = new AppImage(null),
         // Copy `vendor` from the main checkout with copy-on-write when composer.lock is equal.
-        public bool $copyVendor = true,
+        // Off by default: an offline `composer install` from a mounted cache was faster
+        // than the copy plus the install (6 s against 9.5 to 16.9 s on APFS).
+        public bool $copyVendor = false,
         // Try `composer install` without network first: a warm cache needs none,
         // and a container without internet would wait for time-outs.
         public bool $composerOffline = true,

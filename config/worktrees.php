@@ -92,7 +92,9 @@ return [
         'composer' => [
             // Copy vendor from the main checkout with copy-on-write (APFS, Btrfs,
             // XFS) when composer.lock is equal; the install then only checks.
-            'copy_vendor' => (bool) env('WORKTREE_COPY_VENDOR', true),
+            // Off by default: the offline install from a mounted Composer cache
+            // was faster than the copy plus the install.
+            'copy_vendor' => (bool) env('WORKTREE_COPY_VENDOR', false),
             // First `composer install` without network (a warm cache needs none,
             // and a container without internet would wait for time-outs), then
             // with network when that fails.

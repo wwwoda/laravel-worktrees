@@ -484,3 +484,15 @@ it('keeps an explicit fast argument over the configured fast setup', function ()
     Process::assertRanTimes("docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' -e 'COMPOSER_CACHE_DIR=/explicit' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'", 2);
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, '/composer-cache'));
 });
+
+it('does not copy vendor from the main checkout by default', function () {
+    $published = require __DIR__.'/../../config/worktrees.php';
+    config()->set('worktrees.fast.composer', []);
+
+    expect((new FastSetup)->copyVendor)->toBeFalse()
+        ->and($published['fast']['composer']['copy_vendor'])->toBeFalse()
+        ->and(app(FastSetup::class)->copyVendor)->toBeFalse();
+
+    config()->set('worktrees.fast.composer.copy_vendor', true);
+    expect(app(FastSetup::class)->copyVendor)->toBeTrue();
+});

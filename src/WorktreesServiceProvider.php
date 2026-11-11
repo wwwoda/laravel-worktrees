@@ -158,7 +158,7 @@ class WorktreesServiceProvider extends ServiceProvider
                 hashPaths: self::fastList('image.hash_paths', ['Dockerfile', 'docker']),
                 service: $string('image.service'),
             ),
-            copyVendor: (bool) $get('composer.copy_vendor', true),
+            copyVendor: (bool) $get('composer.copy_vendor', false),
             composerOffline: (bool) $get('composer.offline_first', true),
             composerCacheDir: $string('composer.cache_dir'),
             composerRunner: $string('composer.runner', 'container') === 'host' ? 'host' : 'container',
