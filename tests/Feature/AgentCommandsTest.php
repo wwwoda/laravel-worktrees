@@ -408,3 +408,15 @@ it('passes piped input on to the command', function () {
     $this->artisan('worktree:exec', ['cmd' => ['mariadb'], '--worktree' => 't9', '--service' => 'mariadb'])->assertSuccessful();
     Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec') && $p->input === $stdin);
 });
+
+it('accepts the containers of a worktree whose compose file is in a subfolder', function () {
+    File::ensureDirectoryExists($this->path.'/docker');
+    File::append($this->path.'/.env', "COMPOSE_FILE=docker/compose.yml:docker/compose.dev.yml\n");
+    // Compose writes the folder of the first compose file into working_dir.
+    $this->owner = $this->path.'/docker';
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertSuccessful();
+
+    $this->owner = $this->base.'/elsewhere/docker';
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertFailed();
+});

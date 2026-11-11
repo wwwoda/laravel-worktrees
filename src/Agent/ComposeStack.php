@@ -141,14 +141,36 @@ final class ComposeStack
         if (! $result->successful()) {
             return null;
         }
-        $self = rtrim(realpath($this->path) ?: $this->path, '/');
+        $own = array_map(self::normalPath(...), [$this->path, $this->projectDirectory()]);
         foreach (array_unique(array_filter(array_map(trim(...), preg_split('/\r?\n/', $result->output()) ?: []))) as $folder) {
-            if (rtrim(realpath($folder) ?: $folder, '/') !== $self) {
+            if (! in_array(self::normalPath($folder), $own, true)) {
                 return $folder;
             }
         }
 
         return null;
+    }
+
+    /**
+     * The folder that compose writes into `working_dir`: the folder of the
+     * first file in `COMPOSE_FILE` (`docker/compose.yml` gives `docker`),
+     * or the checkout.
+     */
+    public function projectDirectory(): string
+    {
+        $files = EnvFile::resolved($this->path.'/.env', 'COMPOSE_FILE') ?? '';
+        $separator = EnvFile::resolved($this->path.'/.env', 'COMPOSE_PATH_SEPARATOR') ?: (PHP_OS_FAMILY === 'Windows' ? ';' : ':');
+        $first = trim(explode($separator, $files)[0]);
+        if ($first === '') {
+            return $this->path;
+        }
+
+        return dirname(str_starts_with($first, '/') ? $first : $this->path.'/'.$first);
+    }
+
+    private static function normalPath(string $path): string
+    {
+        return rtrim(realpath($path) ?: $path, '/');
     }
 
     /**
