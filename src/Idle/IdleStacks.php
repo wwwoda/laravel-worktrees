@@ -17,6 +17,7 @@ use Woda\Worktrees\WorktreeManager;
  * checkout, an edited file), when a log file was written, or when it was
  * woken. The traffic of the last check is kept in the worktree's
  * `storage/app/worktree/idle.json`, so the first check of a stack never stops it.
+ * A stack whose app container does not run counts as idle from its first check.
  */
 final readonly class IdleStacks
 {
@@ -126,11 +127,13 @@ final readonly class IdleStacks
     public function lastActivity(string $path, ?int $traffic, int $now): int
     {
         $state = $this->state($path);
-        if ($traffic !== null && $traffic !== ($state['traffic'] ?? null)) {
+        // A new reading counts as use. Without the app container, the first check
+        // is recorded (traffic null), so the other services become idle from then.
+        if (($traffic !== null && $traffic !== ($state['traffic'] ?? null)) || $state === []) {
             $state = ['traffic' => $traffic, 'changed_at' => $now];
             $this->saveState($path, $state);
         }
-        $times = [is_int($state['changed_at'] ?? null) ? $state['changed_at'] : $now];
+        $times = [$state['changed_at']];
         foreach ([self::WOKEN, ...(glob($path.'/storage/logs/*.log') ?: [])] as $file) {
             $file = str_starts_with($file, '/') ? $file : $path.'/'.$file;
             if (is_file($file)) {
@@ -187,22 +190,24 @@ final readonly class IdleStacks
     }
 
     /**
-     * @return array{traffic?: int, changed_at?: int}
+     * The traffic of the last check (null: no app container then) and when it changed; empty before the first check.
+     *
+     * @return array{traffic: int|null, changed_at: int}|array{}
      */
     private function state(string $path): array
     {
         $file = $path.'/'.self::STATE;
         $decoded = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-        $state = [];
-        if (is_array($decoded) && is_int($decoded['traffic'] ?? null) && is_int($decoded['changed_at'] ?? null)) {
-            $state = ['traffic' => $decoded['traffic'], 'changed_at' => $decoded['changed_at']];
+        $traffic = is_array($decoded) ? ($decoded['traffic'] ?? null) : null;
+        if (is_array($decoded) && is_int($decoded['changed_at'] ?? null) && ($traffic === null || is_int($traffic))) {
+            return ['traffic' => $traffic, 'changed_at' => $decoded['changed_at']];
         }
 
-        return $state;
+        return [];
     }
 
     /**
-     * @param  array{traffic: int, changed_at: int}  $state
+     * @param  array{traffic: int|null, changed_at: int}  $state
      */
     private function saveState(string $path, array $state): void
     {

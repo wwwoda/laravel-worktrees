@@ -115,3 +115,16 @@ it('reads the edit time of files with quoted names and of renamed files', functi
     'name with a space' => ['my file.php', "?? my file.php\0"],
     'staged rename' => ['new.php', "RM new.php\0old.php\0 M other.php\0"],
 ]);
+
+it('counts the idle time of a stack whose app container stopped from the first check', function () {
+    $path = $this->paths['idle'];
+    File::delete($path.'/storage/app/worktree/idle.json');
+    $stacks = app(IdleStacks::class);
+    $first = time() - 2400;
+
+    expect($stacks->lastActivity($path, null, $first))->toBe($first)
+        // A later check without the app container: the first observation stays.
+        ->and($stacks->lastActivity($path, null, time()))->toBe($first)
+        // The app container runs again: its traffic counts as use.
+        ->and($stacks->lastActivity($path, 1000, time()))->toBeGreaterThan(time() - 5);
+});
