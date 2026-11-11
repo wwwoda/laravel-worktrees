@@ -282,13 +282,25 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
         $result = Process::timeout(30)->run(sprintf(
             'docker ps -a --filter %s --format %s',
             escapeshellarg('label=com.docker.compose.project='.$project),
-            escapeshellarg('{{.Label "com.docker.compose.project.working_dir"}}'),
+            escapeshellarg('{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}'),
         ));
         if (! $result->successful()) {
             throw new RuntimeException("Cannot list the containers of the compose project '{$project}', so their owner is unknown: ".trim($result->errorOutput()));
         }
+        $folders = [];
+        // One line per container: its ID, a space, its owner label (empty when the label is missing).
+        foreach (preg_split('/\r?\n/', $result->output()) ?: [] as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            [$id, $folder] = array_pad(explode(' ', $line, 2), 2, '');
+            if (trim($folder) === '') {
+                throw new RuntimeException("Container {$id} of the compose project '{$project}' has no owner label (com.docker.compose.project.working_dir), so its owner is unknown: starting or stopping the worktree could act on it. Remove the container or give worktrees their own COMPOSE_PROJECT_NAME (worktrees.env_overrides), then run again.");
+            }
+            $folders[] = trim($folder);
+        }
         $checkouts = array_map(static fn (string $c): string => rtrim(realpath($c) ?: $c, '/'), [$self, ...$registered]);
-        foreach (array_unique(array_filter(array_map(trim(...), explode("\n", $result->output())))) as $folder) {
+        foreach (array_unique($folders) as $folder) {
             $real = rtrim(realpath($folder) ?: $folder, '/');
             $owner = null;
             foreach ($checkouts as $checkout) {

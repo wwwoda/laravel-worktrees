@@ -75,7 +75,7 @@ it('passes a registered worktree without a compose file', function () {
 it('refuses when containers of the compose project belong to another folder', function () {
     // An unregistered checkout (a copy, another clone) whose containers carry the project.
     $this->projects = [base_path() => 'app', $this->a => 'app-a', $this->b => 'app-b'];
-    $this->owners = $this->base."/elsewhere\n";
+    $this->owners = "c1 {$this->base}/elsewhere\n";
     ($this->fake)();
 
     expect(fn () => app(WorktreeManager::class)->tearDown('a'))
@@ -86,7 +86,7 @@ it('refuses when containers of the compose project belong to another folder', fu
 
 it('accepts containers whose compose file is in a subfolder of the worktree', function () {
     $this->projects = [base_path() => 'app', $this->a => 'app-a', $this->b => 'app-b'];
-    $this->owners = "{$this->a}/docker\n{$this->a}\n";
+    $this->owners = "c1 {$this->a}/docker\nc2 {$this->a}\n";
     ($this->fake)();
 
     app(WorktreeManager::class)->tearDown('a');
@@ -121,6 +121,17 @@ it('refuses to start or stop a worktree whose own compose project cannot be read
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' up '));
 })->with(['tearDown', 'tearDownKeepingVolumes', 'bringUp']);
+
+it('refuses when a container of the compose project has no owner label', function () {
+    $this->projects = [base_path() => 'app', $this->a => 'app-a', $this->b => 'app-b'];
+    // One container of A, one without the working_dir label: docker prints an empty label.
+    $this->owners = "c1 {$this->a}\nc2 \n";
+    ($this->fake)();
+
+    expect(fn () => (new SailBootstrapStrategy('laravel.test', 'pnpm', false))->tearDown($this->a))
+        ->toThrow(RuntimeException::class, "Container c2 of the compose project 'app-a' has no owner label");
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, ' down'));
+});
 
 it('passes a compose project without containers', function () {
     $this->projects = [base_path() => 'app', $this->a => 'app-a', $this->b => 'app-b'];
