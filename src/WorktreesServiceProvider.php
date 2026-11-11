@@ -10,15 +10,18 @@ use Woda\Worktrees\Commands\WorktreeCleanupCommand;
 use Woda\Worktrees\Commands\WorktreeConvertCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
+use Woda\Worktrees\Commands\WorktreeIdleStopCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
 use Woda\Worktrees\Commands\WorktreeSetupCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
 use Woda\Worktrees\Commands\WorktreeVolumesCommand;
+use Woda\Worktrees\Commands\WorktreeWakeCommand;
 use Woda\Worktrees\Commands\WorktreeWorkerCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\Contracts\TemplateRecipe;
+use Woda\Worktrees\Idle\IdleStacks;
 use Woda\Worktrees\Shared\ArtisanTemplateRecipe;
 use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\DatabaseServer;
@@ -82,6 +85,11 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->registerSharedServices();
         $this->registerConverter();
+
+        $this->app->bind(IdleStacks::class, fn (Application $app): IdleStacks => new IdleStacks(
+            manager: $app->make(WorktreeManager::class),
+            appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
+        ));
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -354,6 +362,8 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeWorkerCommand::class,
                 WorktreeConvertCommand::class,
                 WorktreeVolumesCommand::class,
+                WorktreeIdleStopCommand::class,
+                WorktreeWakeCommand::class,
             ]);
         }
     }
