@@ -7,6 +7,7 @@ use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
@@ -315,14 +316,8 @@ class WorktreeManager
             throw new RuntimeException('This is the main checkout; a worktree setup does not change it.');
         }
         $this->assertNameFree($name, $path);
-        File::ensureDirectoryExists($path.'/storage');
-        $handle = fopen($path.'/storage/worktree-bootstrap.lock', 'c');
-        if ($handle === false) {
-            throw new RuntimeException('Cannot open the worktree bootstrap lock.');
-        }
-        if (! flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-
+        $handle = SetupLock::tryAcquire($path);
+        if ($handle === null) {
             throw new RuntimeException('Worktree bootstrap is already running.');
         }
 
@@ -443,8 +438,7 @@ class WorktreeManager
             }
             throw $error;
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            SetupLock::release($handle);
         }
     }
 
@@ -590,6 +584,31 @@ class WorktreeManager
         return trim($result->output()) !== '';
     }
 
+    /**
+     * The uncommitted files of a checkout (`git status --porcelain` paths),
+     * without the files this package writes into it.
+     *
+     * @return list<string>
+     */
+    public function changedFiles(string $path): array
+    {
+        $result = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
+        if (! $result->successful()) {
+            throw new RuntimeException('Cannot verify worktree changes.');
+        }
+        $files = [];
+        foreach (preg_split('/\r?\n/', rtrim($result->output())) ?: [] as $line) {
+            if (strlen($line) > 3) {
+                // `XY path` or `XY old -> new`; the current path counts.
+                $file = substr($line, 3);
+                $file = str_contains($file, ' -> ') ? substr($file, (int) strrpos($file, ' -> ') + 4) : $file;
+                $files[] = trim($file, '"');
+            }
+        }
+
+        return $files;
+    }
+
     public function nameFromPath(string $path): ?string
     {
         $prefix = basename(base_path()).'-';
@@ -686,6 +705,13 @@ class WorktreeManager
                 'VITE_PORT='.($viteBase + $portOffset),
                 $content,
             );
+        }
+
+        // Optional services (compose profiles) of a new worktree; null keeps the main checkout's.
+        $profiles = config('worktrees.services.default');
+        if (is_string($profiles)) {
+            // `workers, tools` would break the .env: written without spaces.
+            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.implode(',', ComposeStack::splitProfiles($profiles)));
         }
 
         // User-defined env overrides — last so they win.

@@ -222,6 +222,127 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 
 `--remove` removes only volumes that are in the list.
 
+### Agent commands
+
+Five commands for daily work in a worktree, written for agent sessions and people alike. Without a worktree argument they act on the checkout that runs artisan; a worktree can also be given as its name (the name in its bootstrap record or its folder `{project}-{name}`), as a folder, or as `main`. A word without a slash is a name first; when no worktree has that name, an existing folder of that name in the current folder counts. `main` means the main checkout; when a worktree is also named `main`, the command refuses the word and asks for a path. With `native`, the commands run on the host and know no containers.
+
+#### `worktree:status`
+
+```bash
+php artisan worktree:status            # this checkout
+php artisan worktree:status t9 --json  # for scripts
+```
+
+Shows the folder, branch and commit, the number of uncommitted files, the URL (`APP_URL` with `${KEY}` expanded), the setup state, the compose project, the active and available compose profiles, the database state (`php artisan migrate:status` in the app container: `ok`, `pending`, `empty` or `unknown`) and each container with its state, health and memory. `--no-memory` and `--no-db` skip the slow parts.
+
+#### `worktree:services`
+
+Optional services are [compose profiles](https://docs.docker.com/compose/how-tos/profiles/): a service with `profiles: [workers]` runs only when `COMPOSE_PROFILES` in the worktree's `.env` names `workers`.
+
+```bash
+php artisan worktree:services                     # the profiles, their services and what runs
+php artisan worktree:services workers             # exactly these profiles
+php artisan worktree:services phpmyadmin --add    # add one (aliases: services.aliases)
+php artisan worktree:services workers --remove
+php artisan worktree:services none                # only the services without a profile
+php artisan worktree:services workers -w t9       # another worktree
+```
+
+The command writes `COMPOSE_PROFILES` to the worktree's `.env`, runs `docker compose up -d`, and stops and removes the services whose profiles are off. It does this with the stack lock held exclusively, so it waits until a running `worktree:exec` or `worktree:doctor` fix has ended. `--no-apply` only writes `.env`. A worktree with the main checkout's compose project is refused. `services.default` sets the profiles of new worktrees (see [Configuration reference](#agent-commands-1)).
+
+A compose file for this, with a light queue worker, Horizon and the scheduler off by default:
+
+```yaml
+services:
+  laravel.test: { ... }          # always on
+  worker:
+    <<: *app
+    profiles: [workers]
+    command: ["php", "artisan", "queue:work", "--queue=high,default"]
+  scheduler:
+    <<: *app
+    profiles: [workers]
+    command: ["php", "artisan", "schedule:work"]
+  horizon:
+    <<: *app
+    profiles: [horizon]
+    command: ["php", "artisan", "horizon"]
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    profiles: [tools]
+```
+
+#### `worktree:exec`
+
+Runs a command in the worktree's app container (`docker compose exec`), on the host with `native`. Put `--` between this command's own options and the command:
+
+```bash
+php artisan worktree:exec -- test --filter=UserTest      # php artisan test --filter=UserTest
+php artisan worktree:exec -- test --parallel             # with exec.test_processes processes
+php artisan worktree:exec -- artisan migrate:status
+php artisan worktree:exec -- composer require foo/bar
+php artisan worktree:exec -- "php -i | grep memory"      # one quoted word: a shell command
+php artisan worktree:exec -w t9 --service=mariadb -- mariadb -e 'select 1'
+php artisan worktree:exec -- tinker < script.php          # piped input goes to the command
+```
+
+| Option | Meaning |
+|---|---|
+| `-w`, `--worktree=` | The worktree; before the `--`. |
+| `--service=` | The compose service. Default: `bootstrap.sail.app_service`. |
+
+Why the `--`: artisan reads its own options `-h`, `--help`, `-V`, `--version` and `-q` anywhere on the line up to a `--`. Without it, `worktree:exec free -h` would show the help of `worktree:exec`, and `worktree:exec composer --version` would print the version of Laravel, both with exit code 0. `worktree:exec` refuses such a call without `--` (exit code 2). A call without these options also works without `--`, but scripts and agents should always write it.
+
+The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one; otherwise piped input (`< file`, `cat file |`) goes to its stdin. The exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. When the worktree's service does not run (for example after a reboot), `worktree:exec` first starts its stack (`docker compose up -d --wait`) and says so on stderr; it never starts the main checkout. While the command runs, `worktree:exec` holds the stack lock (`storage/app/worktree/idle.lock`) shared and marks the stack as used at its start and its end (`storage/app/worktree/woken`): a command that stops the stack must take the lock exclusively, so it waits until the command ends. Without `-w`, the command runs in the checkout that runs artisan: in the main checkout, `worktree:exec -- artisan migrate` changes the main database.
+
+#### `worktree:doctor`
+
+```bash
+php artisan worktree:doctor          # show the problems
+php artisan worktree:doctor --fix    # fix them, in this order
+```
+
+| Check | Problem | Fix |
+|---|---|---|
+| `setup` | The bootstrap record says failed, or running while no setup holds the setup lock. | None: the hint names the command that continues the setup. |
+| `env` | No `.env`. | None. |
+| `compose_project` | A worktree has the main checkout's compose project. | None: no other fix runs then, as it would act on the main checkout's containers. |
+| `app_url` | No `APP_URL`, or the main checkout's URL. | None. |
+| `containers` | The app container or a service of an active profile does not run. | Starts them (the setup's start step, with its compose project check). |
+| `vendor` | No `vendor/autoload.php`. | `composer install` in the container. |
+| `node_modules` | `package.json` without `node_modules`. | The node install (then the container start again, for its volume). |
+| `hot` | `public/hot` names a dev server that does not answer. | Removes `public/hot`. |
+| `build` | No `public/build/manifest.json` and no `public/hot`. | The frontend build. |
+| `caches` | A config, route or event cache in `bootstrap/cache`. | `config:clear`, `route:clear`, `event:clear`. |
+| `database` | No migrations table, or pending migrations. | The migrations. |
+| `workers` | A running container with the app container's image (Horizon, `queue:work`, `schedule:work`) started before the last code change (the last move of `HEAD` or the newest uncommitted file). With `shared` and `WORKTREE_QUEUE_WORKER=horizon`, the app container itself. | Restarts these containers. |
+
+`--fix` takes the setup lock (`storage/worktree-bootstrap.lock`) and refuses while a setup runs, as the setup installs and migrates itself. In the main checkout it fixes only when named (`worktree:doctor main --fix`): without an argument it refuses, as its fixes would migrate the main database. The `containers` fix starts the stack with the stack lock held exclusively; every other fix holds the stack lock shared while it runs. Each fix marks the stack as used.
+
+With `native`, the fixes run on the host with the variables of the checkout that runs artisan cleared, so they reach the target's own database. A check that cannot tell (no running container) says `skip`. The exit code is 1 when a check fails. `--json` prints the results.
+
+#### `worktree:context`
+
+A short summary for the start of an agent session: folder, branch, URL, what runs, the optional services, the database state, the project's notes (`context.notes`, for example where the test login is), the main commands and the last errors of `storage/logs/laravel*.log`. It never fails: what it cannot read, it leaves out. `--json` and `--no-db` as in `worktree:status`.
+
+A Claude Code session-start hook in the project's `.claude/settings.json` prints it into each new session:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "php artisan worktree:context 2>/dev/null || true", "timeout": 30 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Where artisan runs only in a container, use the container's command instead, for example `docker compose exec -T laravel.test php artisan worktree:context`.
+
 ## Configuration reference
 
 Publish `config/worktrees.php` to change values, or set the environment variables. Defaults in brackets. Laravel merges a published file with the package's file at the top level only: a section that you publish (for example `bootstrap` or `shared`) must hold every key of that section that you want to set by environment variable.
@@ -248,6 +369,17 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `bootstrap.build_frontend` | | Build the frontend. [true] |
 | `bootstrap.run_migrations` | | Run the migrations. [true] |
 | `bootstrap.sail.app_service` | `WORKTREE_SAIL_APP_SERVICE` | The compose service that runs PHP (`sail` and `shared`). [`laravel.test`] |
+
+### Agent commands
+
+| Key | Env | Meaning |
+|---|---|---|
+| `services.default` | `WORKTREE_DEFAULT_PROFILES` | Compose profiles of a new worktree, written as `COMPOSE_PROFILES` at setup (empty: none). [none: keep the main checkout's value] |
+| `services.aliases` | | Other names for profiles. [`['phpmyadmin' => 'tools']`] |
+| `exec.aliases` | | Short names for the first word of `worktree:exec`. [`test`, `artisan`, `tinker`, `composer`] |
+| `exec.test_processes` | `WORKTREE_TEST_PROCESSES` | Processes for `php artisan test --parallel` without `--processes`, for example 8 on a shared agent host. [none: one per CPU] |
+| `context.notes` | | Lines that `worktree:context` prints, for example `'Test login: test@example.com / password'`. [`[]`] |
+| `context.log_errors` | | How many error lines of `laravel.log` `worktree:context` prints. [5] |
 
 ### Database clone (`native`, `sail`)
 

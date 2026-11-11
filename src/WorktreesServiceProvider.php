@@ -2,17 +2,26 @@
 
 namespace Woda\Worktrees;
 
+use Illuminate\Console\Application as Artisan;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Woda\Worktrees\Agent\AppRunner;
+use Woda\Worktrees\Agent\Doctor;
+use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Commands\WorktreeBootstrapCommand;
 use Woda\Worktrees\Commands\WorktreeCleanupCommand;
+use Woda\Worktrees\Commands\WorktreeContextCommand;
 use Woda\Worktrees\Commands\WorktreeConvertCommand;
 use Woda\Worktrees\Commands\WorktreeCreateCommand;
 use Woda\Worktrees\Commands\WorktreeDeleteCommand;
+use Woda\Worktrees\Commands\WorktreeDoctorCommand;
+use Woda\Worktrees\Commands\WorktreeExecCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Commands\WorktreeOpenCommand;
+use Woda\Worktrees\Commands\WorktreeServicesCommand;
 use Woda\Worktrees\Commands\WorktreeSetupCommand;
+use Woda\Worktrees\Commands\WorktreeStatusCommand;
 use Woda\Worktrees\Commands\WorktreeTemplateCommand;
 use Woda\Worktrees\Commands\WorktreeVolumesCommand;
 use Woda\Worktrees\Commands\WorktreeWorkerCommand;
@@ -82,6 +91,7 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->registerSharedServices();
         $this->registerConverter();
+        $this->registerAgentServices();
 
         $this->app->singleton(DatabaseCloner::class, function (): DatabaseCloner {
             /** @var string $strategy */
@@ -304,6 +314,24 @@ class WorktreesServiceProvider extends ServiceProvider
         };
     }
 
+    private function registerAgentServices(): void
+    {
+        $this->app->bind(AppRunner::class, fn (Application $app): AppRunner => new AppRunner(
+            strategy: $app->make(BootstrapStrategy::class),
+            appService: is_string($service = config('worktrees.bootstrap.sail.app_service')) ? $service : 'laravel.test',
+        ));
+        $this->app->bind(WorktreeInspector::class, fn (Application $app): WorktreeInspector => new WorktreeInspector(
+            manager: $app->make(WorktreeManager::class),
+            runner: $app->make(AppRunner::class),
+        ));
+        $this->app->bindIf(Doctor::class, fn (Application $app): Doctor => new Doctor(
+            inspector: $app->make(WorktreeInspector::class),
+            strategy: $app->make(BootstrapStrategy::class),
+            buildFrontend: (bool) config('worktrees.bootstrap.build_frontend', true),
+            nodePackageManager: is_string($pm = config('worktrees.bootstrap.node_package_manager')) ? $pm : 'pnpm',
+        ));
+    }
+
     private function registerConverter(): void
     {
         $this->app->bindIf(SailConverter::class, function (Application $app): SailConverter {
@@ -342,6 +370,11 @@ class WorktreesServiceProvider extends ServiceProvider
         ], 'worktrees-config');
 
         if ($this->app->runningInConsole()) {
+            // Before artisan reads its own options: see WorktreeExecCommand::refuseGlobalOptions().
+            Artisan::starting(static function (): void {
+                $argv = $_SERVER['argv'] ?? [];
+                WorktreeExecCommand::refuseGlobalOptions(is_array($argv) ? array_values(array_filter($argv, is_string(...))) : []);
+            });
             $this->commands([
                 WorktreeCreateCommand::class,
                 WorktreeBootstrapCommand::class,
@@ -354,6 +387,11 @@ class WorktreesServiceProvider extends ServiceProvider
                 WorktreeWorkerCommand::class,
                 WorktreeConvertCommand::class,
                 WorktreeVolumesCommand::class,
+                WorktreeStatusCommand::class,
+                WorktreeServicesCommand::class,
+                WorktreeExecCommand::class,
+                WorktreeDoctorCommand::class,
+                WorktreeContextCommand::class,
             ]);
         }
     }
