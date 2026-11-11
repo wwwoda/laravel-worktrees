@@ -117,7 +117,7 @@ return [
         'build_cache' => [
             'enabled' => (bool) env('WORKTREE_BUILD_CACHE', true),
             'paths' => [
-                'resources', 'package.json', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock',
+                'resources', 'package.json', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
                 'vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'tsconfig.json',
                 'tailwind.config.js', 'tailwind.config.ts', 'postcss.config.js', 'postcss.config.cjs',
             ],

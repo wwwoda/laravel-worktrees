@@ -496,3 +496,9 @@ it('does not copy vendor from the main checkout by default', function () {
     config()->set('worktrees.fast.composer.copy_vendor', true);
     expect(app(FastSetup::class)->copyVendor)->toBeTrue();
 });
+
+it('has every node lock file in the default build inputs', function () {
+    $published = require __DIR__.'/../../config/worktrees.php';
+
+    expect($published['fast']['build_cache']['paths'])->toContain('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb');
+});
