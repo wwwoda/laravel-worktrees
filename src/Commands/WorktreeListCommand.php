@@ -3,12 +3,15 @@
 namespace Woda\Worktrees\Commands;
 
 use Illuminate\Console\Command;
+use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Woda\Worktrees\Contracts\ProcessManager;
 use Woda\Worktrees\DatabaseCloner;
 use Woda\Worktrees\WorktreeManager;
 
 class WorktreeListCommand extends Command
 {
+    use RunsInMainCheckout;
+
     protected $signature = 'worktree:list
         {--json : Output as JSON}';
 
@@ -19,6 +22,11 @@ class WorktreeListCommand extends Command
         ProcessManager $processManager,
         DatabaseCloner $databaseCloner,
     ): int {
+        // From a linked worktree: the same command in the main checkout.
+        if (($exitCode = $this->runInMainCheckout()) !== null) {
+            return $exitCode;
+        }
+
         $worktrees = $worktreeManager->list();
 
         if ($this->option('json')) {

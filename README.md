@@ -57,7 +57,7 @@ The **legacy** database clone strategies (`database.strategy`) work with `native
 
 ## Commands
 
-All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only.
+All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only. `worktree:create`, `worktree:delete` and `worktree:list` give the same result wherever artisan runs: run in a linked worktree, they run again with the same arguments in the main checkout (the folder that git names as the home of the common `.git`), with the variables of the worktree's `.env` cleared.
 
 ### `worktree:create`
 

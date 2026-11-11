@@ -3,6 +3,7 @@
 namespace Woda\Worktrees\Commands;
 
 use Illuminate\Console\Command;
+use Woda\Worktrees\Commands\Concerns\RunsInMainCheckout;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Woda\Worktrees\Commands\Concerns\RunsBootstrap;
@@ -14,6 +15,8 @@ use function Laravel\Prompts\text;
 
 class WorktreeCreateCommand extends Command
 {
+    use RunsInMainCheckout;
+
     use RunsBootstrap;
 
     protected $signature = 'worktree:create
@@ -32,6 +35,11 @@ class WorktreeCreateCommand extends Command
 
     public function handle(WorktreeManager $worktreeManager): int
     {
+        // From a linked worktree: the same command in the main checkout.
+        if (($exitCode = $this->runInMainCheckout()) !== null) {
+            return $exitCode;
+        }
+
         /** @var string|null $name */
         $name = $this->argument('name');
         /** @var string|null $branch */
