@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Process\Factory;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
@@ -569,4 +570,26 @@ it('refuses main when a worktree is also named main', function () {
     $this->artisan('worktree:status', ['worktree' => $this->path, '--no-memory' => true, '--no-db' => true])
         ->expectsOutputToContain('https://app-t9.test')
         ->assertSuccessful();
+});
+
+it('switches services with the stack lock held exclusively, so it waits for a running exec', function () {
+    $sharedFree = null;
+    // A fresh fake: this handler must come before the catch-all of the others.
+    Process::swap(new Factory);
+    Process::fake(["docker compose --profile '*' rm *" => function () use (&$sharedFree) {
+        File::ensureDirectoryExists(dirname($this->path.'/'.StackLock::LOCK));
+        $handle = fopen($this->path.'/'.StackLock::LOCK, 'c');
+        $sharedFree = flock($handle, LOCK_SH | LOCK_NB);
+        $sharedFree && flock($handle, LOCK_UN);
+        fclose($handle);
+
+        return Process::result();
+    }]);
+    ($this->fakeProcesses)();
+    $this->containers[] = ['Service' => 'horizon', 'Name' => 'app-t9-horizon-1', 'State' => 'running', 'Health' => ''];
+
+    $this->artisan('worktree:services', ['profiles' => ['none'], '--worktree' => 't9'])->assertSuccessful();
+
+    expect($sharedFree)->toBeFalse()
+        ->and(exclusiveStackLockFree($this->path))->toBeTrue();
 });

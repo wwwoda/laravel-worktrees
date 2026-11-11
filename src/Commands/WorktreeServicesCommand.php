@@ -5,6 +5,7 @@ namespace Woda\Worktrees\Commands;
 use Illuminate\Console\Command;
 use RuntimeException;
 use Woda\Worktrees\Agent\ComposeStack;
+use Woda\Worktrees\Agent\StackLock;
 use Woda\Worktrees\Agent\WorktreeInspector;
 use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
 use Woda\Worktrees\ComposeProcess;
@@ -137,6 +138,15 @@ class WorktreeServicesCommand extends Command
      * @param  list<string>  $profiles
      */
     private function apply(ComposeStack $stack, array $profiles): void
+    {
+        // `rm --stop` stops containers: wait for every exec and doctor fix that holds the lock shared.
+        StackLock::locked($stack->path, fn () => $this->applyNow($stack, $profiles));
+    }
+
+    /**
+     * @param  list<string>  $profiles
+     */
+    private function applyNow(ComposeStack $stack, array $profiles): void
     {
         $output = $this->output->isVerbose() ? fn (string $type, string $buffer) => $this->output->write($buffer) : null;
         $result = ComposeProcess::in($stack->path, 600)->run('docker compose up -d', $output);

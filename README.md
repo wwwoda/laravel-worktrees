@@ -248,7 +248,7 @@ php artisan worktree:services none                # only the services without a 
 php artisan worktree:services workers -w t9       # another worktree
 ```
 
-The command writes `COMPOSE_PROFILES` to the worktree's `.env`, runs `docker compose up -d`, and stops and removes the services whose profiles are off. `--no-apply` only writes `.env`. A worktree with the main checkout's compose project is refused. `services.default` sets the profiles of new worktrees (see [Configuration reference](#agent-commands-1)).
+The command writes `COMPOSE_PROFILES` to the worktree's `.env`, runs `docker compose up -d`, and stops and removes the services whose profiles are off. It does this with the stack lock held exclusively, so it waits until a running `worktree:exec` or `worktree:doctor` fix has ended. `--no-apply` only writes `.env`. A worktree with the main checkout's compose project is refused. `services.default` sets the profiles of new worktrees (see [Configuration reference](#agent-commands-1)).
 
 A compose file for this, with a light queue worker, Horizon and the scheduler off by default:
 
