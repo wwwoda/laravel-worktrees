@@ -391,6 +391,34 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `database.pgsql_docker_container` | `WORKTREE_DB_PGSQL_DOCKER_CONTAINER` | Run the PostgreSQL clients in this container. [none] |
 | `database.docker_host` | `WORKTREE_DB_DOCKER_HOST` | Database host inside that container. [`127.0.0.1`] |
 
+### Fast setup (`sail`, `shared`)
+
+| Key | Env | Meaning |
+|---|---|---|
+| `fast.image.name` | `WORKTREE_APP_IMAGE_NAME` | Name of the shared app image. [none: off] |
+| `fast.image.env` | | `.env` key for its tag. [`WORKTREE_APP_IMAGE`] |
+| `fast.image.hash_paths` | | Build inputs that make the tag, in addition to the build section and build context of the building service. [`['Dockerfile', 'docker']`] |
+| `fast.image.service` | `WORKTREE_APP_IMAGE_SERVICE` | The service that builds it. [the app service] |
+| `fast.composer.copy_vendor` | `WORKTREE_COPY_VENDOR` | Copy-on-write copy of `vendor` when `composer.lock` is equal. With `shared`, also `shared.dependencies.copy_on_write` must be true. [false] |
+| `fast.composer.offline_first` | `WORKTREE_COMPOSER_OFFLINE_FIRST` | First install without network. [true] |
+| `fast.composer.cache_dir` | `WORKTREE_COMPOSER_CACHE_DIR` | `COMPOSER_CACHE_DIR` in the app container. [none] |
+| `fast.composer.runner` | `WORKTREE_COMPOSER_RUNNER` | `container` or `host`. [`container`] |
+| `fast.composer.host_command` | `WORKTREE_COMPOSER_HOST_COMMAND` | The install on the host. [`composer install --no-interaction --prefer-dist --ignore-platform-reqs`] |
+| `fast.parallel_node` | `WORKTREE_PARALLEL_NODE` | Node install while the containers start, when that is safe. [true] |
+| `fast.build_cache.enabled` | `WORKTREE_BUILD_CACHE` | Reuse a build with the same inputs. Off by default: list every input of the build in `paths` first (see Fast setup). [false] |
+| `fast.build_cache.paths` | | Build inputs. [resources, `package.json`, lock files, Vite, TypeScript, Tailwind and PostCSS configs] |
+| `fast.build_cache.output` | | The build folder. [`public/build`] |
+| `fast.build_cache.keep` | | Cached builds kept. [5] |
+| `fast.database_dump.enabled` | `WORKTREE_DB_DUMP` | Start from a dump with test data. [false] |
+| `fast.database_dump.service` | `WORKTREE_DB_DUMP_SERVICE` | The database service. [`mariadb`] |
+| `fast.database_dump.hash_paths` | | What makes the key. [`['database/migrations', 'database/seeders']`] |
+| `fast.database_dump.seed_command` | `WORKTREE_DB_DUMP_SEED_COMMAND` | Fills the first database. [`php artisan db:seed --force`] |
+| `fast.database_dump.dump_command` | `WORKTREE_DB_DUMP_COMMAND` | In the database service. [`mariadb-dump … {database}`] |
+| `fast.database_dump.restore_command` | `WORKTREE_DB_RESTORE_COMMAND` | In the database service. [`mariadb … {database}`] |
+| `fast.database_dump.url` | `WORKTREE_DB_DUMP_URL` | Download URL with `{key}`. [none] |
+| `fast.database_dump.url_header` | `WORKTREE_DB_DUMP_URL_HEADER` | One header for the download. [none] |
+| `fast.database_dump.keep` | | Dumps kept. [3] |
+
 ### Shared services (`shared`)
 
 | Key | Env | Meaning |
@@ -398,7 +426,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 | `shared.stack.start_command` | `WORKTREE_SHARED_STACK_START_COMMAND` | Command that starts the shared stack, run in the main checkout. [none] |
 | `shared.stack.wait_seconds` | `WORKTREE_SHARED_STACK_WAIT` | Time to wait for the database server after the start. [120] |
 | `shared.app.compose_file` | `WORKTREE_APP_COMPOSE_FILE` | The app-only compose file, written to the worktree's `.env` as `COMPOSE_FILE`. [none: compose's default file] |
-| `shared.dependencies.copy_on_write` | `WORKTREE_COPY_ON_WRITE` | Copy `vendor` and `node_modules` from the main checkout when the lock files are equal. [true] |
+| `shared.dependencies.copy_on_write` | `WORKTREE_COPY_ON_WRITE` | Copy `node_modules` (and `vendor`, when `fast.composer.copy_vendor` is true) from the main checkout when the lock files are equal. [true] |
 | `shared.queue.mode` | `WORKTREE_QUEUE_MODE` | Default queue worker: `listen` or `horizon`. [`listen`] |
 | `shared.queue.env.mode` | | `.env` key for the worker mode. [`WORKTREE_QUEUE_WORKER`] |
 | `shared.queue.env.queues` | | `.env` key for the queue list. [`WORKTREE_QUEUES`] |
@@ -476,6 +504,74 @@ When Sail's compose file builds the app image from `vendor/laravel/sail/...`, an
 ### Databases with the Sail strategy
 
 The `mysql` and `pgsql` clones copy on the main checkout's server. When each Sail worktree runs its own database service (the usual Sail compose file), the worktree does not use that server: set `WORKTREE_DB_STRATEGY=none`, and the migrations fill the worktree's own database. Keep `mysql` or `pgsql` only when `DB_HOST` of the worktrees points at the main checkout's server. The `sqlite` clone works with Sail: the relative path `database/database.sqlite` is correct on the host and in the container.
+
+### Fast setup (`sail`)
+
+A warm worktree of a separate stack (each worktree with its own database and Redis containers) is ready in about 10 seconds. These parts make it fast; all are in the top-level config section `fast`, and each can be switched off. The frontend build cache is off by default.
+
+| Part | What happens | What the project provides |
+|---|---|---|
+| Shared app image | The tag `{fast.image.name}:{key}` is written to the worktree's `.env` as `WORKTREE_APP_IMAGE`. The key is the content of `fast.image.hash_paths` (default `Dockerfile` and `docker/`), the `build` section of the building service in the resolved compose file (context, dockerfile, args, target) and the files of its build context. The Dockerfile that the build section names always counts, also outside these paths (for example `.docker/php/Dockerfile`). Hidden files (such as `.dockerignore`) count for the image key. So another Sail runtime, other build arguments or a Sail update that changes the runtime's files give a new tag. A build context of `.` (the worktree itself) is not hashed as a whole, or each code change would give a new image: list the files that the Dockerfile copies in `fast.image.hash_paths`. A missing tag is built once with `docker compose build`, under a lock, so worktrees made at the same time wait for one build. | `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service (and on the worker services with the same image), and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`. |
+| Composer | `composer install` runs first with `COMPOSER_DISABLE_NETWORK=1`: with a warm cache it needs no network, and a container without internet does not wait for time-outs (1.2 s instead of 88 s on an agent host). When that fails, it runs again with the network. `vendor` is not copied by default: on a Mac with APFS, the offline install from a mounted cache took 6 s, and a copy-on-write copy of `vendor` plus the install took 9.5 to 16.9 s. With `WORKTREE_COPY_VENDOR=true` and an equal `composer.lock`, `vendor` is first copied from the main checkout with copy-on-write (APFS on macOS, Btrfs or XFS on Linux; a one-file probe skips the copy on ext4). | A mount of the host's Composer cache into the app service and `WORKTREE_COMPOSER_CACHE_DIR` set to its path in the container. Or `WORKTREE_COMPOSER_RUNNER=host`: Composer runs on the host. |
+| Node | `pnpm install --prefer-offline` (`npm install --prefer-offline`) installs from the store. `node_modules` is never copied (a copy-on-write copy was slower than the install). When no service mounts a named volume at `node_modules`, the install runs while the containers start. | Nothing. |
+| Frontend build | The key is the git tree of `fast.build_cache.paths` (resources, lock files, the Vite config) at `HEAD`, and the `VITE_*` values of the checkout's `.env` (Vite builds them into the bundle; a worktree with its own `VITE_*` host gets its own build). A worktree with the same key gets a copy of a cached build from the main checkout's `storage/app/worktrees/builds/{key}/` (filled after each build), or of the main checkout's own `public/build` when the main checkout has the same key, no changes in those paths, and a manifest newer than its last checkout or commit, its input files and its `.env`. A worktree with uncommitted changes there builds. Off by default. | `WORKTREE_BUILD_CACHE=true`, and every path that the build reads in `fast.build_cache.paths`. The default list has only the frontend's own files. Many builds read more: Wayfinder reads `routes/` (and the controllers in `app/`), Tailwind scans `app/` and the Blade views for class names, and Flux's CSS comes from `vendor/`. A path that git does not track (such as `vendor/livewire/flux/dist`) counts by its content on disk; list such a path as narrow as you can, as each setup reads all its files. A missing input gives a stale bundle without a warning. |
+| Database with test data | See below. | `WORKTREE_DB_DUMP=true` and the seed command. |
+
+Also in the project:
+
+- **Healthchecks with a short first check** in the compose file, for example `start_interval: 1s` (Compose 2.20 or later) next to `start_period`; with `interval: 10s` alone the first check comes after 10 seconds.
+- **`VITE_*` values that do not change per worktree.** The build key holds all `VITE_*` values of the worktree's `.env`, after `${KEY}` references are expanded. Laravel's default `.env` has `VITE_APP_NAME="${APP_NAME}"`: when `env_overrides` gives each worktree its own `APP_NAME`, each worktree then gets its own key and builds. Write a fixed value, for example `VITE_APP_NAME="Shop"`, or do not set `APP_NAME` per worktree.
+- **The test database.** Each worktree's database service starts empty, and the package creates no database in it: the image makes the app database from its environment (`MARIADB_DATABASE` or `MYSQL_DATABASE`). A base test database (for example `<db>_test`) must be created by the project, for example with an init script in `/docker-entrypoint-initdb.d` of the MariaDB service, as Sail's `create-testing-database.sh` does. The database dump holds only `DB_DATABASE`.
+
+`worktree:create` prints the time of each step. Measured on srv4 (Linux, ext4) with a Laravel 13 app, MariaDB and Redis per worktree, warm caches:
+
+| Step | Time |
+|---|---|
+| config (git worktree, `.env`) | 0.0 s |
+| environment (containers, MariaDB healthy on a fresh volume) | 6.3 s |
+| composer (offline, warm cache) | 1.4 s |
+| dump (restore) | 0.5 s |
+| build (copied from the cache) | 0.0 s |
+| migrations (nothing left) | 0.1 s |
+| node (in parallel with the steps above) | 8.3 s |
+| total | 8.4 s |
+
+### Database dump with test data
+
+With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree starts with a database that holds test data:
+
+1. The key is the content of `fast.database_dump.hash_paths` (default `database/migrations` and `database/seeders`) of the worktree and the seed command (`WORKTREE_DB_DUMP_SEED_COMMAND`, default `php artisan db:seed --force`).
+2. When the main checkout has `storage/app/worktrees/dumps/{key}.sql.gz`, it is restored into the worktree's database before the migrations, which then find nothing to do. Only an empty database gets a restore: no migrations table, and no table at all (`php artisan db:show --json` in the app container). A database with tables (a setup that runs again, an adopted database, a first migrate that stopped half way) is kept: neither restored nor seeded. When the tables cannot be listed, the setup stops. A restore that itself stopped half way is the exception: the next run restores again over its tables.
+3. Else, with `WORKTREE_DB_DUMP_URL` (for example `https://ci.example.com/dumps/{key}.sql.gz`, with one header in `WORKTREE_DB_DUMP_URL_HEADER`), the dump is downloaded. A missing download is not an error.
+4. Else the worktree migrates, runs the seed command, and saves its database as the dump of the key for the next worktrees.
+
+The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image: they read the root password from `MARIADB_ROOT_PASSWORD` or, as Sail's compose file sets it, `MYSQL_ROOT_PASSWORD`, and pass it as `MYSQL_PWD`. For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
+
+**CI can publish the dump.** The key is the first 12 hex characters of SHA-256 over `seed:{seed command}\n`, then for each file under the hash paths, sorted by relative path (hidden files left out), `{relative path}\0{sha256 of the file}\n`. A CI job that migrates and seeds anyway can compute it the same way, dump the database to `{key}.sql.gz` and publish it where `WORKTREE_DB_DUMP_URL` points.
+
+### Host settings for many worktrees (`sail`, `shared`)
+
+**pnpm store on the volume of the worktrees.** pnpm clones or links packages from its store into `node_modules` only when the store is on the same volume; else it copies each file. On a Mac with the worktrees on a second APFS volume, the default store (in the home folder) is on another volume. Put the store on the volume of the worktrees (replace `<volume>` with the mount point of that volume):
+
+```sh
+pnpm config set store-dir <volume>/.pnpm-store --location global
+```
+
+For a Laravel app on a Mac, this took the node install from 13.6 s to about 7 s. Keep pnpm's default `package-import-method` (`auto`, which clones on APFS): `hardlink` was the slowest (29 s).
+
+**Docker address pools.** Each compose project makes at least one network, and each network takes a subnet from Docker's default address pools. At about 24 stacks, `docker compose up` stops with `all predefined address pools have been fully subnetted`. Give the daemon a pool with small subnets, in a range that your LAN and VPN do not use:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/16", "size": 24 }
+  ]
+}
+```
+
+This gives 256 networks of 254 addresses. Put it into the daemon config and restart the daemon: Docker Desktop: Settings, Docker Engine. OrbStack: Settings, Docker (or `~/.orbstack/config/docker.json`). Linux: `/etc/docker/daemon.json`, or `~/.config/docker/daemon.json` for rootless Docker. Networks that exist keep their subnets; make them again (`docker compose down` and `up`) to use the new pool.
+
+A stopped stack (`docker compose stop`) keeps its network and so its subnet; stopping idle stacks saves memory and CPU, but frees no subnet. `docker compose down` in a worktree that you do not use frees it; the volumes stay.
 
 ## Shared services
 
@@ -587,7 +683,7 @@ A missing or broken state file does not stop a setup: the setup makes it again f
 - **Order:** the databases are made and `.env` names them before the app container starts, so the worker and the scheduler start with the right database.
 - **Host node install first:** the copy of `node_modules` and the node install on the host run before `docker compose up -d`. On Linux, a host install that replaces the `node_modules` folder (pnpm removes an empty one and makes it again) detaches the volume that a running container mounts there; the container then builds with the host's packages.
 - **App container:** `docker compose up -d` in the worktree, then a wait until the app service runs PHP. When the app service declares a named volume that its container does not mount (a container that already ran while `node_modules` was replaced on the host), the app service is restarted once; when the volume is still missing, the setup stops. A `public/hot` whose dev server does not answer is removed.
-- **Dependencies:** when `composer.lock` is the same as in the main checkout, `vendor` is copied from the main checkout with copy-on-write (`cp -c` on macOS with APFS, `cp --reflink=always` on other systems). The same applies to the host `node_modules` and the node lock file (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`, `bun.lockb`). Then `composer install` runs in the container and the node install on the host in all cases; after a copy they are fast. A file system without copy-on-write (for example ext4) skips the copy. Set `shared.dependencies.copy_on_write` to false to never copy.
+- **Dependencies:** when the node lock file (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`, `bun.lockb`) is the same as in the main checkout, the host `node_modules` is copied from the main checkout with copy-on-write (`cp -c` on macOS with APFS, `cp --reflink=always` on other systems). `vendor` is copied the same way only with `fast.composer.copy_vendor` (`WORKTREE_COPY_VENDOR=true`) and an equal `composer.lock`; by default the offline `composer install` from the Composer cache is faster. Then `composer install` runs in the container and the node install on the host in all cases; after a copy they are fast. A file system without copy-on-write (for example ext4) skips the copy. Set `shared.dependencies.copy_on_write` to false to never copy.
 - **Frontend:** built in the container: `pnpm install --frozen-lockfile && pnpm run build` (`npm ci && npm run build` for npm).
 - **Migrations:** run in the container for the app, test and e2e databases, with the config read fresh.
 
