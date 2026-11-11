@@ -224,7 +224,7 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 
 ### Agent commands
 
-Five commands for daily work in a worktree, written for agent sessions and people alike. Without a worktree argument they act on the checkout that runs artisan; a worktree can also be given as its name (the name in its bootstrap record or its folder `{project}-{name}`), as a folder, or as `main`. With `native`, the commands run on the host and know no containers.
+Five commands for daily work in a worktree, written for agent sessions and people alike. Without a worktree argument they act on the checkout that runs artisan; a worktree can also be given as its name (the name in its bootstrap record or its folder `{project}-{name}`), as a folder, or as `main`. A word without a slash is a name first; when no worktree has that name, an existing folder of that name in the current folder counts. `main` means the main checkout; when a worktree is also named `main`, the command refuses the word and asks for a path. With `native`, the commands run on the host and know no containers.
 
 #### `worktree:status`
 

@@ -542,3 +542,31 @@ it('holds the shared stack lock during each doctor fix and marks the use at the 
         ->and(StackLock::lastUsed($this->path))->toBeGreaterThanOrEqual(time() - 5)
         ->and(exclusiveStackLockFree($this->path))->toBeTrue();
 });
+
+it('accepts an existing relative folder without a slash, but a worktree name wins over a folder', function () {
+    $cwd = getcwd();
+    chdir($this->base);
+    try {
+        $this->artisan('worktree:status', ['worktree' => basename($this->path), '--no-memory' => true, '--no-db' => true])
+            ->expectsOutputToContain('https://app-t9.test')
+            ->assertSuccessful();
+        // A folder named like a worktree is not taken: the name wins.
+        File::ensureDirectoryExists($this->base.'/t9');
+        $this->artisan('worktree:status', ['worktree' => 't9', '--no-memory' => true, '--no-db' => true])
+            ->expectsOutputToContain('https://app-t9.test')
+            ->assertSuccessful();
+    } finally {
+        chdir($cwd);
+    }
+});
+
+it('refuses main when a worktree is also named main', function () {
+    File::put($this->path.'/storage/worktree-bootstrap.json', json_encode(['name' => 'main', 'status' => 'ready', 'branch' => 'feature']));
+
+    $this->artisan('worktree:status', ['worktree' => 'main', '--no-memory' => true, '--no-db' => true])
+        ->expectsOutputToContain("'main' is ambiguous")
+        ->assertFailed();
+    $this->artisan('worktree:status', ['worktree' => $this->path, '--no-memory' => true, '--no-db' => true])
+        ->expectsOutputToContain('https://app-t9.test')
+        ->assertSuccessful();
+});
