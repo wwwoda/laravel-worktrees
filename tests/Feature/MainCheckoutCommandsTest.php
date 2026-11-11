@@ -69,3 +69,18 @@ it('keeps redirected output when it runs in the main checkout', function () {
     $this->artisan('worktree:list', ['--json' => true])->assertExitCode(3);
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'worktree:list'") && $p->tty === false);
 });
+
+it('passes --env on and clears the keys of the selected environment file', function () {
+    File::put($this->main.'/.env.staging', "STAGING_DB=main_staging\n");
+    File::put(base_path('.env.staging'), "WORKTREE_STAGING_DB=wt_staging\n");
+    try {
+        $this->artisan('worktree:list', ['--json' => true, '--env' => 'staging', '--no-interaction' => true])->assertExitCode(3);
+    } finally {
+        File::delete(base_path('.env.staging'));
+    }
+
+    Process::assertRan(fn (PendingProcess $p) => $p->path === $this->main
+        && str_contains((string) $p->command, "'worktree:list' '--json' '--env=staging'")
+        && ($p->environment['STAGING_DB'] ?? null) === false
+        && ($p->environment['WORKTREE_STAGING_DB'] ?? null) === false);
+});

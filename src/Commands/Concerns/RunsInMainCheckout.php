@@ -35,7 +35,9 @@ trait RunsInMainCheckout
         $this->getOutput()->getErrorStyle()->writeln("Running in the main checkout {$main}.");
         // The values of this worktree's .env are in this process: the main checkout must read its own.
         $keys = ComposeProcess::INHERITED_VARS_TO_CLEAR;
-        foreach ([$here.'/.env', $main.'/.env'] as $env) {
+        // Also the file of the selected environment (`--env` or APP_ENV), which Laravel loads instead of .env.
+        $files = ['.env', ...array_map(static fn (string $name): string => '.env.'.$name, $this->environmentNames())];
+        foreach (array_merge(...array_map(static fn (string $dir): array => array_map(static fn (string $file): string => $dir.'/'.$file, $files), [$here, $main])) as $env) {
             if (File::exists($env)) {
                 preg_match_all('/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/m', File::get($env), $matches);
                 $keys = [...$keys, ...$matches[1]];
@@ -79,6 +81,25 @@ trait RunsInMainCheckout
         return $this->input->isInteractive() && $this->stdinIsTerminal();
     }
 
+    /**
+     * The environments whose `.env.{name}` file Laravel may have loaded:
+     * the `--env` option and APP_ENV.
+     *
+     * @return list<string>
+     */
+    private function environmentNames(): array
+    {
+        $names = [];
+        $option = $this->input->hasOption('env') ? $this->input->getOption('env') : null;
+        foreach ([$option, getenv('APP_ENV'), $_ENV['APP_ENV'] ?? null] as $name) {
+            if (is_string($name) && preg_match('/^[A-Za-z0-9_.-]+$/', $name) && ! in_array($name, $names, true)) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
     protected function ttySupported(): bool
     {
         return SymfonyProcess::isTtySupported();
@@ -119,6 +140,11 @@ trait RunsInMainCheckout
             foreach (is_array($value) ? $value : [$value] as $item) {
                 $tokens[] = $item === true ? '--'.$name : '--'.$name.'='.(is_scalar($item) ? (string) $item : '');
             }
+        }
+        // `--env` selects the environment file: without it, the main checkout would use its default database.
+        $environment = $this->input->hasOption('env') ? $this->input->getOption('env') : null;
+        if (is_string($environment) && $environment !== '') {
+            $tokens[] = '--env='.$environment;
         }
         if (! $this->canAsk()) {
             $tokens[] = '--no-interaction';
