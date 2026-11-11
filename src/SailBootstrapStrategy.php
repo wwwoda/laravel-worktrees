@@ -478,19 +478,33 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     }
 
     /**
-     * True without a migrations table. The message counts, not the exit code alone.
+     * How long the dump stage waits for the database service to answer. The
+     * containers have just started, and a fast Composer leaves the database
+     * no time to start up.
+     */
+    protected int $databaseWaitSeconds = 60;
+
+    /**
+     * True without a migrations table. The message counts, not the exit code
+     * alone. Another error (the database does not answer yet) is tried again
+     * every second, for up to $databaseWaitSeconds.
      */
     private function databaseIsEmpty(string $worktreePath): bool
     {
-        $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
-        if (stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false) {
-            return true;
+        $deadline = time() + $this->databaseWaitSeconds;
+        while (true) {
+            $status = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan migrate:status --no-ansi --no-interaction'));
+            if (stripos($status->output().$status->errorOutput(), 'Migration table not found') !== false) {
+                return true;
+            }
+            if ($status->successful()) {
+                return false;
+            }
+            if (time() >= $deadline) {
+                throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
+            }
+            sleep(1);
         }
-        if ($status->successful()) {
-            return false;
-        }
-
-        throw new RuntimeException('Cannot tell whether the database is empty: '.trim($status->errorOutput() ?: $status->output()));
     }
 
     public function seedDatabase(string $worktreePath, ?Closure $output = null): void

@@ -568,3 +568,23 @@ it('reads the root password of Sail\'s MariaDB service in the default dump comma
     expect($published['fast']['database_dump']['dump_command'])->toBe(DatabaseDump::DUMP_COMMAND)
         ->and($published['fast']['database_dump']['restore_command'])->toBe(DatabaseDump::RESTORE_COMMAND);
 });
+
+it('waits for the database before it tells whether it is empty', function () {
+    ($this->fake)(['*migrate:status*' => Process::sequence([
+        Process::result(errorOutput: 'SQLSTATE[HY000] [2002] Connection refused', exitCode: 1),
+        Process::result('  0001_create ..... [1] Ran'),
+    ])]);
+    app()->instance(BootstrapStrategy::class, new SailBootstrapStrategy('laravel.test', 'pnpm', false, fast: new FastSetup(dump: new DatabaseDump(true))));
+    File::ensureDirectoryExists($this->path);
+
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toBe('existing');
+    Process::assertRanTimes(fn (PendingProcess $p) => str_contains((string) $p->command, 'migrate:status'), 2);
+
+    // A database that never answers fails the stage after the wait.
+    ($this->fake)(['*migrate:status*' => Process::result(errorOutput: 'Connection refused', exitCode: 1)]);
+    app()->instance(BootstrapStrategy::class, new class('laravel.test', 'pnpm', false, fast: new FastSetup(dump: new DatabaseDump(true))) extends SailBootstrapStrategy
+    {
+        protected int $databaseWaitSeconds = 0;
+    });
+    expect(fn () => app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toThrow(RuntimeException::class, 'Connection refused');
+});
