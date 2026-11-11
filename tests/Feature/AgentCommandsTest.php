@@ -367,3 +367,10 @@ it('refuses doctor fixes while a worktree setup holds its lock', function () {
     }
     expect(app(Doctor::class)->check('setup', $target))->toMatchArray(['state' => 'fail']);
 });
+
+it('fixes the main checkout only when it is named', function () {
+    $this->artisan('worktree:doctor', ['--fix' => true])
+        ->expectsOutputToContain('This is the main checkout')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'migrate'));
+});

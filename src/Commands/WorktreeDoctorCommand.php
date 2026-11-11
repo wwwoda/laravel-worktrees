@@ -31,6 +31,12 @@ class WorktreeDoctorCommand extends Command
             return self::FAILURE;
         }
         $fix = (bool) $this->option('fix');
+        // Without an argument, artisan in the main checkout would migrate and install there.
+        if ($fix && $target->main && ! is_string($this->argument('worktree'))) {
+            $this->components->error('This is the main checkout. To fix it, name it: php artisan worktree:doctor main --fix');
+
+            return self::FAILURE;
+        }
         // A setup that still runs installs and migrates itself: fixes would run in parallel with it.
         $lock = null;
         if ($fix && ! $target->main) {
