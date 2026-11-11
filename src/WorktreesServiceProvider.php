@@ -2,6 +2,7 @@
 
 namespace Woda\Worktrees;
 
+use Illuminate\Console\Application as Artisan;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
@@ -369,6 +370,11 @@ class WorktreesServiceProvider extends ServiceProvider
         ], 'worktrees-config');
 
         if ($this->app->runningInConsole()) {
+            // Before artisan reads its own options: see WorktreeExecCommand::refuseGlobalOptions().
+            Artisan::starting(static function (): void {
+                $argv = $_SERVER['argv'] ?? [];
+                WorktreeExecCommand::refuseGlobalOptions(is_array($argv) ? array_values(array_filter($argv, is_string(...))) : []);
+            });
             $this->commands([
                 WorktreeCreateCommand::class,
                 WorktreeBootstrapCommand::class,

@@ -374,3 +374,16 @@ it('fixes the main checkout only when it is named', function () {
         ->assertFailed();
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'migrate'));
 });
+
+it('finds the words of worktree:exec that artisan would read as its own options', function (array $argv, ?string $clash) {
+    expect(WorktreeExecCommand::globalOptionClash($argv))->toBe($clash);
+})->with([
+    'redis-cli -h' => [['artisan', 'worktree:exec', 'redis-cli', '-h', 'redis', 'ping'], '-h'],
+    'free -h' => [['artisan', 'worktree:exec', '-w', 't9', 'free', '-h'], '-h'],
+    'composer --version' => [['artisan', 'worktree:exec', 'composer', '--version'], '--version'],
+    'glued -q' => [['artisan', '-v', 'worktree:exec', 'test', '-qq'], '-qq'],
+    'after --' => [['artisan', 'worktree:exec', '-w', 't9', '--', 'free', '-h'], null],
+    'no global option' => [['artisan', 'worktree:exec', 'test', '--filter=X'], null],
+    'another command' => [['artisan', 'about', '--version'], null],
+    'artisan own -q before the name' => [['artisan', '-q', 'worktree:exec', 'test'], null],
+]);

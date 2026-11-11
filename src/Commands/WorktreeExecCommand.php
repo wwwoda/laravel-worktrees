@@ -11,8 +11,12 @@ use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
 
 /**
  * Runs a command where the worktree's PHP runs. Everything after the command
- * name and this command's own options goes to the command unchanged, so
- * `worktree:exec test --filter=X` needs no `--`.
+ * name and this command's own options goes to the command unchanged.
+ *
+ * Put `--` before the command: artisan reads `-h`, `-V` and `-q` (and their
+ * long forms) anywhere on the line before a `--`, and would show its help or
+ * version instead of running the command. A call without `--` that holds one
+ * of them is refused before artisan reads it (see refuseGlobalOptions()).
  */
 class WorktreeExecCommand extends Command
 {
@@ -32,11 +36,67 @@ class WorktreeExecCommand extends Command
         $this->ignoreValidationErrors();
     }
 
+    /**
+     * The options that artisan reads anywhere on the line before a `--`, and
+     * which stop or silence the command: help, version, quiet. Short options
+     * count with anything glued to them (`-hv` is `-h`).
+     */
+    private const GLOBAL_OPTIONS = ['-h', '-V', '-q', '--help', '--version', '--quiet', '--silent'];
+
+    /**
+     * The first word of a `worktree:exec` call that artisan would read as its
+     * own option, because no `--` comes before it; null when there is none.
+     *
+     * @param  list<string>  $argv  the command line, `artisan` first
+     */
+    public static function globalOptionClash(array $argv): ?string
+    {
+        $tokens = array_slice($argv, 1);
+        $i = 0;
+        while ($i < count($tokens) && str_starts_with($tokens[$i], '-')) {
+            $i++;
+        }
+        if (($tokens[$i] ?? null) !== 'worktree:exec') {
+            return null;
+        }
+        foreach (array_slice($tokens, $i + 1) as $token) {
+            if ($token === '--') {
+                return null;
+            }
+            foreach (self::GLOBAL_OPTIONS as $option) {
+                $long = str_starts_with($option, '--');
+                if ($token === $option || ($long ? str_starts_with($token, $option.'=') : str_starts_with($token, $option))) {
+                    return $token;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Stops a `worktree:exec` call that artisan would answer with its help or
+     * version (exit code 0) instead of running the command. Runs when artisan
+     * starts, before it reads its options.
+     *
+     * @param  list<string>  $argv
+     */
+    public static function refuseGlobalOptions(array $argv): void
+    {
+        $token = self::globalOptionClash($argv);
+        if ($token === null) {
+            return;
+        }
+        fwrite(STDERR, "worktree:exec: artisan reads {$token} as its own option and would not run your command. Put -- before the command, for example: php artisan worktree:exec -- free -h\n");
+
+        exit(self::INVALID);
+    }
+
     public function handle(WorktreeInspector $inspector): int
     {
         [$worktree, $service, $words] = $this->invocation();
         if ($words === []) {
-            $this->components->error('Give a command, for example: php artisan worktree:exec test --filter=UserTest');
+            $this->components->error('Give a command, for example: php artisan worktree:exec -- test --filter=UserTest');
 
             return self::FAILURE;
         }

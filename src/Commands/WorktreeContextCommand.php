@@ -94,7 +94,7 @@ class WorktreeContextCommand extends Command
         foreach ($notes as $note) {
             $lines[] = '- '.$note;
         }
-        $lines[] = '- Commands: php artisan worktree:exec test --filter=X (tests in the container), worktree:exec artisan …, worktree:status, worktree:doctor --fix';
+        $lines[] = '- Commands: php artisan worktree:exec -- test --filter=X (tests in the container; always put -- before the command), worktree:exec -- artisan …, worktree:status, worktree:doctor --fix';
         /** @var list<string> $errors */
         $errors = $status['log_errors'];
         if ($errors !== []) {

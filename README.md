@@ -274,23 +274,25 @@ services:
 
 #### `worktree:exec`
 
-Runs a command in the worktree's app container (`docker compose exec`), on the host with `native`. Everything after the command name and the own options goes to the command unchanged, so no `--` is needed:
+Runs a command in the worktree's app container (`docker compose exec`), on the host with `native`. Put `--` between this command's own options and the command:
 
 ```bash
-php artisan worktree:exec test --filter=UserTest      # php artisan test --filter=UserTest
-php artisan worktree:exec test --parallel             # with exec.test_processes processes
-php artisan worktree:exec artisan migrate:status
-php artisan worktree:exec composer require foo/bar
-php artisan worktree:exec "php -i | grep memory"      # one quoted word: a shell command
-php artisan worktree:exec -w t9 --service=mariadb mariadb -e 'select 1'
+php artisan worktree:exec -- test --filter=UserTest      # php artisan test --filter=UserTest
+php artisan worktree:exec -- test --parallel             # with exec.test_processes processes
+php artisan worktree:exec -- artisan migrate:status
+php artisan worktree:exec -- composer require foo/bar
+php artisan worktree:exec -- "php -i | grep memory"      # one quoted word: a shell command
+php artisan worktree:exec -w t9 --service=mariadb -- mariadb -e 'select 1'
 ```
 
 | Option | Meaning |
 |---|---|
-| `-w`, `--worktree=` | The worktree; before the command. |
+| `-w`, `--worktree=` | The worktree; before the `--`. |
 | `--service=` | The compose service. Default: `bootstrap.sail.app_service`. |
 
-The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one, and the exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. Put `--` before the command when it uses `-h` or `--help` itself.
+Why the `--`: artisan reads its own options `-h`, `--help`, `-V`, `--version` and `-q` anywhere on the line up to a `--`. Without it, `worktree:exec free -h` would show the help of `worktree:exec`, and `worktree:exec composer --version` would print the version of Laravel, both with exit code 0. `worktree:exec` refuses such a call without `--` (exit code 2). A call without these options also works without `--`, but scripts and agents should always write it.
+
+The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one, and the exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. Without `-w`, the command runs in the checkout that runs artisan: in the main checkout, `worktree:exec -- artisan migrate` changes the main database.
 
 #### `worktree:doctor`
 
