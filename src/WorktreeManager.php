@@ -476,16 +476,16 @@ class WorktreeManager
             $state['status'] = 'ready';
             File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
         } catch (\Throwable $error) {
+            // A failed setup does not leave the node install running.
+            if ($parallelNode !== null && $parallelNode[1]->running()) {
+                $parallelNode[1]->signal(15);
+            }
             if (isset($state)) {
                 $state['status'] = 'failed';
                 File::replace($statePath, json_encode($state, JSON_THROW_ON_ERROR));
             }
             throw $error;
         } finally {
-            // A failed setup does not leave the node install running.
-            if ($parallelNode !== null && $parallelNode[1]->running()) {
-                $parallelNode[1]->signal(15);
-            }
             flock($handle, LOCK_UN);
             fclose($handle);
         }
