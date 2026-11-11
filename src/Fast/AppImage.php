@@ -79,7 +79,7 @@ final readonly class AppImage
             }
             // The Dockerfile itself, also outside the hash paths (`.docker/php/Dockerfile`
             // with a context of `.`). Compose names it relative to the context.
-            $dockerfile = $context === null ? null : self::dockerfile($context, $build['dockerfile'] ?? null);
+            $dockerfile = $context === null ? null : self::dockerfile($context, $build);
             $dockerfileInWorktree = $dockerfile === null ? null : self::relativeTo($worktreePath, $dockerfile);
             if ($dockerfileInWorktree !== null && $dockerfileInWorktree !== '.') {
                 $paths[] = $dockerfileInWorktree;
@@ -96,8 +96,16 @@ final readonly class AppImage
      * The Dockerfile of a build section: `dockerfile` relative to the context
      * (default `Dockerfile`); null for an inline `dockerfile_inline`.
      */
-    private static function dockerfile(string $context, mixed $dockerfile): ?string
+    /**
+     * @param  array<mixed>  $build
+     */
+    private static function dockerfile(string $context, array $build): ?string
     {
+        // An inline Dockerfile is part of the build section, which the key holds.
+        if (is_string($build['dockerfile_inline'] ?? null)) {
+            return null;
+        }
+        $dockerfile = $build['dockerfile'] ?? null;
         $name = is_string($dockerfile) && $dockerfile !== '' ? $dockerfile : 'Dockerfile';
 
         return str_starts_with($name, '/') ? $name : rtrim($context, '/').'/'.$name;
