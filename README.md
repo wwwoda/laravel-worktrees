@@ -385,7 +385,11 @@ A warm worktree of a separate stack (each worktree with its own database and Red
 | Frontend build | The key is the git tree of `fast.build_cache.paths` (resources, lock files, the Vite config) at `HEAD`, and the `VITE_*` values of the checkout's `.env` (Vite builds them into the bundle; a worktree with its own `VITE_*` host gets its own build). A worktree with the same key gets a copy of a cached build from the main checkout's `storage/app/worktrees/builds/{key}/` (filled after each build), or of the main checkout's own `public/build` when the main checkout has the same key, no changes in those paths, and a manifest newer than its last checkout or commit, its input files and its `.env`. A worktree with uncommitted changes there builds. | Add the paths that the build reads to `fast.build_cache.paths` (for example the PHP classes that a type generator reads). |
 | Database with test data | See below. | `WORKTREE_DB_DUMP=true` and the seed command. |
 
-Also in the project's compose file: healthchecks with a short first check, for example `start_interval: 1s` (Compose 2.20 or later) next to `start_period`; with `interval: 10s` alone the first check comes after 10 seconds.
+Also in the project:
+
+- **Healthchecks with a short first check** in the compose file, for example `start_interval: 1s` (Compose 2.20 or later) next to `start_period`; with `interval: 10s` alone the first check comes after 10 seconds.
+- **`VITE_*` values that do not change per worktree.** The build key holds all `VITE_*` values of the worktree's `.env`, after `${KEY}` references are expanded. Laravel's default `.env` has `VITE_APP_NAME="${APP_NAME}"`: when `env_overrides` gives each worktree its own `APP_NAME`, each worktree then gets its own key and builds. Write a fixed value, for example `VITE_APP_NAME="Shop"`, or do not set `APP_NAME` per worktree.
+- **The test database.** Each worktree's database service starts empty, and the package creates no database in it: the image makes the app database from its environment (`MARIADB_DATABASE` or `MYSQL_DATABASE`). A base test database (for example `<db>_test`) must be created by the project, for example with an init script in `/docker-entrypoint-initdb.d` of the MariaDB service, as Sail's `create-testing-database.sh` does. The database dump holds only `DB_DATABASE`.
 
 `worktree:create` prints the time of each step. Measured on srv4 (Linux, ext4) with a Laravel 13 app, MariaDB and Redis per worktree, warm caches:
 
@@ -412,6 +416,30 @@ With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree star
 The dump and restore commands run in the database service (`WORKTREE_DB_DUMP_SERVICE`, default `mariadb`) with `sh -c`; `{database}` is the worktree's `DB_DATABASE`. The defaults are for the MariaDB image (`$MARIADB_ROOT_PASSWORD` in the container). For PostgreSQL, for example: `pg_dump -U "$POSTGRES_USER" {database}` and `psql -q -U "$POSTGRES_USER" {database}`. The newest three dumps stay (`keep`).
 
 **CI can publish the dump.** The key is the first 12 hex characters of SHA-256 over `seed:{seed command}\n`, then for each file under the hash paths, sorted by relative path (hidden files left out), `{relative path}\0{sha256 of the file}\n`. A CI job that migrates and seeds anyway can compute it the same way, dump the database to `{key}.sql.gz` and publish it where `WORKTREE_DB_DUMP_URL` points.
+
+### Host settings for many worktrees (`sail`, `shared`)
+
+**pnpm store on the volume of the worktrees.** pnpm clones or links packages from its store into `node_modules` only when the store is on the same volume; else it copies each file. On a Mac with the worktrees on a second APFS volume, the default store (in the home folder) is on another volume. Put the store on the volume of the worktrees (replace `<volume>` with the mount point of that volume):
+
+```sh
+pnpm config set store-dir <volume>/.pnpm-store --location global
+```
+
+For a Laravel app on a Mac, this took the node install from 13.6 s to about 7 s. Keep pnpm's default `package-import-method` (`auto`, which clones on APFS): `hardlink` was the slowest (29 s).
+
+**Docker address pools.** Each compose project makes at least one network, and each network takes a subnet from Docker's default address pools. At about 24 stacks, `docker compose up` stops with `all predefined address pools have been fully subnetted`. Give the daemon a pool with small subnets, in a range that your LAN and VPN do not use:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/16", "size": 24 }
+  ]
+}
+```
+
+This gives 256 networks of 254 addresses. Put it into the daemon config and restart the daemon: Docker Desktop: Settings, Docker Engine. OrbStack: Settings, Docker (or `~/.orbstack/config/docker.json`). Linux: `/etc/docker/daemon.json`, or `~/.config/docker/daemon.json` for rootless Docker. Networks that exist keep their subnets; make them again (`docker compose down` and `up`) to use the new pool.
+
+A stopped stack (`docker compose stop`) keeps its network and so its subnet; stopping idle stacks saves memory and CPU, but frees no subnet. `docker compose down` in a worktree that you do not use frees it; the volumes stay.
 
 ## Shared services
 
