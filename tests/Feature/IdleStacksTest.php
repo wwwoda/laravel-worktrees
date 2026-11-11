@@ -278,3 +278,10 @@ it('never checks or stops the main checkout, also with the old include_main sett
     Process::assertNotRan(fn (PendingProcess $p) => $p->path === base_path() && str_ends_with((string) $p->command, ' stop'));
     expect(File::exists(base_path('storage/app/worktree/idle.json')))->toBeFalse();
 });
+
+it('wakes the main checkout by the name main', function () {
+    $this->artisan('worktree:wake', ['worktree' => 'main'])->assertSuccessful();
+
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d --wait' && $p->path === base_path());
+    File::deleteDirectory(base_path('storage/app/worktree'));
+});

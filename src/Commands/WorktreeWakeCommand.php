@@ -6,12 +6,13 @@ use Illuminate\Console\Command;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Idle\IdleStacks;
 use Woda\Worktrees\SailBootstrapStrategy;
+use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\WorktreeManager;
 
 class WorktreeWakeCommand extends Command
 {
     protected $signature = 'worktree:wake
-        {worktree? : Worktree name or folder (default: this checkout)}';
+        {worktree? : Worktree name, folder or "main" (default: this checkout)}';
 
     protected $description = 'Start the stack of a worktree that worktree:idle-stop (or Sablier) stopped, and wait until it is healthy';
 
@@ -27,6 +28,8 @@ class WorktreeWakeCommand extends Command
             // A folder first (also a relative one without a slash), then a worktree name.
             $path = match (true) {
                 ! is_string($target) || $target === '' => base_path(),
+                // A folder named main in the working directory still wins, as any folder does.
+                $target === 'main' && ! is_dir($target) => MainCheckout::path(),
                 is_dir($target) => (string) realpath($target),
                 str_contains($target, '/') => throw new \RuntimeException("{$target} is no folder."),
                 default => $manager->pathFor($target),
