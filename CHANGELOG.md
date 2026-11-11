@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- With `sail` and `shared`, a registered checkout whose compose config cannot be read (for example, without `.env`) no longer stops the setup and `worktree:delete` of every worktree. It stops them only when compose could give it the worktree's project (by its `.env`, the `name` of its compose files or its folder name), or when a container of the project belongs to it ([#32](https://github.com/wwwoda/laravel-worktrees/issues/32)).
+- The version check says to run `git pull` and `composer install` in the main checkout, not `composer update`.
+
 ## v0.3.0 (2026-11-11)
 
 Lean separate worktree stacks and commands for agent sessions ([#25](https://github.com/wwwoda/laravel-worktrees/issues/25)). New commands and config sections only act when you call or set them. Some changes are on by default for existing setups; they are listed under "On by default" and "Changed".
