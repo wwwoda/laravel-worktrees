@@ -486,6 +486,13 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
             return self::DUMP_EXISTING;
         }
+        // No migrations table does not prove an empty database: an adopted
+        // database, or a first migrate that failed half way, has tables without it.
+        if (! $interrupted && $this->databaseHasTables($worktreePath)) {
+            $onStep && $onStep('The database has tables but no migrations table; it is kept, and neither restored nor seeded.');
+
+            return self::DUMP_EXISTING;
+        }
         $file = $dump->find($worktreePath, $onStep);
         if ($file === null && $interrupted) {
             throw new RuntimeException('A restore of the database dump stopped half way, and the dump is gone: empty the database (or delete the worktree), remove '.self::RESTORE_MARKER.' and run the setup again.');
@@ -512,7 +519,8 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     protected int $databaseWaitSeconds = 60;
 
     /**
-     * True without a migrations table. The message counts, not the exit code
+     * True without a migrations table (then databaseHasTables() decides).
+     * The message counts, not the exit code
      * alone. Another error (the database does not answer yet) is tried again
      * every second, for up to $databaseWaitSeconds.
      */
@@ -532,6 +540,24 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
             }
             sleep(1);
         }
+    }
+
+    /**
+     * Whether the database has any table, as `php artisan db:show --json` in
+     * the app container lists them. Throws when the list cannot be read: a
+     * restore must not run on a database whose state is unknown.
+     */
+    private function databaseHasTables(string $worktreePath): bool
+    {
+        $show = $this->compose($worktreePath, 120)->run($this->execCommand('php artisan db:show --json --no-ansi --no-interaction'));
+        $output = $show->output();
+        $start = strpos($output, '{');
+        $data = $start === false ? null : json_decode(substr($output, $start), true);
+        if (! $show->successful() || ! is_array($data) || ! is_array($data['tables'] ?? null)) {
+            throw new RuntimeException('Cannot tell whether the database has tables, so the dump is not restored (php artisan db:show --json): '.trim($show->errorOutput() ?: $output));
+        }
+
+        return $data['tables'] !== [];
     }
 
     public function seedDatabase(string $worktreePath, ?Closure $output = null): void

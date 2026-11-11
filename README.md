@@ -409,7 +409,7 @@ Also in the project:
 With `fast.database_dump.enabled` (`WORKTREE_DB_DUMP=true`), a new worktree starts with a database that holds test data:
 
 1. The key is the content of `fast.database_dump.hash_paths` (default `database/migrations` and `database/seeders`) of the worktree and the seed command (`WORKTREE_DB_DUMP_SEED_COMMAND`, default `php artisan db:seed --force`).
-2. When the main checkout has `storage/app/worktrees/dumps/{key}.sql.gz`, it is restored into the worktree's database before the migrations, which then find nothing to do. Only an empty database (no migrations table) gets a restore. A database with tables (a setup that runs again) is kept: neither restored nor seeded.
+2. When the main checkout has `storage/app/worktrees/dumps/{key}.sql.gz`, it is restored into the worktree's database before the migrations, which then find nothing to do. Only an empty database gets a restore: no migrations table, and no table at all (`php artisan db:show --json` in the app container). A database with tables (a setup that runs again, an adopted database, a first migrate that stopped half way) is kept: neither restored nor seeded. When the tables cannot be listed, the setup stops. A restore that itself stopped half way is the exception: the next run restores again over its tables.
 3. Else, with `WORKTREE_DB_DUMP_URL` (for example `https://ci.example.com/dumps/{key}.sql.gz`, with one header in `WORKTREE_DB_DUMP_URL_HEADER`), the dump is downloaded. A missing download is not an error.
 4. Else the worktree migrates, runs the seed command, and saves its database as the dump of the key for the next worktrees.
 

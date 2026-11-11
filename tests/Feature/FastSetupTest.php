@@ -39,6 +39,7 @@ beforeEach(function () {
     $this->images = [];
     $this->composerOffline = Process::result();
     $this->migrateStatus = Process::result(errorOutput: 'Migration table not found.', exitCode: 1);
+    $this->dbShow = Process::result('{"platform":{"name":"MariaDB"},"tables":[]}');
     $this->fake = function (array $extra = []) {
         // The extra handlers win, also over a base handler of the same pattern.
         Process::fake($extra + [
@@ -65,6 +66,7 @@ beforeEach(function () {
             },
             '*COMPOSER_DISABLE_NETWORK=1*composer install*' => fn () => $this->composerOffline,
             '*migrate:status*' => fn () => $this->migrateStatus,
+            '*db:show --json*' => fn () => $this->dbShow,
             '*' => Process::result(),
         ]);
     };
@@ -655,4 +657,35 @@ it('waits for the database before it tells whether it is empty', function () {
         protected int $databaseWaitSeconds = 0;
     });
     expect(fn () => app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))->toThrow(RuntimeException::class, 'Connection refused');
+});
+
+it('does not restore into a database with tables but no migrations table', function () use ($strategy) {
+    // An adopted database, or a first migrate that failed before its migrations table.
+    ($this->fake)();
+    $this->dbShow = Process::result('{"platform":{"name":"MariaDB"},"tables":[{"table":"users","schema":"app_t9"}]}');
+    $dump = new DatabaseDump(true);
+    $strategy(new FastSetup(dump: $dump));
+    File::ensureDirectoryExists($this->path.'/database/migrations');
+    File::put($this->path.'/.env', "DB_DATABASE=app_t9\n");
+    $file = $dump->path($dump->key($this->path));
+    File::ensureDirectoryExists(dirname($file));
+    File::put($file, gzencode('-- dump'));
+
+    $steps = [];
+    expect(app(BootstrapStrategy::class)->restoreDatabaseDump($this->path, onStep: function (string $step) use (&$steps) {
+        $steps[] = $step;
+    }))->toBe('existing')
+        ->and(implode("\n", $steps))->toContain('no migrations table');
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip'));
+});
+
+it('refuses a restore when it cannot list the tables of a database without a migrations table', function () use ($strategy) {
+    ($this->fake)();
+    $this->dbShow = Process::result(errorOutput: 'Access denied', exitCode: 1);
+    $strategy(new FastSetup(dump: new DatabaseDump(true)));
+    File::ensureDirectoryExists($this->path);
+
+    expect(fn () => app(BootstrapStrategy::class)->restoreDatabaseDump($this->path))
+        ->toThrow(RuntimeException::class, 'Cannot tell whether the database has tables');
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, 'gunzip'));
 });
