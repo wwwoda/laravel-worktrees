@@ -538,3 +538,23 @@ it('has the frontend build cache off by default', function () {
     expect($published['fast']['build_cache']['enabled'])->toBeFalse()
         ->and(WorktreesServiceProvider::buildCache('pnpm')->enabled())->toBeFalse();
 });
+
+it('keys the shared image by a Dockerfile outside the hash paths', function () {
+    $worktree = $this->base.'/wt-dockerfile';
+    File::ensureDirectoryExists($worktree.'/.docker/php');
+    File::put($worktree.'/.docker/php/Dockerfile', 'FROM php:8.4');
+    $image = new AppImage('app-image');
+    $build = ['context' => $worktree, 'dockerfile' => '.docker/php/Dockerfile'];
+    $tag = $image->tag($worktree, $build);
+
+    File::put($worktree.'/.docker/php/Dockerfile', 'FROM php:8.5');
+    expect($image->tag($worktree, $build))->not->toBe($tag);
+
+    // A Dockerfile outside the worktree counts by its content.
+    $outside = $this->base.'/outside-dockerfile/Dockerfile';
+    File::ensureDirectoryExists(dirname($outside));
+    File::put($outside, 'FROM php:8.4');
+    $external = $image->tag($worktree, ['context' => $worktree, 'dockerfile' => $outside]);
+    File::put($outside, 'FROM php:8.5');
+    expect($image->tag($worktree, ['context' => $worktree, 'dockerfile' => $outside]))->not->toBe($external);
+});

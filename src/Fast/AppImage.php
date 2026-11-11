@@ -77,10 +77,30 @@ final readonly class AppImage
             } elseif ($context !== null && is_dir($context)) {
                 $build['context_content'] = ContentKey::of($context, ['.'], hidden: true);
             }
+            // The Dockerfile itself, also outside the hash paths (`.docker/php/Dockerfile`
+            // with a context of `.`). Compose names it relative to the context.
+            $dockerfile = $context === null ? null : self::dockerfile($context, $build['dockerfile'] ?? null);
+            $dockerfileInWorktree = $dockerfile === null ? null : self::relativeTo($worktreePath, $dockerfile);
+            if ($dockerfileInWorktree !== null && $dockerfileInWorktree !== '.') {
+                $paths[] = $dockerfileInWorktree;
+            } elseif ($dockerfile !== null && is_file($dockerfile)) {
+                $build['dockerfile_content'] = hash_file('sha256', $dockerfile);
+            }
             $prefix = 'build:'.json_encode(self::sorted($build), JSON_UNESCAPED_SLASHES)."\n";
         }
 
         return $this->name.':'.ContentKey::of($worktreePath, array_values(array_unique($paths)), $prefix, hidden: true);
+    }
+
+    /**
+     * The Dockerfile of a build section: `dockerfile` relative to the context
+     * (default `Dockerfile`); null for an inline `dockerfile_inline`.
+     */
+    private static function dockerfile(string $context, mixed $dockerfile): ?string
+    {
+        $name = is_string($dockerfile) && $dockerfile !== '' ? $dockerfile : 'Dockerfile';
+
+        return str_starts_with($name, '/') ? $name : rtrim($context, '/').'/'.$name;
     }
 
     /**
