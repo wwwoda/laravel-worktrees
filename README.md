@@ -283,6 +283,7 @@ php artisan worktree:exec -- artisan migrate:status
 php artisan worktree:exec -- composer require foo/bar
 php artisan worktree:exec -- "php -i | grep memory"      # one quoted word: a shell command
 php artisan worktree:exec -w t9 --service=mariadb -- mariadb -e 'select 1'
+php artisan worktree:exec -- tinker < script.php          # piped input goes to the command
 ```
 
 | Option | Meaning |
@@ -292,7 +293,7 @@ php artisan worktree:exec -w t9 --service=mariadb -- mariadb -e 'select 1'
 
 Why the `--`: artisan reads its own options `-h`, `--help`, `-V`, `--version` and `-q` anywhere on the line up to a `--`. Without it, `worktree:exec free -h` would show the help of `worktree:exec`, and `worktree:exec composer --version` would print the version of Laravel, both with exit code 0. `worktree:exec` refuses such a call without `--` (exit code 2). A call without these options also works without `--`, but scripts and agents should always write it.
 
-The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one, and the exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. Without `-w`, the command runs in the checkout that runs artisan: in the main checkout, `worktree:exec -- artisan migrate` changes the main database.
+The first word can be an alias of `exec.aliases` (`test`, `artisan`, `tinker`, `composer`). Each further word is quoted, so the shell in the container does not change it. The command gets a terminal when artisan has one; otherwise piped input (`< file`, `cat file |`) goes to its stdin. The exit code is the command's. A worktree with the main checkout's compose project is refused, as the command would run in the main checkout's container. Without `-w`, the command runs in the checkout that runs artisan: in the main checkout, `worktree:exec -- artisan migrate` changes the main database.
 
 #### `worktree:doctor`
 

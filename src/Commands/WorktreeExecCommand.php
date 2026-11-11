@@ -115,6 +115,9 @@ class WorktreeExecCommand extends Command
         $process = $runner->process($target->path, 60)->forever();
         if ($tty) {
             $process->tty();
+        } elseif (($stdin = $this->pipedInput()) !== null) {
+            // `< dump.sql` and `cat x | …`: docker compose exec passes its stdin on.
+            $process->input($stdin);
         }
         $commandLine = $runner->commandLine($command, $service, $tty);
         $result = $process->run($commandLine, $tty ? null : function (string $type, string $buffer): void {
@@ -241,6 +244,24 @@ class WorktreeExecCommand extends Command
         }
 
         return $parallel ? [...$rest, '--processes='.(int) $processes] : $rest;
+    }
+
+    /**
+     * Artisan's stdin when it is a pipe or a file; null for a terminal and
+     * for /dev/null.
+     *
+     * @return resource|null
+     */
+    protected function pipedInput(): mixed
+    {
+        if (! defined('STDIN') || stream_isatty(STDIN)) {
+            return null;
+        }
+        $mode = fstat(STDIN)['mode'] ?? 0;
+        $type = $mode & 0170000;
+
+        // S_IFIFO (pipe) and S_IFREG (file).
+        return in_array($type, [0010000, 0100000], true) ? STDIN : null;
     }
 
     private function interactiveTerminal(): bool

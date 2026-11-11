@@ -387,3 +387,24 @@ it('finds the words of worktree:exec that artisan would read as its own options'
     'another command' => [['artisan', 'about', '--version'], null],
     'artisan own -q before the name' => [['artisan', '-q', 'worktree:exec', 'test'], null],
 ]);
+
+it('passes piped input on to the command', function () {
+    $stdin = fopen('php://memory', 'r+');
+    fwrite($stdin, "select 1;\n");
+    rewind($stdin);
+    app()->bind(WorktreeExecCommand::class, fn () => new class($stdin) extends WorktreeExecCommand
+    {
+        public function __construct(private readonly mixed $stdin)
+        {
+            parent::__construct();
+        }
+
+        protected function pipedInput(): mixed
+        {
+            return $this->stdin;
+        }
+    });
+
+    $this->artisan('worktree:exec', ['cmd' => ['mariadb'], '--worktree' => 't9', '--service' => 'mariadb'])->assertSuccessful();
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec') && $p->input === $stdin);
+});
