@@ -25,6 +25,12 @@ final readonly class IdleStacks
 
     private const WOKEN = 'storage/app/worktree/woken';
 
+    // Held by a wake and by the stop of an idle stack, so a stop cannot follow a wake unseen.
+    private const LOCK = 'storage/app/worktree/idle.lock';
+
+    // The package's own state files (idle.json, woken, the lock) are no use of the stack.
+    private const STATUS_COMMAND = "git status --porcelain -z --untracked-files=all -- . ':(exclude)storage/app/worktree'";
+
     public function __construct(
         private WorktreeManager $manager,
         private string $appService,
@@ -68,13 +74,17 @@ final readonly class IdleStacks
     }
 
     /**
-     * The running containers of the checkout's compose project, by service.
+     * The running containers of the checkout's compose project, by service;
+     * null when compose cannot tell (no daemon, unreadable output).
      *
-     * @return array<string, string> service => container name
+     * @return array<string, string>|null service => container name
      */
-    public function running(string $path): array
+    public function running(string $path): ?array
     {
         $result = ComposeProcess::in($path, 30)->run('docker compose ps --format json');
+        if (! $result->successful()) {
+            return null;
+        }
         $running = [];
         foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
             $rows = json_decode($line, true);
@@ -176,7 +186,7 @@ final readonly class IdleStacks
             $times[] = (int) filemtime($head);
         }
         // -z: paths as they are (no quotes, no escapes); a rename or copy gives the new path, then the old one.
-        $status = Process::path($path)->timeout(10)->run('git status --porcelain -z --untracked-files=all');
+        $status = Process::path($path)->timeout(10)->run(self::STATUS_COMMAND);
         // A changed status counts as use: a deleted file has no time of its own.
         // The first snapshot only records it.
         if ($status->successful() && ($hash = sha1($status->output())) !== ($state['status'] ?? null)) {
@@ -215,19 +225,60 @@ final readonly class IdleStacks
     }
 
     /**
+     * Stop the stack unless it was woken at or after `$checkedAt`, under the stack
+     * lock: a wake that runs now finishes first, and its time is then seen.
+     * Null: woken, not stopped.
+     */
+    public function stopUnlessWoken(string $path, int $checkedAt): ?ProcessResult
+    {
+        return $this->locked($path, function () use ($path, $checkedAt): ?ProcessResult {
+            clearstatcache(true, $path.'/'.self::WOKEN);
+            if (is_file($path.'/'.self::WOKEN) && (int) filemtime($path.'/'.self::WOKEN) >= $checkedAt) {
+                return null;
+            }
+
+            return $this->stop($path);
+        });
+    }
+
+    /**
      * Start the stack (the services of its active profiles) and wait until it runs and is healthy.
      *
      * @param  (\Closure(string, string): void)|null  $output
      */
     public function wake(string $path, ?\Closure $output = null): ProcessResult
     {
-        $result = ComposeProcess::in($path, 600)->run('docker compose up -d --wait', $output);
-        if ($result->successful()) {
-            File::ensureDirectoryExists(dirname($path.'/'.self::WOKEN));
-            File::put($path.'/'.self::WOKEN, date(DATE_ATOM)."\n");
-        }
+        return $this->locked($path, function () use ($path, $output): ProcessResult {
+            $result = ComposeProcess::in($path, 600)->run('docker compose up -d --wait', $output);
+            if ($result->successful()) {
+                File::put($path.'/'.self::WOKEN, date(DATE_ATOM)."\n");
+            }
 
-        return $result;
+            return $result;
+        });
+    }
+
+    /**
+     * @template T
+     *
+     * @param  \Closure(): T  $callback
+     * @return T
+     */
+    private function locked(string $path, \Closure $callback): mixed
+    {
+        File::ensureDirectoryExists(dirname($path.'/'.self::LOCK));
+        $handle = fopen($path.'/'.self::LOCK, 'c');
+        if ($handle === false) {
+            throw new \RuntimeException("Cannot open the stack lock of {$path}.");
+        }
+        try {
+            flock($handle, LOCK_EX);
+
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /**

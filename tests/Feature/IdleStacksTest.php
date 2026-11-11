@@ -106,7 +106,7 @@ it('reads each file inside untracked folders', function () {
     // An edit inside an untracked folder does not change the folder's time: git must list the files.
     app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
 
-    Process::assertRan(fn (PendingProcess $p) => $p->command === 'git status --porcelain -z --untracked-files=all' && $p->path === $this->paths['idle']);
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git status --porcelain -z --untracked-files=all ') && $p->path === $this->paths['idle']);
 });
 
 it('reads the edit time of files with quoted names and of renamed files', function (string $file, string $status) {
@@ -155,4 +155,87 @@ it('counts a deleted file as use', function () {
 
     $this->gitStatus = " D routes/web.php\0";
     expect($stacks->lastActivity($path, 1000, time()))->toBeGreaterThan(time() - 5);
+});
+
+it('stops no checkout whose compose project another checkout has too', function () {
+    $this->projects['busy'] = 'app-copied';
+    $this->projects['idle'] = 'app-copied';
+
+    $this->artisan('worktree:idle-stop', ['--minutes' => 30])
+        ->expectsTable(['Worktree', 'Idle (min)', 'Action'], [
+            ['busy', '-', 'skipped: compose project app-copied of 2 checkouts'],
+            ['idle', '-', 'skipped: compose project app-copied of 2 checkouts'],
+            ['off', '-', 'stopped already'],
+            ['twin', '-', "skipped: the main checkout's compose project"],
+        ])
+        ->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => str_ends_with((string) $p->command, ' stop'));
+});
+
+it('does not stop a stack that was woken after its check', function () {
+    // The wake happens while the timer checks the stack.
+    Process::fake(['git status *' => function (PendingProcess $p) {
+        if ($p->path === $this->paths['idle']) {
+            File::put($this->paths['idle'].'/storage/app/worktree/woken', 'now');
+            touch($this->paths['idle'].'/storage/app/worktree/woken', time() + 5);
+        }
+
+        return Process::result();
+    }]);
+
+    $this->artisan('worktree:idle-stop', ['--minutes' => 30])->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => $p->path === $this->paths['idle'] && str_ends_with((string) $p->command, ' stop'));
+});
+
+it('holds the stack lock while it wakes a stack', function () {
+    $this->locked = null;
+    // The fallback handler: a new key would come after it.
+    Process::fake(['*' => function (PendingProcess $p) {
+        if ($p->command === 'docker compose up -d --wait') {
+            $handle = fopen($this->paths['idle'].'/storage/app/worktree/idle.lock', 'c');
+            $this->locked = ! flock($handle, LOCK_EX | LOCK_NB);
+            fclose($handle);
+        }
+
+        return Process::result();
+    }]);
+
+    $this->artisan('worktree:wake', ['worktree' => 'idle'])->assertSuccessful();
+    expect($this->locked)->toBeTrue();
+});
+
+it('does not wake a checkout with the main checkout\'s compose project', function () {
+    $this->artisan('worktree:wake', ['worktree' => 'twin'])
+        ->expectsOutputToContain("the main checkout's compose project")
+        ->assertFailed();
+    Process::assertNotRan('docker compose up -d --wait');
+});
+
+it('wakes a folder given without a slash before it looks for a worktree name', function () {
+    $cwd = getcwd();
+    chdir($this->base);
+    try {
+        $this->artisan('worktree:wake', ['worktree' => basename($this->paths['idle'])])->assertSuccessful();
+    } finally {
+        chdir($cwd);
+    }
+    Process::assertRan(fn (PendingProcess $p) => $p->command === 'docker compose up -d --wait' && $p->path === $this->paths['idle']);
+});
+
+it('reports a failed docker compose ps instead of a stopped stack', function () {
+    Process::fake(['docker compose ps --format json' => fn (PendingProcess $p) => $p->path === $this->paths['idle']
+        ? Process::result(errorOutput: 'Cannot connect to the Docker daemon', exitCode: 1)
+        : Process::result(json_encode(['Service' => 'laravel.test', 'Name' => 'app-'.($this->nameOf)($p->path).'-app-1', 'State' => 'running']))]);
+
+    $this->artisan('worktree:idle-stop', ['--minutes' => 30, '--json' => true])
+        ->expectsOutputToContain('skipped: docker compose ps failed')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => $p->path === $this->paths['idle'] && str_ends_with((string) $p->command, ' stop'));
+});
+
+it('leaves the package\'s own state files out of the git status', function () {
+    app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
+
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git status --porcelain -z --untracked-files=all -- .')
+        && str_contains((string) $p->command, "':(exclude)storage/app/worktree'"));
 });

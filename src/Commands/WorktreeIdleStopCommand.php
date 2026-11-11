@@ -43,14 +43,25 @@ class WorktreeIdleStopCommand extends Command
             $checkouts[$index]['project'] = $stacks->project($checkout['path']);
             $checkouts[$index]['running'] = $stacks->running($checkout['path']);
         }
+        // How many checkouts resolve to each project: a stop acts on all of them.
+        $projectCount = [];
         foreach ($stacks->checkouts(true) as $checkout) {
+            $project = $checkout['main'] ? $stacks->project($checkout['path']) : null;
+            foreach ($checkouts as $listed) {
+                if ($listed['path'] === $checkout['path']) {
+                    $project = $listed['project'];
+                }
+            }
             if ($checkout['main']) {
-                $mainProject = $stacks->project($checkout['path']);
+                $mainProject = $project;
+            }
+            if ($project !== null) {
+                $projectCount[$project] = ($projectCount[$project] ?? 0) + 1;
             }
         }
         $apps = [];
         foreach ($checkouts as $checkout) {
-            if (isset($checkout['running'][$stacks->appService()])) {
+            if (is_array($checkout['running']) && isset($checkout['running'][$stacks->appService()])) {
                 $apps[] = $checkout['running'][$stacks->appService()];
             }
         }
@@ -60,6 +71,12 @@ class WorktreeIdleStopCommand extends Command
         $failed = false;
         foreach ($checkouts as $checkout) {
             $row = ['worktree' => $checkout['name'], 'path' => $checkout['path'], 'idle_minutes' => null, 'action' => 'none'];
+            if ($checkout['running'] === null) {
+                $failed = true;
+                $rows[] = [...$row, 'action' => 'skipped: docker compose ps failed'];
+
+                continue;
+            }
             if ($checkout['running'] === []) {
                 $rows[] = [...$row, 'action' => 'stopped already'];
 
@@ -68,6 +85,12 @@ class WorktreeIdleStopCommand extends Command
             // A worktree with the main checkout's project would stop the main checkout's containers.
             if (! $checkout['main'] && $checkout['project'] !== null && $checkout['project'] === $mainProject) {
                 $rows[] = [...$row, 'action' => "skipped: the main checkout's compose project"];
+
+                continue;
+            }
+            // Two worktrees with one project (a copied .env): a stop would stop the other one too.
+            if ($checkout['project'] !== null && ($projectCount[$checkout['project']] ?? 0) > 1) {
+                $rows[] = [...$row, 'action' => "skipped: compose project {$checkout['project']} of {$projectCount[$checkout['project']]} checkouts"];
 
                 continue;
             }
@@ -90,7 +113,12 @@ class WorktreeIdleStopCommand extends Command
 
                 continue;
             }
-            $result = $stacks->stop($checkout['path']);
+            $result = $stacks->stopUnlessWoken($checkout['path'], $now);
+            if ($result === null) {
+                $rows[] = [...$row, 'action' => 'in use (woken)'];
+
+                continue;
+            }
             $failed = $failed || ! $result->successful();
             $rows[] = [...$row, 'action' => $result->successful() ? 'stopped' : 'stop failed: '.trim($result->errorOutput())];
         }

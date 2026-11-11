@@ -231,9 +231,9 @@ php artisan worktree:idle-stop --minutes=60 --dry-run
 php artisan worktree:wake t9                   # start a stopped stack and wait until it is healthy
 ```
 
-`worktree:idle-stop` checks each registered worktree (the main checkout only with `--include-main`). A stack counts as used when the network traffic of its app container changed since the last check (any request does that; the exact byte counters of `/proc/net/dev` in the container, or `docker stats` where that fails), when its code changed (a commit, a checkout, an edited or deleted file), when a log in `storage/logs` was written, or when `worktree:wake` started it. The traffic of the last check is kept in the worktree's `storage/app/worktree/idle.json`, so the first check of a stack never stops it. A stack whose app container does not run (its database still does) counts as unused from its first check. An unused stack gets `docker compose stop` for every profile: the containers and volumes stay, so it starts again in seconds with its data. A worktree with the main checkout's compose project is skipped.
+`worktree:idle-stop` checks each registered worktree (the main checkout only with `--include-main`). A stack counts as used when the network traffic of its app container changed since the last check (any request does that; the exact byte counters of `/proc/net/dev` in the container, or `docker stats` where that fails), when its code changed (a commit, a checkout, an edited or deleted file), when a log in `storage/logs` was written, or when `worktree:wake` started it. The traffic of the last check is kept in the worktree's `storage/app/worktree/idle.json`, so the first check of a stack never stops it. A stack whose app container does not run (its database still does) counts as unused from its first check. An unused stack gets `docker compose stop` for every profile: the containers and volumes stay, so it starts again in seconds with its data. The git status leaves out the package's own files in `storage/app/worktree`. These stacks are skipped: a worktree with the main checkout's compose project, worktrees that share one compose project (a copied `.env`), and a stack that `worktree:wake` started during the check. When `docker compose ps` fails for a stack, it is skipped and the command fails, so a host timer shows the error.
 
-`worktree:wake` runs `docker compose up -d --wait` (the services of the active profiles) and counts as use.
+`worktree:wake` takes a worktree name or a folder (a folder that exists wins over a name). It refuses a worktree with the main checkout's compose project, as the setup does. It runs `docker compose up -d --wait` (the services of the active profiles) and counts as use. A wake and the stop of an idle stack hold the lock `storage/app/worktree/idle.lock`, so a stop never follows a wake that it did not see.
 
 See [Idle stacks](#idle-stacks) for the host timer and for starting stacks on the first request.
 
@@ -556,7 +556,7 @@ Run `worktree:idle-stop` every 10 minutes from the main checkout, for example wi
 */10 * * * * cd /srv/dev/shop/app && php artisan worktree:idle-stop >> storage/logs/worktree-idle.log 2>&1
 ```
 
-or a systemd user timer that runs the same command. A stopped stack starts again with `php artisan worktree:wake <name>` (or `worktree:doctor --fix`, which starts stopped containers).
+or a systemd user timer that runs the same command. A stopped stack starts again with `php artisan worktree:wake <name>`.
 
 ### Start on the first request (Sablier)
 
@@ -579,7 +579,7 @@ or a systemd user timer that runs the same command. A stopped stack starts again
 
 2. **Sablier itself**, once per host, with the Docker socket: `sablierapp/sablier` with `start --provider.name=docker`, on the router's network.
 
-3. **The router.** Traefik (agent hosts): the [Sablier Traefik plugin](https://github.com/sablierapp/sablier-traefik-plugin) in the static config, and `providers.docker.allowEmptyServices=true`, so the route of a stopped container stays and its first request reaches the plugin. Then a middleware per worktree router, for example:
+3. **The router.** Traefik (agent hosts): the [Sablier Traefik plugin](https://github.com/sablierapp/sablier-traefik-plugin) in the static config, and `providers.docker.allowEmptyServices=true`, so the route of a stopped container stays and its first request reaches the plugin. The plugin documents label configuration for Traefik 3.6 or later with the label `traefik.docker.allownonrunning=true` on each routed service, so that Traefik keeps the routes of stopped containers. Then a middleware per worktree router, for example:
 
    ```yaml
    labels:
@@ -588,6 +588,7 @@ or a systemd user timer that runs the same command. A stopped stack starts again
      - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.sessionDuration=30m
      - traefik.http.middlewares.${DEV_SLUG_APP}-sablier.plugin.sablier.blocking.timeout=60s
      - traefik.http.routers.${DEV_SLUG_APP}.middlewares=${DEV_SLUG_APP}-sablier
+     - traefik.docker.allownonrunning=true
    ```
 
    Caddy: Sablier needs a Caddy built with the [Sablier Caddy plugin](https://github.com/sablierapp/sablier-caddy-plugin) and routes that do not come from running containers (caddy-docker-proxy drops the labels of a stopped container). Where that is too much, use the host timer and `worktree:wake`.
@@ -607,6 +608,7 @@ In a worktree:
 | `storage/app/worktree/state.json` | `shared`: the state file. |
 | `storage/app/worktree/idle.json` | The traffic and a hash of the git status of the last `worktree:idle-stop` check, and when each changed. |
 | `storage/app/worktree/woken` | When `worktree:wake` last started the stack. |
+| `storage/app/worktree/idle.lock` | The lock of a wake and of the stop of an idle stack. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.
 
