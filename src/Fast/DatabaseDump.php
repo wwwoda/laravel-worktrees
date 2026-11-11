@@ -160,11 +160,14 @@ final readonly class DatabaseDump
         File::ensureDirectoryExists(dirname($path));
         $temporary = $path.'.download-'.bin2hex(random_bytes(4));
         $command = ['curl', '-fsSL', '--retry', '2', '-o', $temporary];
+        $process = Process::timeout(600);
         if ($this->urlHeader !== null && $this->urlHeader !== '') {
-            array_push($command, '-H', $this->urlHeader);
+            // From stdin (curl 7.55 and later): a token on the command line is visible to every user of the host.
+            array_push($command, '-H', '@-');
+            $process->input($this->urlHeader."\n");
         }
         $command[] = $url;
-        $result = Process::timeout(600)->run($command);
+        $result = $process->run($command);
         // A missing dump (404) is normal for a new migration: the setup seeds and saves one.
         if (! $result->successful() || ! Process::timeout(120)->run(['gunzip', '-t', $temporary])->successful()) {
             File::delete($temporary);

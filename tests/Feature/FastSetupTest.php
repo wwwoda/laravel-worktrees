@@ -381,7 +381,9 @@ it('downloads a missing dump and keeps a failed download out of the way', functi
     ]);
 
     expect($dump->find($this->path))->toBe($dump->path($key));
-    Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array("https://ci.example/dumps/{$key}.sql.gz", $p->command, true) && in_array('Authorization: Bearer x', $p->command, true));
+    // The header (a token) goes through stdin, not the command line.
+    Process::assertRan(fn (PendingProcess $p) => is_array($p->command) && in_array("https://ci.example/dumps/{$key}.sql.gz", $p->command, true)
+        && in_array('@-', $p->command, true) && ! in_array('Authorization: Bearer x', $p->command, true) && $p->input === "Authorization: Bearer x\n");
 
     File::delete($dump->path($key));
     Process::fake(["'curl' *" => Process::result(exitCode: 22), '*' => Process::result()]);
