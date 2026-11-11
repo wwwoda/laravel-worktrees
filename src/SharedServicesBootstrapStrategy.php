@@ -177,16 +177,38 @@ class SharedServicesBootstrapStrategy extends SailBootstrapStrategy implements C
         if (! $this->buildFrontend) {
             return;
         }
-        $pm = $this->nodePackageManager;
-        // Install exactly the lock file: npm has its own command for that.
-        $install = $pm === 'npm' ? 'npm ci' : "{$pm} install --frozen-lockfile";
         $result = $this->compose($worktreePath, 900)->run(
-            $this->execCommand("{$install} && {$pm} run build"),
+            $this->execCommand($this->containerNodeInstall()." && {$this->nodePackageManager} run build"),
             $output,
         );
         if (! $result->successful()) {
             throw new RuntimeException("Frontend build in the container failed: {$result->errorOutput()}");
         }
+    }
+
+    /**
+     * The install into the app container's own node_modules volume, without
+     * the build: after a build was copied from the cache, the dev server in
+     * the container still needs its packages.
+     *
+     * @param  (Closure(string, string): void)|null  $output
+     */
+    public function installContainerNodeDependencies(string $worktreePath, ?Closure $output = null): void
+    {
+        $result = $this->compose($worktreePath, 900)->run($this->execCommand($this->containerNodeInstall()), $output);
+        if (! $result->successful()) {
+            throw new RuntimeException("Node install in the container failed: {$result->errorOutput()}");
+        }
+    }
+
+    /**
+     * Install exactly the lock file: npm has its own command for that.
+     */
+    private function containerNodeInstall(): string
+    {
+        $pm = $this->nodePackageManager;
+
+        return $pm === 'npm' ? 'npm ci' : "{$pm} install --frozen-lockfile";
     }
 
     /**

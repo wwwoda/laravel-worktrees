@@ -460,15 +460,7 @@ class WorktreeManager
             }
             if (empty($options['skip_build']) && $this->buildFrontend) {
                 $run('build', function () use ($path, $processOutput, $step, $finishNode): void {
-                    $source = $this->buildCache?->restore($path);
-                    if ($source !== null) {
-                        $step("Copied the frontend build from the {$source}: its inputs are the same.");
-
-                        return;
-                    }
-                    $finishNode();
-                    $this->bootstrapStrategy->buildFrontend($path, $processOutput);
-                    $this->buildCache?->store($path);
+                    $this->restoreOrBuildFrontend($path, $processOutput, $step, $finishNode);
                 }, ! is_file($path.'/public/build/manifest.json'));
             }
             if (empty($options['skip_deps']) && $this->runMigrations) {
@@ -497,6 +489,31 @@ class WorktreeManager
             flock($handle, LOCK_UN);
             fclose($handle);
         }
+    }
+
+    /**
+     * The build stage: a copy of a build with the same inputs, else a build
+     * (after the node install that runs in parallel).
+     *
+     * @param  (Closure(string, string): void)|null  $processOutput
+     * @param  Closure(string): void  $step
+     * @param  Closure(): void  $finishNode
+     */
+    private function restoreOrBuildFrontend(string $path, ?Closure $processOutput, Closure $step, Closure $finishNode): void
+    {
+        $source = $this->buildCache?->restore($path);
+        if ($source !== null) {
+            $step("Copied the frontend build from the {$source}: its inputs are the same.");
+            // The build installs the app container's own node_modules; without the build, that install still runs.
+            if ($this->bootstrapStrategy instanceof SharedServicesBootstrapStrategy) {
+                $this->bootstrapStrategy->installContainerNodeDependencies($path, $processOutput);
+            }
+
+            return;
+        }
+        $finishNode();
+        $this->bootstrapStrategy->buildFrontend($path, $processOutput);
+        $this->buildCache?->store($path);
     }
 
     /**

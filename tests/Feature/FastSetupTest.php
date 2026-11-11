@@ -4,6 +4,7 @@ use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
+use Woda\Worktrees\DatabaseCloner;
 use Woda\Worktrees\Fast\AppImage;
 use Woda\Worktrees\Fast\BuildCache;
 use Woda\Worktrees\Fast\ContentKey;
@@ -14,6 +15,7 @@ use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\SharedServicesBootstrapStrategy;
+use Woda\Worktrees\WorktreeManager;
 use Woda\Worktrees\WorktreesServiceProvider;
 
 /*
@@ -412,6 +414,23 @@ describe('the frontend build cache', function () {
         $git($this->main, 'worktree add -q '.escapeshellarg($this->tree).' -b t');
         $this->git = $git;
         $this->cache = new BuildCache(true, ['resources', 'package.json'], 'sail:pnpm', mainCheckout: $this->main);
+    });
+
+    it('installs the shared app container\'s node packages when it copies a build', function () {
+        File::ensureDirectoryExists($this->main.'/public/build');
+        File::put($this->main.'/public/build/manifest.json', '{"main":1}');
+        touch($this->main.'/public/build/manifest.json', time() + 5);
+        $strategy = Mockery::mock(SharedServicesBootstrapStrategy::class);
+        $strategy->shouldReceive('installContainerNodeDependencies')->once()->with($this->tree, null);
+        $strategy->shouldNotReceive('buildFrontend');
+        $manager = new WorktreeManager(
+            basePath: $this->base, branchPrefix: '', baseBranch: 'main', copyFiles: [],
+            databaseCloner: new DatabaseCloner('none', false, null, null, '127.0.0.1'),
+            bootstrapStrategy: $strategy, buildFrontend: true, runMigrations: false, buildCache: $this->cache,
+        );
+
+        (new ReflectionMethod($manager, 'restoreOrBuildFrontend'))->invoke($manager, $this->tree, null, fn () => null, fn () => null);
+        expect(File::exists($this->tree.'/public/build/manifest.json'))->toBeTrue();
     });
 
     it('copies the main checkout\'s build when it is newer than its last checkout, and keeps it', function () {
