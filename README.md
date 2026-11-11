@@ -57,7 +57,7 @@ The **legacy** database clone strategies (`database.strategy`) work with `native
 
 ## Commands
 
-All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only. `worktree:create`, `worktree:delete` and `worktree:list` give the same result wherever artisan runs: run in a linked worktree, they run again with the same arguments in the main checkout (the folder that git names as the home of the common `.git`), with the variables of the worktree's `.env` cleared (and those of `.env.{environment}` for `--env` or `APP_ENV`). `--env` is passed on.
+All commands that take a worktree name find the folder `{base_path}/{project}-{name}`, where `{project}` is the folder name of the main checkout. A name has letters, digits and hyphens only. `worktree:create`, `worktree:delete` and `worktree:list` give the same result wherever artisan runs: run in a linked worktree, they run again with the same arguments in the main checkout (the folder that git names as the home of the common `.git`), with the variables of the worktree's `.env` cleared (and those of `.env.{environment}` for `--env` or `APP_ENV`). `--env` is passed on. The main checkout runs its own installed copy of this package: when its version (in `vendor/composer/installed.json`; for a branch install also the commit) differs from the one in the worktree, or cannot be read, the command stops and names both versions. Update the main checkout first.
 
 ### `worktree:create`
 

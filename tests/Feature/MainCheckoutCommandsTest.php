@@ -1,5 +1,6 @@
 <?php
 
+use Composer\InstalledVersions;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
@@ -15,6 +16,13 @@ beforeEach(function () {
     File::ensureDirectoryExists($this->main.'/.git');
     File::put($this->main.'/artisan', '<?php');
     File::put($this->main.'/.env', "APP_URL=https://app.test\n");
+    // The main checkout has the same version of the package as the code that runs here.
+    $this->installMain = function (?string $version, ?string $reference = null) {
+        $packages = $version === null ? [] : [['name' => 'woda/laravel-worktrees', 'version' => $version, 'source' => ['reference' => $reference]]];
+        File::ensureDirectoryExists($this->main.'/vendor/composer');
+        File::put($this->main.'/vendor/composer/installed.json', json_encode(['packages' => $packages]));
+    };
+    ($this->installMain)(InstalledVersions::getPrettyVersion('woda/laravel-worktrees'), InstalledVersions::getReference('woda/laravel-worktrees'));
     MainCheckout::forget();
     Process::fake([
         // artisan runs in a linked worktree: git names another folder as the main checkout.
@@ -83,4 +91,23 @@ it('passes --env on and clears the keys of the selected environment file', funct
         && str_contains((string) $p->command, "'worktree:list' '--json' '--env=staging'")
         && ($p->environment['STAGING_DB'] ?? null) === false
         && ($p->environment['WORKTREE_STAGING_DB'] ?? null) === false);
+});
+
+it('refuses to hand over to a main checkout with another version of the package', function () {
+    ($this->installMain)('v0.1.0', 'abc1234');
+
+    $this->artisan('worktree:delete', ['name' => 'fix-x', '--force' => true, '--no-interaction' => true])
+        // One message: it names both versions and the update of the main checkout.
+        ->expectsOutputToContain('The main checkout has woda/laravel-worktrees v0.1.0, this checkout has')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
+});
+
+it('refuses to hand over when the main checkout does not have the package', function () {
+    ($this->installMain)(null);
+
+    $this->artisan('worktree:list', ['--json' => true, '--no-interaction' => true])
+        ->expectsOutputToContain('Cannot read the version of woda/laravel-worktrees in the main checkout')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
 });

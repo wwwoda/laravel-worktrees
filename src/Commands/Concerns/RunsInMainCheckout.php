@@ -2,6 +2,7 @@
 
 namespace Woda\Worktrees\Commands\Concerns;
 
+use Composer\InstalledVersions;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Symfony\Component\Console\Input\StreamableInputInterface;
@@ -20,6 +21,8 @@ trait RunsInMainCheckout
 {
     private const DELEGATED = 'WORKTREES_RUN_IN_MAIN_CHECKOUT';
 
+    private const PACKAGE = 'woda/laravel-worktrees';
+
     /**
      * The exit code of the same command in the main checkout; null when
      * artisan already runs there.
@@ -30,6 +33,13 @@ trait RunsInMainCheckout
         $here = base_path();
         if (getenv(self::DELEGATED) === '1' || (realpath($main) ?: $main) === (realpath($here) ?: $here) || ! is_file($main.'/artisan')) {
             return null;
+        }
+        // The main checkout runs its own installed package: older code would run without newer safety checks.
+        $problem = $this->packageVersionProblem($main);
+        if ($problem !== null) {
+            $this->components->error($problem);
+
+            return self::FAILURE;
         }
         // On stderr: `worktree:list --json` must print only JSON.
         $this->getOutput()->getErrorStyle()->writeln("Running in the main checkout {$main}.");
@@ -79,6 +89,62 @@ trait RunsInMainCheckout
     protected function canAsk(): bool
     {
         return $this->input->isInteractive() && $this->stdinIsTerminal();
+    }
+
+    /**
+     * Why the main checkout must not run the command: its installed version
+     * of this package differs from the one that runs here, or cannot be read.
+     * Null when they are the same.
+     */
+    private function packageVersionProblem(string $main): ?string
+    {
+        $package = self::PACKAGE;
+        $ours = self::versionLabel(
+            InstalledVersions::isInstalled($package) ? InstalledVersions::getPrettyVersion($package) : null,
+            InstalledVersions::isInstalled($package) ? InstalledVersions::getReference($package) : null,
+        );
+        $theirs = self::installedVersion($main.'/vendor/composer/installed.json');
+        if ($ours === null || $theirs === null) {
+            $where = $ours === null ? 'this checkout' : 'the main checkout';
+
+            return "Cannot read the version of {$package} in {$where}, so it is unknown whether the main checkout runs the same code. Run composer install in the main checkout {$main}, or run the command there.";
+        }
+        if ($ours !== $theirs) {
+            return "The main checkout has {$package} {$theirs}, this checkout has {$ours}: the command would run there with other code. Update the main checkout first (cd {$main} && composer update {$package}), or run the command there.";
+        }
+
+        return null;
+    }
+
+    private static function installedVersion(string $file): ?string
+    {
+        $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+        $packages = is_array($data) ? ($data['packages'] ?? $data) : [];
+        foreach (is_array($packages) ? $packages : [] as $entry) {
+            if (is_array($entry) && ($entry['name'] ?? null) === self::PACKAGE) {
+                $source = is_array($entry['source'] ?? null) ? $entry['source'] : [];
+                $dist = is_array($entry['dist'] ?? null) ? $entry['dist'] : [];
+                $reference = $source['reference'] ?? $dist['reference'] ?? null;
+
+                return self::versionLabel(is_string($entry['version'] ?? null) ? $entry['version'] : null, is_string($reference) ? $reference : null);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * `v1.2.0`, or `dev-master@0123abc` for a branch: the commit tells two branch installs apart.
+     */
+    private static function versionLabel(?string $version, ?string $reference): ?string
+    {
+        if ($version === null || $version === '') {
+            return null;
+        }
+
+        return str_starts_with($version, 'dev-') || str_ends_with($version, '-dev')
+            ? $version.'@'.substr((string) $reference, 0, 7)
+            : $version;
     }
 
     /**
