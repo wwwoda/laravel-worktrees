@@ -120,6 +120,8 @@ class WorktreeManager
 
     public function create(string $name, ?string $branch = null, ?string $baseBranch = null): string
     {
+        $named = $branch !== null;
+        $tracked = false;
         $branch ??= $this->branchPrefix.$name;
         $baseBranch ??= $this->baseBranch;
         $path = $this->pathFor($name);
@@ -129,19 +131,56 @@ class WorktreeManager
         }
 
         $local = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch));
-        $remote = $this->git('show-ref --verify --quiet '.escapeshellarg('refs/remotes/origin/'.$branch));
-
-        $command = $local->successful()
-            ? sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch))
-            : sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path),
-                escapeshellarg($remote->successful() ? 'origin/'.$branch : $baseBranch));
+        if ($local->successful()) {
+            $command = sprintf('worktree add %s %s', escapeshellarg($path), escapeshellarg($branch));
+        } elseif ($this->fetchRemoteBranch($branch, $named)) {
+            // The remote's head: not a new branch from the base branch. Tracking is set below.
+            $tracked = true;
+            $command = sprintf('worktree add --no-track -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg('origin/'.$branch));
+        } else {
+            $command = sprintf('worktree add -b %s %s %s', escapeshellarg($branch), escapeshellarg($path), escapeshellarg($baseBranch));
+        }
         $result = $this->git($command);
 
         if (! $result->successful()) {
             throw new RuntimeException("Failed to create worktree: {$result->errorOutput()}");
         }
+        // Track origin's branch through the branch config: `--track` refuses a
+        // remote ref outside the clone's fetch refspec (a single-branch clone).
+        if ($tracked && $this->git('remote get-url origin')->successful()) {
+            $this->git(sprintf('config %s origin', escapeshellarg('branch.'.$branch.'.remote')));
+            $this->git(sprintf('config %s %s', escapeshellarg('branch.'.$branch.'.merge'), escapeshellarg('refs/heads/'.$branch)));
+        }
 
         return $path;
+    }
+
+    /**
+     * Fetch the branch from origin into `origin/{branch}`, with an explicit
+     * refspec (a clone may fetch only some branches). True when origin has it.
+     * False when origin does not have it. Without an origin remote, an
+     * existing `origin/{branch}` ref counts. A fetch that
+     * fails otherwise (no network) stops a branch that was named: a new branch
+     * from the base would hide the remote one. For the default branch of a
+     * name, the last fetched `origin/{branch}` counts.
+     */
+    public function fetchRemoteBranch(string $branch, bool $required = true): bool
+    {
+        $ref = 'refs/remotes/origin/'.$branch;
+        // Without an origin remote, only a ref that is already there can count.
+        if ($this->git('remote get-url origin')->successful()) {
+            $fetch = Process::path(base_path())->timeout(60)->run('git fetch origin '.escapeshellarg('+refs/heads/'.$branch.':'.$ref));
+            if (! $fetch->successful()) {
+                if (stripos($fetch->errorOutput(), "couldn't find remote ref") !== false) {
+                    return false;
+                }
+                if ($required) {
+                    throw new RuntimeException("Cannot fetch the branch {$branch} from origin, so it is unknown whether origin has it: ".trim($fetch->errorOutput()));
+                }
+            }
+        }
+
+        return $this->git('show-ref --verify --quiet '.escapeshellarg($ref))->successful();
     }
 
     public function remove(string $name): void

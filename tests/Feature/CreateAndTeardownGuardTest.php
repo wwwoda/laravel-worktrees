@@ -106,7 +106,8 @@ test('a failed fetch or a branch that is nowhere stops create before it makes a 
 })->with([
     'issue, fetch fails' => [['--issue' => '7'], fn () => [
         'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
-        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+        'git show-ref *' => Process::result(exitCode: 1),
+        'git fetch origin *' => Process::result(errorOutput: 'network down', exitCode: 128),
     ]],
     'issue, branch not on origin' => [['--issue' => '7'], fn () => [
         'gh issue develop --list 7' => Process::result("7-add-auth\thttps://example.invalid/a\n"),
@@ -114,7 +115,8 @@ test('a failed fetch or a branch that is nowhere stops create before it makes a 
     ]],
     'pr, fetch fails' => [['--pr' => '5'], fn () => [
         'gh pr view 5 *' => Process::result('{"headRefName":"feature","isCrossRepository":false}'),
-        'git fetch origin' => Process::result(errorOutput: 'network down', exitCode: 128),
+        'git show-ref *' => Process::result(exitCode: 1),
+        'git fetch origin *' => Process::result(errorOutput: 'network down', exitCode: 128),
     ]],
 ]);
 

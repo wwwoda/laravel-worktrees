@@ -444,21 +444,23 @@ class WorktreeCreateCommand extends Command
     }
 
     /**
-     * Fetch origin and check that the branch is now local or on origin. Without
-     * this, create would cut a new branch with that name from the base.
+     * Check that the branch is local or on origin (fetched with its own
+     * refspec). Without this, create would cut a new branch with that name
+     * from the base.
      */
     private function fetchBranch(string $branch): bool
     {
-        $fetch = Process::path(base_path())->timeout(30)->run('git fetch origin');
-        if (! $fetch->successful()) {
-            $this->components->error('git fetch origin failed: '.$fetch->errorOutput());
-
-            return false;
+        if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch))->successful()) {
+            return true;
         }
-        foreach (['refs/heads/'.$branch, 'refs/remotes/origin/'.$branch] as $ref) {
-            if (Process::path(base_path())->run('git show-ref --verify --quiet '.escapeshellarg($ref))->successful()) {
+        try {
+            if (app(WorktreeManager::class)->fetchRemoteBranch($branch)) {
                 return true;
             }
+        } catch (\RuntimeException $e) {
+            $this->components->error($e->getMessage());
+
+            return false;
         }
         $this->components->error("Branch {$branch} is neither local nor on origin after the fetch.");
 
