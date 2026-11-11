@@ -249,3 +249,9 @@ it('does not wake a checkout whose compose project another worktree has', functi
         ->assertFailed();
     Process::assertNotRan('docker compose up -d --wait');
 });
+
+it('stops stacks after two hours without use by default', function () {
+    $published = require __DIR__.'/../../config/worktrees.php';
+
+    expect($published['idle']['minutes'])->toBe(120);
+});

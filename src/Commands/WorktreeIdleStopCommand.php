@@ -30,7 +30,7 @@ class WorktreeIdleStopCommand extends Command
             return self::FAILURE;
         }
         $minutesOption = $this->option('minutes');
-        $minutes = is_numeric($minutesOption) ? (int) $minutesOption : (is_numeric($configured = config('worktrees.idle.minutes', 30)) ? (int) $configured : 30);
+        $minutes = is_numeric($minutesOption) ? (int) $minutesOption : (is_numeric($configured = config('worktrees.idle.minutes', 120)) ? (int) $configured : 120);
         if ($minutes < 1) {
             $this->components->error('--minutes must be 1 or more.');
 

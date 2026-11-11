@@ -226,7 +226,7 @@ php artisan worktree:volumes --remove=shop-t9_sail-mariadb     # remove one (rep
 ### `worktree:idle-stop` and `worktree:wake` (`sail`, `shared`)
 
 ```bash
-php artisan worktree:idle-stop                 # stop stacks unused for idle.minutes (30)
+php artisan worktree:idle-stop                 # stop stacks unused for idle.minutes (120)
 php artisan worktree:idle-stop --minutes=60 --dry-run
 php artisan worktree:wake t9                   # start a stopped stack and wait until it is healthy
 ```
@@ -268,7 +268,7 @@ Publish `config/worktrees.php` to change values, or set the environment variable
 
 | Key | Env | Meaning |
 |---|---|---|
-| `idle.minutes` | `WORKTREE_IDLE_MINUTES` | Minutes without use before `worktree:idle-stop` stops a stack. [30] |
+| `idle.minutes` | `WORKTREE_IDLE_MINUTES` | Minutes without use before `worktree:idle-stop` stops a stack. Keep it well above the time an agent waits for CI or a review with a clean tree. [120] |
 | `idle.include_main` | `WORKTREE_IDLE_INCLUDE_MAIN` | Also stop the main checkout's stack. [false] |
 
 ### Database clone (`native`, `sail`)
