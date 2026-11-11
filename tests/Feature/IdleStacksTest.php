@@ -37,7 +37,7 @@ beforeEach(function () {
             return Process::result($name === 'off' ? '' : json_encode(['Service' => 'laravel.test', 'Name' => "app-{$name}-app-1", 'State' => 'running']));
         },
         'docker stats *' => Process::result("app-busy-app-1|1.5kB / 2kB\napp-idle-app-1|600B / 400B\napp-twin-app-1|1kB / 1kB\n"),
-        'git status *' => fn () => Process::result($this->gitStatus),
+        'git --no-optional-locks status *' => fn () => Process::result($this->gitStatus),
         'docker exec *' => function (PendingProcess $p) {
             preg_match("/^docker exec '([^']+)'/", (string) $p->command, $m);
 
@@ -106,7 +106,7 @@ it('reads each file inside untracked folders', function () {
     // An edit inside an untracked folder does not change the folder's time: git must list the files.
     app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
 
-    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git status --porcelain -z --untracked-files=all ') && $p->path === $this->paths['idle']);
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git --no-optional-locks status --porcelain -z --untracked-files=all ') && $p->path === $this->paths['idle']);
 });
 
 it('reads the edit time of files with quoted names and of renamed files', function (string $file, string $status) {
@@ -174,7 +174,7 @@ it('stops no checkout whose compose project another checkout has too', function 
 
 it('does not stop a stack that was woken after its check', function () {
     // The wake happens while the timer checks the stack.
-    Process::fake(['git status *' => function (PendingProcess $p) {
+    Process::fake(['git --no-optional-locks status *' => function (PendingProcess $p) {
         if ($p->path === $this->paths['idle']) {
             File::put($this->paths['idle'].'/storage/app/worktree/woken', 'now');
             touch($this->paths['idle'].'/storage/app/worktree/woken', time() + 5);
@@ -236,7 +236,7 @@ it('reports a failed docker compose ps instead of a stopped stack', function () 
 it('leaves the package\'s own state files out of the git status', function () {
     app(IdleStacks::class)->lastActivity($this->paths['idle'], 1000, time());
 
-    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git status --porcelain -z --untracked-files=all -- .')
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'git --no-optional-locks status --porcelain -z --untracked-files=all -- .')
         && str_contains((string) $p->command, "':(exclude)storage/app/worktree'"));
 });
 

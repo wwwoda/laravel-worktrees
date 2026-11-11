@@ -29,7 +29,8 @@ final readonly class IdleStacks
     private const LOCK = 'storage/app/worktree/idle.lock';
 
     // The package's own state files (idle.json, woken, the lock) are no use of the stack.
-    private const STATUS_COMMAND = "git status --porcelain -z --untracked-files=all -- . ':(exclude)storage/app/worktree'";
+    // --no-optional-locks: a status from the timer must not take index.lock while an agent commits.
+    private const STATUS_COMMAND = "git --no-optional-locks status --porcelain -z --untracked-files=all -- . ':(exclude)storage/app/worktree'";
 
     public function __construct(
         private WorktreeManager $manager,
