@@ -418,6 +418,21 @@ describe('the frontend build cache', function () {
         $this->cache = new BuildCache(true, ['resources', 'package.json'], 'sail:pnpm', mainCheckout: $this->main);
     });
 
+    it('keys ignored build inputs by their content on disk', function () {
+        // Flux's CSS under an ignored vendor folder: git sees no change there.
+        File::put($this->tree.'/.gitignore', "/public/build\n/storage\n/vendor\n");
+        File::ensureDirectoryExists($this->tree.'/vendor/flux/dist');
+        File::put($this->tree.'/vendor/flux/dist/flux.css', '.a{}');
+        ($this->git)($this->tree, 'add .gitignore');
+        ($this->git)($this->tree, 'commit -qm ignore');
+        $cache = new BuildCache(true, ['resources', 'package.json', 'vendor/flux/dist'], 'sail:pnpm', mainCheckout: $this->main);
+        $key = $cache->key($this->tree);
+
+        File::put($this->tree.'/vendor/flux/dist/flux.css', '.b{}');
+        expect($key)->not->toBeNull()
+            ->and($cache->key($this->tree))->not->toBe($key);
+    });
+
     it('installs the shared app container\'s node packages when it copies a build', function () {
         File::ensureDirectoryExists($this->main.'/public/build');
         File::put($this->main.'/public/build/manifest.json', '{"main":1}');

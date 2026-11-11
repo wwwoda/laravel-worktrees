@@ -62,8 +62,40 @@ final readonly class BuildCache
         if (! $tree->successful() || trim($tree->output()) === '') {
             return null;
         }
+        $untracked = $this->untrackedPaths($checkout);
+        if ($untracked === null) {
+            return null;
+        }
+        // Inputs that git does not track (vendor/, generated files) count by their content on disk.
+        $disk = $untracked === [] ? '' : 'disk:'.ContentKey::of($checkout, $untracked, hidden: true)."\n";
 
-        return substr(hash('sha256', "build:{$this->buildCommand}\n".$this->embeddedEnv($checkout).$tree->output()), 0, 16);
+        return substr(hash('sha256', "build:{$this->buildCommand}\n".$this->embeddedEnv($checkout).$disk.$tree->output()), 0, 16);
+    }
+
+    /**
+     * The configured paths that exist in the checkout but hold no file that
+     * git tracks (an ignored `vendor/livewire/flux/dist`, say); null when git
+     * cannot tell.
+     *
+     * @return list<string>|null
+     */
+    private function untrackedPaths(string $checkout): ?array
+    {
+        $untracked = [];
+        foreach ($this->paths as $path) {
+            if (! file_exists($checkout.'/'.$path)) {
+                continue;
+            }
+            $tracked = Process::path($checkout)->timeout(30)->run('git ls-files -- '.escapeshellarg($path));
+            if (! $tracked->successful()) {
+                return null;
+            }
+            if (trim($tracked->output()) === '') {
+                $untracked[] = $path;
+            }
+        }
+
+        return $untracked;
     }
 
     /**
@@ -168,6 +200,15 @@ final readonly class BuildCache
         foreach (array_filter(explode("\0", $inputs->output())) as $input) {
             if (is_file($main.'/'.$input) && filemtime($main.'/'.$input) > $built) {
                 return false;
+            }
+        }
+        // The same for inputs that git does not track (a composer update after the build).
+        foreach ($this->untrackedPaths($main) ?? [] as $path) {
+            $files = is_dir($main.'/'.$path) ? File::allFiles($main.'/'.$path, true) : [new \SplFileInfo($main.'/'.$path)];
+            foreach ($files as $file) {
+                if ($file->getMTime() > $built) {
+                    return false;
+                }
             }
         }
         // The key holds the .env's current VITE_* values; a .env written after the
