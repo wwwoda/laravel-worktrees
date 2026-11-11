@@ -14,7 +14,7 @@ use Woda\Worktrees\WorktreeManager;
  *
  * A stack counts as used when the network traffic of its app container
  * changed (any HTTP request does that), when its code changed (a commit, a
- * checkout, an edited file), when a log file was written, or when it was
+ * checkout, an edited or deleted file), when a log file was written, or when it was
  * woken. The traffic of the last check is kept in the worktree's
  * `storage/app/worktree/idle.json`, so the first check of a stack never stops it.
  * A stack whose app container does not run counts as idle from its first check.
@@ -95,25 +95,37 @@ final readonly class IdleStacks
     }
 
     /**
-     * Bytes in and out of each container so far, by container name; one call for all.
+     * Bytes in and out of each container so far, by container name. The exact
+     * counters of `/proc/net/dev` in the container; `docker stats` (rounded to
+     * three digits, so 1 GB moves in 10 MB steps) only where that fails.
      *
      * @param  list<string>  $containers
      * @return array<string, int>
      */
     public function traffic(array $containers): array
     {
-        if ($containers === []) {
-            return [];
-        }
-        $result = Process::timeout(60)->run('docker stats --no-stream --format '.escapeshellarg('{{.Name}}|{{.NetIO}}').' '.implode(' ', array_map(escapeshellarg(...), $containers)));
         $traffic = [];
+        $rest = [];
+        foreach ($containers as $container) {
+            $result = Process::timeout(30)->run('docker exec '.escapeshellarg($container).' cat /proc/net/dev');
+            $bytes = $result->successful() ? self::netDevBytes($result->output()) : null;
+            if ($bytes === null) {
+                $rest[] = $container;
+            } else {
+                $traffic[$container] = $bytes;
+            }
+        }
+        if ($rest === []) {
+            return $traffic;
+        }
+        $result = Process::timeout(60)->run('docker stats --no-stream --format '.escapeshellarg('{{.Name}}|{{.NetIO}}').' '.implode(' ', array_map(escapeshellarg(...), $rest)));
         foreach (preg_split('/\r?\n/', trim($result->output())) ?: [] as $line) {
             [$name, $io] = array_pad(explode('|', $line, 2), 2, '');
             $bytes = 0;
             foreach (explode('/', $io) as $part) {
                 $bytes += self::bytes(trim($part)) ?? 0;
             }
-            if ($name !== '') {
+            if (in_array($name, $rest, true)) {
                 $traffic[$name] = $bytes;
             }
         }
@@ -122,16 +134,35 @@ final readonly class IdleStacks
     }
 
     /**
+     * Received plus sent bytes of all interfaces but `lo`; null without an interface line.
+     */
+    private static function netDevBytes(string $output): ?int
+    {
+        $bytes = null;
+        foreach (preg_split('/\r?\n/', $output) ?: [] as $line) {
+            if (! preg_match('/^\s*([^:\s]+):\s*(.*)$/', $line, $match) || $match[1] === 'lo') {
+                continue;
+            }
+            $fields = preg_split('/\s+/', trim($match[2])) ?: [];
+            if (count($fields) >= 9 && ctype_digit($fields[0]) && ctype_digit($fields[8])) {
+                $bytes = ($bytes ?? 0) + (int) $fields[0] + (int) $fields[8];
+            }
+        }
+
+        return $bytes;
+    }
+
+    /**
      * When the checkout was last used (Unix time). Records the traffic for the next check.
      */
     public function lastActivity(string $path, ?int $traffic, int $now): int
     {
-        $state = $this->state($path);
+        $saved = $this->state($path);
+        $state = $saved;
         // A new reading counts as use. Without the app container, the first check
         // is recorded (traffic null), so the other services become idle from then.
-        if (($traffic !== null && $traffic !== ($state['traffic'] ?? null)) || $state === []) {
-            $state = ['traffic' => $traffic, 'changed_at' => $now];
-            $this->saveState($path, $state);
+        if (! isset($state['changed_at']) || ($traffic !== null && $traffic !== ($state['traffic'] ?? null))) {
+            $state = ['traffic' => $traffic, 'changed_at' => $now] + $state;
         }
         $times = [$state['changed_at']];
         foreach ([self::WOKEN, ...(glob($path.'/storage/logs/*.log') ?: [])] as $file) {
@@ -146,6 +177,16 @@ final readonly class IdleStacks
         }
         // -z: paths as they are (no quotes, no escapes); a rename or copy gives the new path, then the old one.
         $status = Process::path($path)->timeout(10)->run('git status --porcelain -z --untracked-files=all');
+        // A changed status counts as use: a deleted file has no time of its own.
+        // The first snapshot only records it.
+        if ($status->successful() && ($hash = sha1($status->output())) !== ($state['status'] ?? null)) {
+            $state['status_changed_at'] = isset($state['status']) ? $now : $state['changed_at'];
+            $state['status'] = $hash;
+        }
+        $times[] = $state['status_changed_at'] ?? $state['changed_at'];
+        if ($state !== $saved) {
+            $this->saveState($path, $state);
+        }
         $entries = explode("\0", $status->output());
         for ($i = 0; $i < count($entries); $i++) {
             $entry = $entries[$i];
@@ -190,24 +231,30 @@ final readonly class IdleStacks
     }
 
     /**
-     * The traffic of the last check (null: no app container then) and when it changed; empty before the first check.
+     * The traffic of the last check (null: no app container then) and when it changed,
+     * and a hash of the git status and when it changed; empty before the first check.
      *
-     * @return array{traffic: int|null, changed_at: int}|array{}
+     * @return array{traffic?: int|null, changed_at?: int, status?: string, status_changed_at?: int}
      */
     private function state(string $path): array
     {
         $file = $path.'/'.self::STATE;
         $decoded = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
         $traffic = is_array($decoded) ? ($decoded['traffic'] ?? null) : null;
-        if (is_array($decoded) && is_int($decoded['changed_at'] ?? null) && ($traffic === null || is_int($traffic))) {
-            return ['traffic' => $traffic, 'changed_at' => $decoded['changed_at']];
+        if (! is_array($decoded) || ! is_int($decoded['changed_at'] ?? null) || ($traffic !== null && ! is_int($traffic))) {
+            return [];
+        }
+        $state = ['traffic' => $traffic, 'changed_at' => $decoded['changed_at']];
+        if (is_string($decoded['status'] ?? null) && is_int($decoded['status_changed_at'] ?? null)) {
+            $state['status'] = $decoded['status'];
+            $state['status_changed_at'] = $decoded['status_changed_at'];
         }
 
-        return [];
+        return $state;
     }
 
     /**
-     * @param  array{traffic: int|null, changed_at: int}  $state
+     * @param  array{traffic?: int|null, changed_at?: int, status?: string, status_changed_at?: int}  $state
      */
     private function saveState(string $path, array $state): void
     {

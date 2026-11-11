@@ -231,7 +231,7 @@ php artisan worktree:idle-stop --minutes=60 --dry-run
 php artisan worktree:wake t9                   # start a stopped stack and wait until it is healthy
 ```
 
-`worktree:idle-stop` checks each registered worktree (the main checkout only with `--include-main`). A stack counts as used when the network traffic of its app container changed since the last check (any request does that), when its code changed (a commit, a checkout, an edited file), when a log in `storage/logs` was written, or when `worktree:wake` started it. The traffic of the last check is kept in the worktree's `storage/app/worktree/idle.json`, so the first check of a stack never stops it. A stack whose app container does not run (its database still does) counts as unused from its first check. An unused stack gets `docker compose stop` for every profile: the containers and volumes stay, so it starts again in seconds with its data. A worktree with the main checkout's compose project is skipped.
+`worktree:idle-stop` checks each registered worktree (the main checkout only with `--include-main`). A stack counts as used when the network traffic of its app container changed since the last check (any request does that; the exact byte counters of `/proc/net/dev` in the container, or `docker stats` where that fails), when its code changed (a commit, a checkout, an edited or deleted file), when a log in `storage/logs` was written, or when `worktree:wake` started it. The traffic of the last check is kept in the worktree's `storage/app/worktree/idle.json`, so the first check of a stack never stops it. A stack whose app container does not run (its database still does) counts as unused from its first check. An unused stack gets `docker compose stop` for every profile: the containers and volumes stay, so it starts again in seconds with its data. A worktree with the main checkout's compose project is skipped.
 
 `worktree:wake` runs `docker compose up -d --wait` (the services of the active profiles) and counts as use.
 
@@ -605,7 +605,7 @@ In a worktree:
 | `storage/worktree-bootstrap.clone` | Marker of a running database clone (`native`, `sail`). |
 | `storage/logs/worktree-setup.log` | Log of each setup. |
 | `storage/app/worktree/state.json` | `shared`: the state file. |
-| `storage/app/worktree/idle.json` | The traffic of the last `worktree:idle-stop` check and when it changed. |
+| `storage/app/worktree/idle.json` | The traffic and a hash of the git status of the last `worktree:idle-stop` check, and when each changed. |
 | `storage/app/worktree/woken` | When `worktree:wake` last started the stack. |
 
 In the main checkout (`shared`): `storage/app/worktrees/templates/*.ready` (template markers), `storage/app/worktrees/template.lock` and `storage/app/worktrees/allocate.lock`.

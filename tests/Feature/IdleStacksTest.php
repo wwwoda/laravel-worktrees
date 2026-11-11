@@ -15,6 +15,7 @@ beforeEach(function () {
     config()->set('worktrees.database.strategy', 'none');
     $this->paths = [];
     $this->gitStatus = '';
+    $this->netDev = [];
     foreach (['busy', 'idle', 'off', 'twin'] as $name) {
         $this->paths[$name] = $this->base.'/'.basename(base_path()).'-'.$name;
         File::ensureDirectoryExists($this->paths[$name].'/storage');
@@ -37,6 +38,11 @@ beforeEach(function () {
         },
         'docker stats *' => Process::result("app-busy-app-1|1.5kB / 2kB\napp-idle-app-1|600B / 400B\napp-twin-app-1|1kB / 1kB\n"),
         'git status *' => fn () => Process::result($this->gitStatus),
+        'docker exec *' => function (PendingProcess $p) {
+            preg_match("/^docker exec '([^']+)'/", (string) $p->command, $m);
+
+            return isset($this->netDev[$m[1]]) ? Process::result($this->netDev[$m[1]]) : Process::result(errorOutput: 'no cat', exitCode: 1);
+        },
         '*' => Process::result(),
     ]);
 });
@@ -127,4 +133,26 @@ it('counts the idle time of a stack whose app container stopped from the first c
         ->and($stacks->lastActivity($path, null, time()))->toBe($first)
         // The app container runs again: its traffic counts as use.
         ->and($stacks->lastActivity($path, 1000, time()))->toBeGreaterThan(time() - 5);
+});
+
+it('reads exact byte counters of the app container, and docker stats only where that fails', function () {
+    $header = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n";
+    $this->netDev = ['app-busy-app-1' => $header
+        ."    lo:  999999       9    0    0    0     0          0         0   999999       9    0    0    0     0       0          0\n"
+        ."  eth0: 1073741825    1200    0    0    0     0          0         0  2147483650    1100    0    0    0     0       0          0\n"];
+
+    expect(app(IdleStacks::class)->traffic(['app-busy-app-1', 'app-idle-app-1']))
+        ->toBe(['app-busy-app-1' => 3221225475, 'app-idle-app-1' => 1000]);
+    Process::assertRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker stats') && str_contains((string) $p->command, "'app-idle-app-1'") && ! str_contains((string) $p->command, 'app-busy'));
+});
+
+it('counts a deleted file as use', function () {
+    $path = $this->paths['idle'];
+    $stacks = app(IdleStacks::class);
+    $old = time() - 2400;
+    // The first check records the status without counting it as use.
+    expect($stacks->lastActivity($path, 1000, time()))->toBe($old);
+
+    $this->gitStatus = " D routes/web.php\0";
+    expect($stacks->lastActivity($path, 1000, time()))->toBeGreaterThan(time() - 5);
 });
