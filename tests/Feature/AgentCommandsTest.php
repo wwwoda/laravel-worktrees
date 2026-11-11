@@ -11,6 +11,8 @@ use Woda\Worktrees\Commands\WorktreeExecCommand;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\SailBootstrapStrategy;
 use Woda\Worktrees\SetupLock;
+use Woda\Worktrees\Shared\DatabaseProvisioner;
+use Woda\Worktrees\SharedServicesBootstrapStrategy;
 use Woda\Worktrees\Shared\MainCheckout;
 use Woda\Worktrees\WorktreeManager;
 
@@ -419,4 +421,26 @@ it('accepts the containers of a worktree whose compose file is in a subfolder', 
 
     $this->owner = $this->base.'/elsewhere/docker';
     $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertFailed();
+});
+
+it('finds a stale Horizon that runs inside the app container of a shared worktree', function () {
+    config()->set('worktrees.shared.database.main', 'app');
+    $strategy = new SharedServicesBootstrapStrategy(
+        provisioner: app(DatabaseProvisioner::class),
+        appService: 'laravel.test', nodePackageManager: 'pnpm', buildFrontend: false,
+    );
+    $doctor = new Doctor(app(WorktreeInspector::class), $strategy, false, fn () => false);
+    File::append($this->path.'/.env', "WORKTREE_QUEUE_WORKER=horizon\n");
+    File::ensureDirectoryExists($this->path.'/app');
+    File::put($this->path.'/app/User.php', '<?php');
+    $this->started = ['app-t9-laravel.test-1' => time() - 3600];
+    $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'ready']);
+
+    expect($doctor->check('workers', $target))->toMatchArray(['state' => 'warn', 'message' => 'started before the last code change: laravel.test']);
+    $doctor->fix('workers', $target);
+    Process::assertRan("docker compose restart 'laravel.test'");
+
+    // queue:listen starts a new process for each job: nothing to restart.
+    File::put($this->path.'/.env', "APP_URL=https://app-t9.test\nCOMPOSE_PROJECT_NAME=app-t9\nWORKTREE_QUEUE_WORKER=listen\n");
+    expect($doctor->check('workers', $target))->toMatchArray(['state' => 'skip']);
 });

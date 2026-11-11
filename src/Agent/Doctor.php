@@ -257,7 +257,10 @@ final readonly class Doctor
                 $running[$container['service']] = $container['name'];
             }
         }
-        if ($running === []) {
+        // With `shared` and Horizon, Horizon runs inside the app container itself.
+        $horizonInApp = $app !== null && $this->strategy instanceof SharedServicesBootstrapStrategy
+            && $this->strategy->queueWorkerMode($target->path) === 'horizon';
+        if ($running === [] && ! $horizonInApp) {
             return null;
         }
         // The image each container runs (also for services that only `build:`),
@@ -269,6 +272,9 @@ final readonly class Doctor
         $workers = array_filter($running, static fn (string $name, string $service): bool => $appImage !== null
             ? ($details[$name]['image'] ?? null) === $appImage
             : $configImage !== null && $stack->image($service) === $configImage, ARRAY_FILTER_USE_BOTH);
+        if ($horizonInApp) {
+            $workers[$stack->appService] = (string) $app;
+        }
         if ($workers === []) {
             return null;
         }
