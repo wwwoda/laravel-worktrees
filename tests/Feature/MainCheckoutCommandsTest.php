@@ -4,6 +4,8 @@ use Composer\InstalledVersions;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Commands\WorktreeCreateCommand;
+use Woda\Worktrees\Commands\WorktreeDeleteCommand;
 use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Shared\MainCheckout;
 
@@ -61,6 +63,7 @@ it('runs in place when artisan runs in the main checkout', function () {
 
 it('keeps redirected output when it runs in the main checkout', function () {
     // An interactive call whose stdout goes to a file or a pipe: no terminal for the child.
+    // worktree:list asks nothing, so it runs there also with a terminal on stdin.
     app()->bind(WorktreeListCommand::class, fn () => new class extends WorktreeListCommand
     {
         protected function ttySupported(): bool
@@ -72,11 +75,65 @@ it('keeps redirected output when it runs in the main checkout', function () {
         {
             return false;
         }
+
+        protected function stdinIsTerminal(): bool
+        {
+            return true;
+        }
     });
 
     $this->artisan('worktree:list', ['--json' => true])->assertExitCode(3);
     Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'worktree:list'") && $p->tty === false);
 });
+
+it('refuses to hand over a command that asks when stdout is redirected', function (string $command, string $class, array $parameters) {
+    // A terminal on stdin, stdout to a file: the child would get no terminal and skip its questions.
+    $commands = [
+        WorktreeDeleteCommand::class => fn () => new class extends WorktreeDeleteCommand
+        {
+            protected function ttySupported(): bool
+            {
+                return true;
+            }
+
+            protected function streamsAreTerminals(): bool
+            {
+                return false;
+            }
+
+            protected function stdinIsTerminal(): bool
+            {
+                return true;
+            }
+        },
+        WorktreeCreateCommand::class => fn () => new class extends WorktreeCreateCommand
+        {
+            protected function ttySupported(): bool
+            {
+                return true;
+            }
+
+            protected function streamsAreTerminals(): bool
+            {
+                return false;
+            }
+
+            protected function stdinIsTerminal(): bool
+            {
+                return true;
+            }
+        },
+    ];
+    app()->bind($class, $commands[$class]);
+
+    $this->artisan($command, $parameters)
+        ->expectsOutputToContain('cannot pass on the terminal')
+        ->assertFailed();
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
+})->with([
+    'delete' => ['worktree:delete', WorktreeDeleteCommand::class, ['name' => 'fix-x']],
+    'create' => ['worktree:create', WorktreeCreateCommand::class, ['name' => 'fix-x']],
+]);
 
 it('passes --env on and clears the keys of the selected environment file', function () {
     File::put($this->main.'/.env.staging', "STAGING_DB=main_staging\n");

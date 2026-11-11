@@ -58,6 +58,13 @@ trait RunsInMainCheckout
             ->env([...array_fill_keys($keys, false), self::DELEGATED => '1']);
         // A terminal only when artisan's own stdin and stdout are one: `--json > file` must reach the file.
         $tty = $this->input->isInteractive() && $this->ttySupported() && $this->streamsAreTerminals();
+        // Without TTY mode the child gets no terminal on stdin and runs with --no-interaction:
+        // it would skip the questions (such as a delete's confirmation) that it asks here.
+        if (! $tty && $this->canAsk() && $this->asksQuestions()) {
+            $this->components->error("The main checkout {$main} runs this command, but it cannot pass on the terminal there (stdout is not a terminal, or TTY mode is not supported), so it could not ask its questions. Run it with stdout on the terminal, with -n (no questions), or in the main checkout.");
+
+            return self::FAILURE;
+        }
         if ($tty) {
             $process->tty();
         }
@@ -165,6 +172,14 @@ trait RunsInMainCheckout
         }
 
         return $names;
+    }
+
+    /**
+     * Whether the command may ask a person a question.
+     */
+    protected function asksQuestions(): bool
+    {
+        return true;
     }
 
     protected function ttySupported(): bool

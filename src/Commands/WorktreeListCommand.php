@@ -17,6 +17,11 @@ class WorktreeListCommand extends Command
 
     protected $description = 'List git worktrees';
 
+    protected function asksQuestions(): bool
+    {
+        return false;
+    }
+
     public function handle(
         WorktreeManager $worktreeManager,
         ProcessManager $processManager,
