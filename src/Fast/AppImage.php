@@ -12,6 +12,11 @@ use RuntimeException;
  * copies), shared by every worktree of the project, instead of one build per
  * worktree.
  *
+ * The key covers the hash paths, the build section of the building service in
+ * the resolved compose file (context, dockerfile, args, target) and the files
+ * of its build context. So Sail's runtimes under `vendor` count too: another
+ * runtime folder or a Sail update that changes it gives a new tag.
+ *
  * The setup writes the tag `{name}:{key}` into the worktree's `.env` (key
  * `env`, default WORKTREE_APP_IMAGE); the project's compose file names it:
  * `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}`. Before the containers
@@ -43,9 +48,70 @@ final readonly class AppImage
         return $this->envKey;
     }
 
-    public function tag(string $worktreePath): string
+    /**
+     * The compose service that builds the image.
+     */
+    public function service(string $appService): string
     {
-        return $this->name.':'.ContentKey::of($worktreePath, $this->hashPaths);
+        return $this->service ?? $appService;
+    }
+
+    /**
+     * @param  array<mixed>|null  $build  the service's `build` section of `docker compose config --format json`
+     */
+    public function tag(string $worktreePath, ?array $build = null): string
+    {
+        $paths = $this->hashPaths;
+        $prefix = '';
+        if ($build !== null) {
+            $context = is_string($build['context'] ?? null) ? $build['context'] : null;
+            $relative = $context === null ? null : self::relativeTo($worktreePath, $context);
+            if ($relative !== null) {
+                // The same context in every worktree: name it by its path in the worktree.
+                $build['context'] = $relative;
+                if ($relative !== '.') {
+                    $paths[] = $relative;
+                }
+            } elseif ($context !== null && is_dir($context)) {
+                $build['context_content'] = ContentKey::of($context, ['.']);
+            }
+            $prefix = 'build:'.json_encode(self::sorted($build), JSON_UNESCAPED_SLASHES)."\n";
+        }
+
+        return $this->name.':'.ContentKey::of($worktreePath, array_values(array_unique($paths)), $prefix);
+    }
+
+    /**
+     * `$path` relative to the worktree (either spelling of it), or null when it is outside.
+     */
+    private static function relativeTo(string $worktreePath, string $path): ?string
+    {
+        foreach (array_unique([rtrim($worktreePath, '/'), realpath($worktreePath) ?: $worktreePath]) as $root) {
+            if ($path === $root) {
+                return '.';
+            }
+            if (str_starts_with($path, $root.'/')) {
+                return substr($path, strlen($root) + 1);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<mixed>  $value
+     * @return array<mixed>
+     */
+    private static function sorted(array $value): array
+    {
+        ksort($value);
+        foreach ($value as $key => $item) {
+            if (is_array($item)) {
+                $value[$key] = self::sorted($item);
+            }
+        }
+
+        return $value;
     }
 
     public function exists(string $tag): bool
@@ -73,12 +139,12 @@ final readonly class AppImage
                 return false;
             }
             $onStep && $onStep("Building the app image {$tag} (once for all worktrees with this Dockerfile)...");
-            $result = $compose(self::BUILD_TIMEOUT)->run('docker compose build '.escapeshellarg($this->service ?? $appService), $output);
+            $result = $compose(self::BUILD_TIMEOUT)->run('docker compose build '.escapeshellarg($this->service($appService)), $output);
             if (! $result->successful()) {
                 throw new RuntimeException("Building the app image {$tag} failed: ".trim($result->errorOutput()));
             }
             if (! $this->exists($tag)) {
-                throw new RuntimeException("docker compose build did not make {$tag}: the compose file must name the image as \${{$this->envKey}} for the service ".($this->service ?? $appService).'.');
+                throw new RuntimeException("docker compose build did not make {$tag}: the compose file must name the image as \${{$this->envKey}} for the service ".$this->service($appService).'.');
             }
 
             return true;

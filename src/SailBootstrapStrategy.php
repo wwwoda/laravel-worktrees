@@ -52,13 +52,13 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {
-        // The tag goes into .env first, so compose resolves the shared image.
-        $tag = $this->writeImageTag($worktreePath);
         $config = $this->composeConfig($worktreePath);
         $this->assertOwnComposeProject($worktreePath, $config);
         $lent = $this->lendVendorPaths($worktreePath, $config);
         try {
-            // The build of a missing image needs the lent build contexts (Sail's runtimes under vendor).
+            // The tag covers the lent build contexts (Sail's runtimes under vendor), and
+            // goes into .env before compose runs, so compose resolves the shared image.
+            $tag = $this->writeImageTag($worktreePath, $config);
             if ($tag !== null) {
                 $this->ensureSharedImage($worktreePath, $tag, $output);
             }
@@ -400,13 +400,19 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     /**
      * The shared app image's tag, written into `.env`; null when the shared image is off.
      */
-    private function writeImageTag(string $worktreePath): ?string
+    /**
+     * @param  array<mixed>|null  $config
+     */
+    private function writeImageTag(string $worktreePath, ?array $config): ?string
     {
         $image = $this->fast->image;
         if (! $image->enabled()) {
             return null;
         }
-        $tag = $image->tag($worktreePath);
+        $services = is_array($config['services'] ?? null) ? $config['services'] : [];
+        $service = $services[$image->service($this->appService)] ?? null;
+        $build = is_array($service) && is_array($service['build'] ?? null) ? $service['build'] : null;
+        $tag = $image->tag($worktreePath, $build);
         if (EnvFile::get($worktreePath.'/.env', $image->envKey()) !== $tag) {
             EnvFile::upsert($worktreePath.'/.env', [$image->envKey() => $tag]);
         }

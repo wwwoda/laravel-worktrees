@@ -83,6 +83,7 @@ return [
         'image' => [
             'name' => env('WORKTREE_APP_IMAGE_NAME'),
             'env' => 'WORKTREE_APP_IMAGE',
+            // With the build section and the build context of the building service.
             'hash_paths' => ['Dockerfile', 'docker'],
             // The compose service that builds it. Empty: bootstrap.sail.app_service.
             'service' => env('WORKTREE_APP_IMAGE_SERVICE'),

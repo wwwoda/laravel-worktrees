@@ -10,6 +10,7 @@ use Woda\Worktrees\Fast\ContentKey;
 use Woda\Worktrees\Fast\DatabaseDump;
 use Woda\Worktrees\Fast\FastSetup;
 use Woda\Worktrees\SailBootstrapStrategy;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 
 /*
@@ -53,7 +54,7 @@ beforeEach(function () {
                 return Process::result(exitCode: in_array($m[1], $this->images, true) ? 0 : 1);
             },
             "docker compose build 'laravel.test'" => function () {
-                $this->images[] = 'app-image:'.ContentKey::of($this->path, ['Dockerfile', 'docker']);
+                $this->images[] = EnvFile::get($this->path.'/.env', 'WORKTREE_APP_IMAGE');
 
                 return Process::result();
             },
@@ -242,13 +243,16 @@ it('lends Sail\'s build context from vendor before it builds the shared image', 
     File::ensureDirectoryExists($runtime);
     File::put($runtime.'/Dockerfile', 'FROM alpine');
     $this->contextAtBuild = null;
+    $this->tagAtBuild = null;
     ($this->fake)([
         'docker compose config --format json' => fn (PendingProcess $p) => Process::result(json_encode($p->path === $this->path
             ? ['name' => 'app-t9', 'services' => ['laravel.test' => ['build' => ['context' => $this->path.'/vendor/laravel/sail/runtimes/8.4']]]]
             : ['name' => 'app', 'services' => []])),
         "docker compose build 'laravel.test'" => function () {
             $this->contextAtBuild = is_file($this->path.'/vendor/laravel/sail/runtimes/8.4/Dockerfile');
-            $this->images[] = 'app-image:'.ContentKey::of($this->path, ['Dockerfile', 'docker']);
+            // The tag covers the lent context's files.
+            $this->tagAtBuild = (new AppImage('app-image'))->tag($this->path, ['context' => $this->path.'/vendor/laravel/sail/runtimes/8.4']);
+            $this->images[] = EnvFile::get($this->path.'/.env', 'WORKTREE_APP_IMAGE');
 
             return Process::result();
         },
@@ -261,7 +265,34 @@ it('lends Sail\'s build context from vendor before it builds the shared image', 
         File::deleteDirectory($sail);
     }
     expect($this->contextAtBuild)->toBeTrue()
+        ->and(EnvFile::get($this->path.'/.env', 'WORKTREE_APP_IMAGE'))->toBe($this->tagAtBuild)
         ->and(is_dir($this->path.'/vendor/laravel'))->toBeFalse();
+});
+
+it('keys the shared image by the build section and the files of its build context', function () {
+    $worktree = $this->base.'/wt';
+    $other = $this->base.'/other';
+    foreach ([$worktree, $other] as $root) {
+        File::ensureDirectoryExists($root.'/vendor/laravel/sail/runtimes/8.4');
+        File::put($root.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php:8.4');
+        File::ensureDirectoryExists($root.'/vendor/laravel/sail/runtimes/8.5');
+        File::put($root.'/vendor/laravel/sail/runtimes/8.5/Dockerfile', 'FROM php:8.5');
+    }
+    $image = new AppImage('app-image');
+    $build = fn (string $root, string $runtime = '8.4', string $node = '22') => ['context' => $root.'/vendor/laravel/sail/runtimes/'.$runtime, 'dockerfile' => 'Dockerfile', 'args' => ['WWWGROUP' => '1000', 'NODE_VERSION' => $node]];
+    $tag = $image->tag($worktree, $build($worktree));
+
+    // Without a Dockerfile in the hash paths, the build inputs still make the key.
+    expect($tag)->not->toBe($image->tag($worktree))
+        // Equal inputs in another worktree: the same image.
+        ->and($image->tag($other, $build($other)))->toBe($tag)
+        // Another runtime, another build argument.
+        ->and($image->tag($worktree, $build($worktree, '8.5')))->not->toBe($tag)
+        ->and($image->tag($worktree, $build($worktree, node: '24')))->not->toBe($tag);
+
+    // A Sail update that changes the runtime's files.
+    File::put($worktree.'/vendor/laravel/sail/runtimes/8.4/Dockerfile', 'FROM php:8.4\nRUN true');
+    expect($image->tag($worktree, $build($worktree)))->not->toBe($tag);
 });
 
 it('downloads a missing dump and keeps a failed download out of the way', function () {
