@@ -444,3 +444,13 @@ it('finds a stale Horizon that runs inside the app container of a shared worktre
     File::put($this->path.'/.env', "APP_URL=https://app-t9.test\nCOMPOSE_PROJECT_NAME=app-t9\nWORKTREE_QUEUE_WORKER=listen\n");
     expect($doctor->check('workers', $target))->toMatchArray(['state' => 'skip']);
 });
+
+it('writes the default profiles of a new worktree without spaces', function () {
+    config()->set('worktrees.services.default', ' workers, tools ');
+    File::put($this->path.'/.env', "APP_NAME=Test\n");
+
+    $manager = app(WorktreeManager::class);
+    (new ReflectionMethod($manager, 'applyEnvReplacements'))->invoke($manager, $this->path, 't9');
+
+    expect(File::get($this->path.'/.env'))->toContain("COMPOSE_PROFILES=workers,tools\n");
+});

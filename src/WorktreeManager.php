@@ -7,6 +7,7 @@ use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use RuntimeException;
+use Woda\Worktrees\Agent\ComposeStack;
 use Woda\Worktrees\Contracts\BootstrapStrategy;
 use Woda\Worktrees\Contracts\ConfiguresWorktreeEnvironment;
 use Woda\Worktrees\Contracts\InstallsNodeBeforeBringUp;
@@ -709,7 +710,8 @@ class WorktreeManager
         // Optional services (compose profiles) of a new worktree; null keeps the main checkout's.
         $profiles = config('worktrees.services.default');
         if (is_string($profiles)) {
-            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.trim($profiles));
+            // `workers, tools` would break the .env: written without spaces.
+            $content = EnvFile::upsertLine($content, 'COMPOSE_PROFILES', 'COMPOSE_PROFILES='.implode(',', ComposeStack::splitProfiles($profiles)));
         }
 
         // User-defined env overrides — last so they win.
