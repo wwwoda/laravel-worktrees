@@ -3,6 +3,7 @@
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Woda\Worktrees\Commands\WorktreeListCommand;
 use Woda\Worktrees\Shared\MainCheckout;
 
 /*
@@ -48,4 +49,23 @@ it('runs in place when artisan runs in the main checkout', function () {
 
     $this->artisan('worktree:list', ['--json' => true])->assertSuccessful();
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
+});
+
+it('keeps redirected output when it runs in the main checkout', function () {
+    // An interactive call whose stdout goes to a file or a pipe: no terminal for the child.
+    app()->bind(WorktreeListCommand::class, fn () => new class extends WorktreeListCommand
+    {
+        protected function ttySupported(): bool
+        {
+            return true;
+        }
+
+        protected function streamsAreTerminals(): bool
+        {
+            return false;
+        }
+    });
+
+    $this->artisan('worktree:list', ['--json' => true])->assertExitCode(3);
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'worktree:list'") && $p->tty === false);
 });

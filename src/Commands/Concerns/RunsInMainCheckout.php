@@ -42,7 +42,8 @@ trait RunsInMainCheckout
         }
         $process = Process::path($main)->forever()
             ->env([...array_fill_keys($keys, false), self::DELEGATED => '1']);
-        $tty = $this->input->isInteractive() && SymfonyProcess::isTtySupported();
+        // A terminal only when artisan's own stdin and stdout are one: `--json > file` must reach the file.
+        $tty = $this->input->isInteractive() && $this->ttySupported() && $this->streamsAreTerminals();
         if ($tty) {
             $process->tty();
         }
@@ -54,6 +55,16 @@ trait RunsInMainCheckout
         );
 
         return $result->exitCode() ?? self::FAILURE;
+    }
+
+    protected function ttySupported(): bool
+    {
+        return SymfonyProcess::isTtySupported();
+    }
+
+    protected function streamsAreTerminals(): bool
+    {
+        return defined('STDIN') && stream_isatty(STDIN) && defined('STDOUT') && stream_isatty(STDOUT);
     }
 
     /**
