@@ -489,3 +489,56 @@ it('stops exec when the stopped stack does not start', function () {
         ->assertFailed();
     Process::assertNotRan(fn (PendingProcess $p) => str_starts_with((string) $p->command, 'docker compose exec'));
 });
+
+/**
+ * True when another process could take the exclusive stack lock now (as an
+ * idle stop would). flock() locks belong to the open file, so a second
+ * fopen() conflicts with a lock this process holds through another handle.
+ */
+function exclusiveStackLockFree(string $path): bool
+{
+    File::ensureDirectoryExists(dirname($path.'/'.StackLock::LOCK));
+    $handle = fopen($path.'/'.StackLock::LOCK, 'c');
+    $free = flock($handle, LOCK_EX | LOCK_NB);
+    $free && flock($handle, LOCK_UN);
+    fclose($handle);
+
+    return $free;
+}
+
+it('holds the shared stack lock while exec runs and marks the use at the start and the end', function () {
+    $seen = [];
+    // Replaces the handler in place: the fakes match in the order of the first fake.
+    Process::fake(['docker compose exec *' => function () use (&$seen) {
+        $seen = ['free' => exclusiveStackLockFree($this->path), 'used' => StackLock::lastUsed($this->path)];
+        touch($this->path.'/'.StackLock::USED, time() - 3600);
+
+        return Process::result();
+    }]);
+
+    $this->artisan('worktree:exec', ['cmd' => ['artisan', 'about'], '--worktree' => 't9'])->assertSuccessful();
+
+    expect($seen['free'])->toBeFalse()
+        ->and($seen['used'])->toBeGreaterThanOrEqual(time() - 5)
+        ->and(StackLock::lastUsed($this->path))->toBeGreaterThanOrEqual(time() - 5)
+        ->and(exclusiveStackLockFree($this->path))->toBeTrue();
+});
+
+it('holds the shared stack lock during each doctor fix and marks the use at the start and the end', function () {
+    $target = new WorktreeTarget($this->path, 't9', false, 'feature', 'abc', ['status' => 'ready']);
+    $seen = [];
+    // The fix runs `php artisan config:clear …` in the app container.
+    Process::fake(['docker compose exec *' => function () use (&$seen) {
+        $seen = ['free' => exclusiveStackLockFree($this->path), 'used' => StackLock::lastUsed($this->path)];
+        touch($this->path.'/'.StackLock::USED, time() - 3600);
+
+        return Process::result();
+    }]);
+
+    app(Doctor::class)->fix('caches', $target);
+
+    expect($seen['free'])->toBeFalse()
+        ->and($seen['used'])->toBeGreaterThanOrEqual(time() - 5)
+        ->and(StackLock::lastUsed($this->path))->toBeGreaterThanOrEqual(time() - 5)
+        ->and(exclusiveStackLockFree($this->path))->toBeTrue();
+});

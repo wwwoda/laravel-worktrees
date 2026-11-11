@@ -71,8 +71,15 @@ final readonly class Doctor
         // runs artisan; the runner clears it, so the fix reaches the target's database.
         $native = ! $this->inspector->runner()->usesCompose();
         $pm = $this->nodePackageManager;
-        match ($id) {
-            'containers' => $this->startContainers($target, $output),
+        if ($id === 'containers') {
+            // Starting a stopped stack takes the stack lock exclusively.
+            $this->startContainers($target, $output);
+
+            return;
+        }
+        // Every other fix holds the stack lock shared and marks the use at its
+        // start and its end: an idle stop waits until the fix ends.
+        $this->inspector->inUse($target, fn () => match ($id) {
             'vendor' => $native ? $this->artisan($path, 'composer install --no-interaction', $output) : $this->strategy->installComposerDependencies($path, $output),
             'node_modules' => $native ? $this->artisan($path, "{$pm} install", $output) : $this->installNode($target, $output),
             'build' => $native ? $this->artisan($path, "{$pm} run build", $output) : $this->strategy->buildFrontend($path, $output),
@@ -81,7 +88,13 @@ final readonly class Doctor
             'database' => $native ? $this->artisan($path, 'php artisan migrate --force', $output) : $this->strategy->runMigrations($path, $output),
             'workers' => $this->restartWorkers($target, $output),
             default => throw new RuntimeException("The check '{$id}' has no fix."),
-        };
+        });
+        if ($id === 'node_modules' && ! $native && ! $target->main) {
+            // On Linux a host install can detach the app container's
+            // node_modules volume; bringUp restarts the container when that
+            // happened. It starts containers, so it takes the lock exclusively.
+            $this->startContainers($target, $output);
+        }
     }
 
     /**
@@ -318,11 +331,6 @@ final readonly class Doctor
     private function installNode(WorktreeTarget $target, ?Closure $output): void
     {
         $this->strategy->installNodeDependencies($target->path, $output);
-        // On Linux a host install can detach the app container's node_modules
-        // volume; bringUp restarts the container when that happened.
-        if ($this->inspector->runner()->usesCompose() && ! $target->main) {
-            $this->strategy->bringUp($target->path, $output);
-        }
     }
 
     /**

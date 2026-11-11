@@ -8,9 +8,12 @@ use RuntimeException;
 
 /**
  * The lock of a checkout's compose stack and the time it was last used by a
- * command. Every command that starts a stack or runs something in it takes
- * the lock and marks the use; a stop of an idle stack takes the lock too and
- * skips a stack used since its check. So a stop cannot follow a start unseen.
+ * command. A command that starts a stopped stack takes the lock exclusively
+ * (locked()); a command that runs something in the stack (worktree:exec, a
+ * fix of worktree:doctor) holds it shared for the whole run (shared()) and
+ * marks the use at its start and its end. A stop of an idle stack must take
+ * the lock exclusively, so it waits for every running command, and must skip
+ * a stack used since its check, so it cannot follow a start unseen.
  */
 final class StackLock
 {
@@ -26,13 +29,49 @@ final class StackLock
      */
     public static function locked(string $path, Closure $callback): mixed
     {
+        return self::hold($path, LOCK_EX, $callback);
+    }
+
+    /**
+     * Runs the callback with the lock held shared: other commands may run in
+     * the stack at the same time, a stop (exclusive) waits until all ended.
+     * With $markUse, the use is marked at the start and at the end.
+     *
+     * @template T
+     *
+     * @param  Closure(): T  $callback
+     * @return T
+     */
+    public static function shared(string $path, Closure $callback, bool $markUse = true): mixed
+    {
+        return self::hold($path, LOCK_SH, static function () use ($path, $callback, $markUse): mixed {
+            $markUse && self::markUsed($path);
+            try {
+                return $callback();
+            } finally {
+                $markUse && self::markUsed($path);
+            }
+        });
+    }
+
+    /**
+     * @template T
+     *
+     * @param  LOCK_SH|LOCK_EX  $operation
+     * @param  Closure(): T  $callback
+     * @return T
+     */
+    private static function hold(string $path, int $operation, Closure $callback): mixed
+    {
         File::ensureDirectoryExists(dirname($path.'/'.self::LOCK));
         $handle = fopen($path.'/'.self::LOCK, 'c');
         if ($handle === false) {
             throw new RuntimeException("Cannot open the stack lock of {$path}.");
         }
         try {
-            flock($handle, LOCK_EX);
+            if (! flock($handle, $operation)) {
+                throw new RuntimeException("Cannot lock the stack of {$path}.");
+            }
 
             return $callback();
         } finally {

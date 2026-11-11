@@ -103,6 +103,26 @@ final readonly class WorktreeInspector
         });
     }
 
+    /**
+     * Runs a command's work in the target's stack with the stack lock held
+     * shared, so an idle stop (exclusive) waits until it ends; the use is
+     * marked at the start and the end. The main checkout's use is not marked
+     * (it is never stopped as idle). Without compose (native), it only runs.
+     *
+     * @template T
+     *
+     * @param  Closure(): T  $callback
+     * @return T
+     */
+    public function inUse(WorktreeTarget $target, Closure $callback): mixed
+    {
+        if ($this->stack($target->path) === null) {
+            return $callback();
+        }
+
+        return StackLock::shared($target->path, $callback, ! $target->main);
+    }
+
     public function url(string $path): ?string
     {
         $url = EnvFile::resolved($path.'/.env', 'APP_URL');

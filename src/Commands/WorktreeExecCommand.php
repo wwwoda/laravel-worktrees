@@ -6,7 +6,9 @@ use Illuminate\Console\Command;
 use RuntimeException;
 use Symfony\Component\Console\Input\ArgvInput;
 use Symfony\Component\Process\Process;
+use Woda\Worktrees\Agent\AppRunner;
 use Woda\Worktrees\Agent\WorktreeInspector;
+use Woda\Worktrees\Agent\WorktreeTarget;
 use Woda\Worktrees\Commands\Concerns\ResolvesWorktree;
 
 /**
@@ -120,6 +122,18 @@ class WorktreeExecCommand extends Command
 
             return self::FAILURE;
         }
+
+        // Under the shared stack lock, marked as used at the start and the end:
+        // an idle stop waits until the command ends. A stop that comes between
+        // the wake above and this lock finds the stack marked as used and skips it.
+        return $inspector->inUse($target, fn (): int => $this->runIn($target, $runner, $service, $words));
+    }
+
+    /**
+     * @param  list<string>  $words
+     */
+    private function runIn(WorktreeTarget $target, AppRunner $runner, ?string $service, array $words): int
+    {
         $command = $this->commandFor($words);
         $tty = $this->interactiveTerminal();
         $process = $runner->process($target->path, 60)->forever();
