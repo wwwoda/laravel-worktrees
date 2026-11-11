@@ -69,6 +69,8 @@ final readonly class AppImage
             if ($relative !== null) {
                 // The same context in every worktree: name it by its path in the worktree.
                 $build['context'] = $relative;
+                // A context of `.` is the whole worktree: its code would give a new image
+                // for each change. Then the hash paths name what the Dockerfile copies.
                 if ($relative !== '.') {
                     $paths[] = $relative;
                 }

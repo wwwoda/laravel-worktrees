@@ -402,6 +402,18 @@ describe('the frontend build cache', function () {
         expect($this->cache->restore($this->tree))->toBeNull();
     });
 
+    it('does not use a build older than the main checkout\'s .env (its VITE_ values may differ)', function () {
+        File::ensureDirectoryExists($this->main.'/public/build');
+        File::put($this->main.'/public/build/manifest.json', '{}');
+        touch($this->main.'/public/build/manifest.json', time() + 5);
+        File::put($this->main.'/.env', "VITE_APP_HOST=new.test\n");
+        File::put($this->tree.'/.env', "VITE_APP_HOST=new.test\n");
+        touch($this->main.'/.env', time() + 10);
+
+        expect($this->cache->key($this->tree))->toBe($this->cache->key($this->main))
+            ->and($this->cache->restore($this->tree))->toBeNull();
+    });
+
     it('does not use a build older than the main checkout\'s last checkout', function () {
         File::ensureDirectoryExists($this->main.'/public/build');
         File::put($this->main.'/public/build/manifest.json', '{}');

@@ -19,7 +19,7 @@ use Woda\Worktrees\Shared\MainCheckout;
  * `storage/app/worktrees/builds/{key}` (filled after each build of the
  * package), then the main checkout's own build when the main checkout has
  * the same key, no changes in those paths, and a manifest newer than its
- * last checkout or commit.
+ * last checkout or commit, its input files and its `.env`.
  */
 final readonly class BuildCache
 {
@@ -170,8 +170,11 @@ final readonly class BuildCache
                 return false;
             }
         }
+        // The key holds the .env's current VITE_* values; a .env written after the
+        // build may have changed them, and git does not track it.
+        $env = $main.'/.env';
 
-        return true;
+        return $this->envPrefix === '' || ! is_file($env) || filemtime($env) <= $built;
     }
 
     private function copy(string $from, string $to): bool
