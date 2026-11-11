@@ -255,3 +255,13 @@ it('stops stacks after two hours without use by default', function () {
 
     expect($published['idle']['minutes'])->toBe(120);
 });
+
+it('never checks or stops the main checkout, also with the old include_main setting', function () {
+    config()->set('worktrees.idle.include_main', true);
+
+    $this->artisan('worktree:idle-stop', ['--minutes' => 30, '--json' => true])
+        ->doesntExpectOutputToContain('"path": "'.base_path().'"')
+        ->assertSuccessful();
+    Process::assertNotRan(fn (PendingProcess $p) => $p->path === base_path() && str_ends_with((string) $p->command, ' stop'));
+    expect(File::exists(base_path('storage/app/worktree/idle.json')))->toBeFalse();
+});

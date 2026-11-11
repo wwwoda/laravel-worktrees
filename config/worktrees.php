@@ -239,7 +239,7 @@ return [
     |
     | worktree:idle-stop stops the containers of worktrees unused for 'minutes'
     | (no traffic from the app container, no code change, no log write). Run it
-    | from a host timer. An agent that
+    | from a host timer. The main checkout is never stopped. An agent that
     | waits for CI or a review with a clean tree uses nothing for a while:
     | keep 'minutes' well above such a wait. worktree:exec and
     | worktree:doctor --fix start a stopped stack again.
@@ -247,7 +247,6 @@ return [
 
     'idle' => [
         'minutes' => (int) env('WORKTREE_IDLE_MINUTES', 120),
-        'include_main' => (bool) env('WORKTREE_IDLE_INCLUDE_MAIN', false),
     ],
 
     /*

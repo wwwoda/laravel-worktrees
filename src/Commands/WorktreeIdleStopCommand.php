@@ -8,7 +8,8 @@ use Woda\Worktrees\Idle\IdleStacks;
 use Woda\Worktrees\SailBootstrapStrategy;
 
 /**
- * Stops the stacks of worktrees that nobody used for a while. Meant for a
+ * Stops the stacks of worktrees that nobody used for a while; never the main
+ * checkout's stack. Meant for a
  * host timer (cron, systemd) on agent hosts; where a router starts stacks on
  * the first request (Sablier), it is the fallback.
  */
@@ -16,7 +17,6 @@ class WorktreeIdleStopCommand extends Command
 {
     protected $signature = 'worktree:idle-stop
         {--minutes= : Stop stacks unused for this many minutes (default: idle.minutes)}
-        {--include-main : Also stop the main checkout\'s stack}
         {--dry-run : Show what would stop}
         {--json : Output as JSON}';
 
@@ -36,8 +36,8 @@ class WorktreeIdleStopCommand extends Command
 
             return self::FAILURE;
         }
-        $includeMain = (bool) $this->option('include-main') || (bool) config('worktrees.idle.include_main', false);
-        $checkouts = $stacks->checkouts($includeMain);
+        // Never the main checkout: with `shared` its stack holds the database of every worktree.
+        $checkouts = $stacks->checkouts(false);
         $mainProject = null;
         foreach ($checkouts as $index => $checkout) {
             $checkouts[$index]['project'] = $stacks->project($checkout['path']);
