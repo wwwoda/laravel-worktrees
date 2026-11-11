@@ -353,7 +353,8 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
      */
     public function canInstallNodeInParallel(string $worktreePath): bool
     {
-        if (! $this->fast->parallelNode) {
+        // A subclass with its own node install: the parallel start would bypass it.
+        if (! $this->fast->parallelNode || (new \ReflectionMethod($this, 'installNodeDependencies'))->getDeclaringClass()->getName() !== self::class) {
             return false;
         }
         $config = $this->composeConfig($worktreePath);

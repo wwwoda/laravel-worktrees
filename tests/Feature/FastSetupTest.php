@@ -136,6 +136,21 @@ it('installs node packages while the containers start when no container mounts n
     expect(File::get($this->path.'/storage/logs/worktree-setup.log'))->toContain('node (in parallel)');
 });
 
+it('installs node packages first when the strategy has its own node install', function () {
+    ($this->fake)(['docker compose config --format json' => Process::result(json_encode(['services' => ['laravel.test' => ['volumes' => []]]]))]);
+    app()->instance(BootstrapStrategy::class, new class('laravel.test', 'pnpm', false, fast: new FastSetup) extends SailBootstrapStrategy
+    {
+        public function installNodeDependencies(string $worktreePath, ?Closure $output = null): void
+        {
+            Process::run('custom-node-install');
+        }
+    });
+
+    $this->artisan('worktree:create', ['name' => 't9', '--skip-db' => true])->assertSuccessful();
+    Process::assertRan('custom-node-install');
+    expect(File::get($this->path.'/storage/logs/worktree-setup.log'))->not->toContain('node (in parallel)');
+});
+
 it('fails the node stage of a parallel install with the end of its log', function () {
     File::ensureDirectoryExists($this->base.'/n/storage/logs');
     File::put($this->base.'/n/'.SailBootstrapStrategy::NODE_INSTALL_LOG, "resolving\nERR_PNPM_FETCH_404 left-pad\n");
