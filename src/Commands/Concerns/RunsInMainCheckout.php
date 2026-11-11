@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Process;
 use Symfony\Component\Console\Input\StreamableInputInterface;
 use Symfony\Component\Process\Process as SymfonyProcess;
 use Woda\Worktrees\ComposeProcess;
+use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
 
 /**
@@ -209,7 +210,14 @@ trait RunsInMainCheckout
         }
         // `--env` selects the environment file: without it, the main checkout would use its default database.
         $environment = $this->input->hasOption('env') ? $this->input->getOption('env') : null;
-        if (is_string($environment) && $environment !== '') {
+        if (! is_string($environment) || $environment === '') {
+            // An APP_ENV from outside (not from the worktree's .env) selects it too; the
+            // hand-over clears APP_ENV, so it is passed on as --env.
+            $outside = getenv('APP_ENV');
+            $own = EnvFile::get(base_path('.env'), 'APP_ENV');
+            $environment = is_string($outside) && $outside !== '' && $outside !== $own ? $outside : null;
+        }
+        if (is_string($environment)) {
             $tokens[] = '--env='.$environment;
         }
         if (! $this->canAsk()) {

@@ -111,3 +111,30 @@ it('refuses to hand over when the main checkout does not have the package', func
         ->assertFailed();
     Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'artisan' 'worktree:"));
 });
+
+it('passes an APP_ENV from outside on as --env', function () {
+    // The environment variable selects .env.staging; the hand-over clears APP_ENV, so it must name it.
+    File::put(base_path('.env'), "APP_ENV=local\n");
+    putenv('APP_ENV=staging');
+    try {
+        $this->artisan('worktree:list', ['--json' => true, '--no-interaction' => true])->assertExitCode(3);
+    } finally {
+        putenv('APP_ENV');
+        File::delete(base_path('.env'));
+    }
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains((string) $p->command, "'worktree:list' '--json' '--env=staging'"));
+});
+
+it('does not pass on the APP_ENV of the worktree\'s own .env', function () {
+    File::put(base_path('.env'), "APP_ENV=local\n");
+    putenv('APP_ENV=local');
+    try {
+        $this->artisan('worktree:list', ['--json' => true, '--no-interaction' => true])->assertExitCode(3);
+    } finally {
+        putenv('APP_ENV');
+        File::delete(base_path('.env'));
+    }
+
+    Process::assertRan(fn (PendingProcess $p) => str_ends_with((string) $p->command, "'worktree:list' '--json' '--no-interaction'"));
+});
