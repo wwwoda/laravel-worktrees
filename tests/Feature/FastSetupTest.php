@@ -10,8 +10,10 @@ use Woda\Worktrees\Fast\ContentKey;
 use Woda\Worktrees\Fast\DatabaseDump;
 use Woda\Worktrees\Fast\FastSetup;
 use Woda\Worktrees\SailBootstrapStrategy;
+use Woda\Worktrees\Shared\DatabaseProvisioner;
 use Woda\Worktrees\Shared\EnvFile;
 use Woda\Worktrees\Shared\MainCheckout;
+use Woda\Worktrees\SharedServicesBootstrapStrategy;
 
 /*
  * The fast setup of the Sail strategy: shared app image, offline-first
@@ -455,4 +457,30 @@ describe('the frontend build cache', function () {
         expect(glob($this->main.'/storage/app/worktrees/builds/*'))->toHaveCount(1)
             ->and(File::exists($this->main.'/storage/app/worktrees/builds/'.$key))->toBeFalse();
     });
+});
+
+it('gives a subclass of a strategy the configured fast setup without a fast argument', function () {
+    ($this->fake)();
+    config()->set('worktrees.fast.composer.cache_dir', '/composer-cache');
+    File::ensureDirectoryExists($this->path);
+    $sail = new class('laravel.test', 'pnpm', false) extends SailBootstrapStrategy {};
+    $shared = new class(app(DatabaseProvisioner::class), 'laravel.test', 'pnpm', false) extends SharedServicesBootstrapStrategy {};
+
+    foreach ([$sail, $shared] as $subclass) {
+        $subclass->installComposerDependencies($this->path);
+    }
+
+    Process::assertRanTimes("docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' -e 'COMPOSER_CACHE_DIR=/composer-cache' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'", 2);
+});
+
+it('keeps an explicit fast argument over the configured fast setup', function () {
+    ($this->fake)();
+    config()->set('worktrees.fast.composer.cache_dir', '/composer-cache');
+    File::ensureDirectoryExists($this->path);
+
+    (new SailBootstrapStrategy('laravel.test', 'pnpm', false, fast: new FastSetup(composerCacheDir: '/explicit')))->installComposerDependencies($this->path);
+    (new SharedServicesBootstrapStrategy(app(DatabaseProvisioner::class), 'laravel.test', 'pnpm', false, fast: new FastSetup(composerCacheDir: '/explicit')))->installComposerDependencies($this->path);
+
+    Process::assertRanTimes("docker compose exec -T -e 'COMPOSER_DISABLE_NETWORK=1' -e 'COMPOSER_CACHE_DIR=/explicit' 'laravel.test' sh -c 'composer install --no-interaction --prefer-dist'", 2);
+    Process::assertNotRan(fn (PendingProcess $p) => str_contains((string) $p->command, '/composer-cache'));
 });

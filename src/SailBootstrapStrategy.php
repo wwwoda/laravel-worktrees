@@ -41,14 +41,22 @@ class SailBootstrapStrategy implements BootstrapStrategy, InstallsNodeBeforeBrin
     // Written before a dump restore and removed after it: a restore that stopped half way.
     private const RESTORE_MARKER = 'storage/app/worktree/dump-restore.pending';
 
+    protected readonly FastSetup $fast;
+
+    /**
+     * @param  FastSetup|null  $fast  Null: the container's FastSetup (the `fast` config
+     *                                section), so a subclass that does not pass it keeps it.
+     */
     public function __construct(
         private readonly string $appService,
         private readonly string $nodePackageManager,
         private readonly bool $buildFrontend,
         private readonly int $bringUpTimeout = 600,
-        protected readonly FastSetup $fast = new FastSetup,
+        ?FastSetup $fast = null,
         private readonly ?Closure $onStep = null,
-    ) {}
+    ) {
+        $this->fast = $fast ?? app(FastSetup::class);
+    }
 
     public function bringUp(string $worktreePath, ?Closure $output = null): void
     {

@@ -47,6 +47,10 @@ class WorktreesServiceProvider extends ServiceProvider
 
         $this->app->bindIf(ProcessManager::class, NullProcessManager::class);
 
+        // Read at each resolve: a strategy (or an app's subclass of it) built
+        // without a `fast` argument gets the `fast` config section.
+        $this->app->bindIf(FastSetup::class, fn (): FastSetup => self::fastSetup());
+
         $this->app->singleton(BootstrapStrategy::class, function (): BootstrapStrategy {
             /** @var string $strategy */
             $strategy = config('worktrees.bootstrap.strategy', 'native');
@@ -72,13 +76,11 @@ class WorktreesServiceProvider extends ServiceProvider
                         'queues' => (new SharedConfig)->string('queue.env.queues', 'WORKTREE_QUEUES'),
                     ],
                     copyOnWrite: (bool) config('worktrees.shared.dependencies.copy_on_write', true),
-                    fast: self::fastSetup(),
                 ),
                 'sail' => new SailBootstrapStrategy(
                     appService: $appService,
                     nodePackageManager: $nodePackageManager,
                     buildFrontend: $buildFrontend,
-                    fast: self::fastSetup(),
                 ),
                 default => throw new InvalidArgumentException(
                     "Unknown worktrees bootstrap strategy '{$strategy}'. Expected 'native', 'sail' or 'shared'."
