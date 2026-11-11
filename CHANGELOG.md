@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+Lean separate worktree stacks and commands for agent sessions ([#25](https://github.com/wwwoda/laravel-worktrees/issues/25)). New commands and config sections only act when you call or set them. Some changes are on by default for existing setups; they are listed under "On by default" and "Changed".
+
+### Added
+
+- **Agent commands:** `worktree:status` (URL, services with memory, compose profiles, database state, git state; `--json`), `worktree:services` (switch optional services by compose profile: `workers`, `tools`, `none`, `--add`, `--remove`), `worktree:exec` (run a command or an alias such as `test` in the app container, with its options, piped input and exit code passed on; write `--` before the command), `worktree:doctor [--fix]` (stopped containers, missing `vendor` or `node_modules`, a missing build or a stale `public/hot`, cached config, pending migrations or an empty database, workers on old code, a compose project of another checkout), and `worktree:context` (a short summary for the start of an agent session, with a documented session-start hook). They take a worktree name, a folder or `main`; `main` is refused when a worktree is also named `main`. New config sections `services`, `exec` and `context`.
+- **Fast creation** (`sail`, top-level config section `fast`): one app image per version of its build inputs, shared by all worktrees and built once under a lock (on when `WORKTREE_APP_IMAGE_NAME` is set); a Composer cache folder in the container or Composer on the host; a copy-on-write `vendor` copy when `composer.lock` is equal (off by default); a frontend build cache keyed by the git tree of the build inputs and the `VITE_*` values (off by default: switch it on with `WORKTREE_BUILD_CACHE=true` and list every input of the build); a database dump with test data keyed by migrations, seeders and seed command (off by default; restored at creation only into a database without tables, downloaded from a URL that CI publishes, or seeded and saved by the first worktree). Measured on srv4: a warm worktree in 8.3 s.
+- **The `worktree` skill** in `resources/boost/skills/worktree/SKILL.md`, published with `php artisan vendor:publish --tag=worktrees-skill`.
+
+### On by default
+
+These need no setting and act in existing setups:
+
+- With `sail` and `shared`, `composer install` runs first with `COMPOSER_DISABLE_NETWORK=1`, and again with the network when that fails (`WORKTREE_COMPOSER_OFFLINE_FIRST=false` switches it off).
+- With `sail`, the node install runs while the containers start when no service mounts a named volume at `node_modules` and the strategy has no own node install (`WORKTREE_PARALLEL_NODE=false` switches it off). Its output goes to `storage/logs/worktree-node-install.log`.
+- With `sail` and `shared`, the setup waits up to 120 s until no healthcheck says `starting` any more.
+- The setup lists the package's bootstrap files in the repository's `.git/info/exclude` (shared by all its worktrees; nothing is committed).
+- `worktree:delete` with `sail` or `shared` removes the images that the worktree's compose project built for itself (`{project}/…` or `{project}-{service}`); shared images and the main checkout's images stay.
+- `worktree:delete` offers a branch whose merged pull request into the base branch has the same head commit (squash or rebase merges), and deletes such a branch with `git branch -D` when you confirm or pass `--delete-branch`.
+- `worktree:exec` and `worktree:doctor --fix` start a stopped worktree stack (after a reboot) with the stack lock held exclusively, hold it shared while they run, and mark the stack as used.
+
+### Changed
+
+- **`worktree:delete` without a terminal asks no questions and exits with 1 when it stops.** Without a terminal means `-n`, or a stdin that is not a terminal (a pipe or a file, as for an agent or a script), also without `-n`. At uncommitted changes or unpushed commits the delete stops with exit code 1; the message names them and `--force`. A clean worktree is deleted. Without a name, it stops with exit code 1 instead of asking which worktree. Before, a delete without `-n` and without a terminal took the default answers of the questions: a dirty worktree printed "Cancelled" and exited with 0, and a clean one was not deleted. A person who answers no at the terminal still ends it with 0. Scripts that read the exit code now see the stop.
+- **`worktree:create`, `worktree:delete` and `worktree:list` give the same result in every checkout.** Run in a linked worktree, they run again in the main checkout (which git names). Before, `worktree:create fix-x` in a worktree `feat` made `app-feat-fix-x` with the worktree's `.env` values. `--env` is passed on. When the main checkout has another version of this package, the command stops and says to update the main checkout.
+- **`worktree:create --branch=X` (and `--pr`, `--issue`) bases a branch that exists only on origin on origin's head.** It fetches the branch with its own refspec and sets its upstream. Before, a branch that no earlier fetch had brought (for example in a clone that fetches only some branches) was cut from the base branch. When origin cannot be asked, a named branch stops the command.
+- **`up` and `down -v` refuse a worktree that carries another checkout's compose project:** the main checkout's, any registered worktree's, or one whose containers belong to another folder (by their owner label). Before, only the main checkout and the checkout that runs artisan were checked, and deleting a worktree with another worktree's project removed that worktree's volumes. When an owner cannot be read, they refuse too.
+- **`copy_files` no longer overwrites files that git tracks in the worktree.** They keep the branch's version, so a copied folder such as `.claude` no longer makes every new worktree show changes. A project that copied tracked files on purpose must move them out of the tracked tree. Symlinked folders are still copied with their files.
+- With `sail` and `shared`, the node install runs as `pnpm install --prefer-offline` (or `npm install --prefer-offline`).
+- The Sail host build runs without the variables of the checkout that runs artisan, so Vite reads the worktree's own `VITE_*` values.
+
+### Upgrade notes
+
+1. Update the package to the release that holds these changes.
+2. A published `config/worktrees.php` keeps working; copy the new sections (`services`, `exec`, `context`, `fast`) only to change their defaults.
+3. For lean stacks, put optional services behind compose profiles (`profiles: [workers]`) and give healthchecks a short first check (`start_interval: 1s`).
+4. To share the app image: `image: ${WORKTREE_APP_IMAGE:-myapp/app:latest}` on the app service and `WORKTREE_APP_IMAGE_NAME=myapp-app` in the main checkout's `.env`.
+5. For a ready-made database: `WORKTREE_DB_DUMP=true` and `WORKTREE_DB_DUMP_SEED_COMMAND`. The default dump commands read the root password from `MARIADB_ROOT_PASSWORD` or Sail's `MYSQL_ROOT_PASSWORD`.
+6. For the frontend build cache: `WORKTREE_BUILD_CACHE=true`, and every path the build reads in `fast.build_cache.paths` (for example `routes` for Wayfinder, `app` for Tailwind's class scan, `vendor` for Flux). A missing input gives a stale bundle without a warning.
+7. For agents: `php artisan vendor:publish --tag=worktrees-skill` and the session-start hook from the README. Scripts that call `worktree:exec` write `--` before the command.
+
 ## v0.2.2 (2026-11-09)
 
 A fix for the `shared` and `sail` strategies. No breaking change.

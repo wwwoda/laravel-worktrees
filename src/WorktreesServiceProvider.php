@@ -439,6 +439,11 @@ class WorktreesServiceProvider extends ServiceProvider
             __DIR__.'/../config/worktrees.php' => config_path('worktrees.php'),
         ], 'worktrees-config');
 
+        // The skill for agent sessions; Laravel Boost also finds it under resources/boost/skills.
+        $this->publishes([
+            __DIR__.'/../resources/boost/skills/worktree/SKILL.md' => base_path('.claude/skills/worktree/SKILL.md'),
+        ], 'worktrees-skill');
+
         if ($this->app->runningInConsole()) {
             // Before artisan reads its own options: see WorktreeExecCommand::refuseGlobalOptions().
             Artisan::starting(static function (): void {
